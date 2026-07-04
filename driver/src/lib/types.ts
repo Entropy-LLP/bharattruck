@@ -54,3 +54,122 @@ export interface NegotiationEntry {
   message: string | null
   created_at: string
 }
+
+// ── Driver onboarding ─────────────────────────────────────────
+// Shapes mirror bt-auth-service `/onboarding/*` responses
+// (src/routes/onboarding.ts). Verification-flow rows carry a
+// `pending | verified | rejected` review status set by ops.
+
+export type VerificationStatus = 'pending' | 'verified' | 'rejected'
+export type VerificationBadge = 'pending' | 'verified' | 'premium'
+
+/** A `drivers` row (returned from `select('*')`). */
+export interface DriverProfile {
+  id: string
+  user_id: string
+  photo_url: string | null
+  languages: string[] | null
+  home_base_city: string | null
+  home_base_lat: number | null
+  home_base_lng: number | null
+  verification_badge: VerificationBadge
+  created_at: string
+  updated_at: string
+}
+
+/** The `users` fields returned by `GET /onboarding/profile`. */
+export interface OnboardingUser {
+  id: string
+  full_name: string | null
+  phone_number: string | null
+  email: string | null
+  avatar_url: string | null
+  city: string | null
+  state: string | null
+  kyc_status: string
+}
+
+/** A `driver_licenses` row. */
+export interface License {
+  id: string
+  driver_id: string
+  dl_number: string
+  dl_storage_path: string | null
+  vehicle_classes: string[] | null
+  expiry_date: string | null
+  status: VerificationStatus
+  created_at: string
+  updated_at: string
+}
+
+/** A `driver_insurance` row. */
+export interface Insurance {
+  id: string
+  driver_id: string
+  vehicle_id: string
+  policy_number: string
+  provider: string | null
+  storage_path: string | null
+  expiry_date: string | null
+  status: VerificationStatus
+  created_at: string
+}
+
+export type VehicleBodyType =
+  | 'open' | 'closed' | 'container' | 'flatbed' | 'tanker' | 'refrigerated'
+export type VehicleAxleConfig = '4x2' | '6x2' | '6x4' | '8x4' | '10x2'
+
+/** A `vehicles` row, with its joined `driver_insurance` rows. */
+export interface Vehicle {
+  id: string
+  driver_id: string
+  rc_number: string
+  rc_storage_path: string | null
+  vehicle_photos: string[] | null
+  capacity_tons: number | null
+  body_type: VehicleBodyType | null
+  axle_config: VehicleAxleConfig | null
+  maker_model: string | null
+  fuel_type: string | null
+  rc_expiry: string | null
+  rc_status: VerificationStatus
+  created_at: string
+  driver_insurance?: Insurance[]
+}
+
+/** A `bank_accounts` row — only the non-secret fields the API returns. */
+export interface BankAccount {
+  id: string
+  account_number_last4: string
+  ifsc: string
+  bank_name: string | null
+  account_holder_name: string
+  is_primary: boolean
+  verification_status: VerificationStatus
+  created_at?: string
+}
+
+/** Aggregate returned by `GET /onboarding/profile`. */
+export interface OnboardingProfile {
+  user: OnboardingUser
+  driver: DriverProfile | null
+  license: License | null
+  vehicles: Vehicle[]
+  bank_accounts: BankAccount[]
+}
+
+export interface OnboardingChecklist {
+  profile_complete: boolean
+  license_submitted: boolean
+  license_verified: boolean
+  vehicle_registered: boolean
+  vehicle_verified: boolean
+  insurance_uploaded: boolean
+  bank_linked: boolean
+}
+
+/** Aggregate returned by `GET /onboarding/status`. */
+export interface OnboardingStatus {
+  verification_badge: VerificationBadge
+  checklist: OnboardingChecklist
+}

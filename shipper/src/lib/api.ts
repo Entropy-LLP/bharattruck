@@ -282,6 +282,31 @@ export function getBookingLocation(bookingId: string): Promise<DriverLocation | 
   return request<DriverLocation | null>(`/location/booking/${bookingId}`)
 }
 
+// ── Route (Maps & Tracking) ──────────────────────────────────
+// Cached base polyline from bt-tracking-service (Routes Essentials),
+// reached through the gateway at `/api/tracking/route/:bookingId`.
+// Snake_case JSON per the frozen Maps/Tracking contract. Static per
+// booking → fetch once; the server caches it (long Redis TTL).
+
+export interface RouteBounds {
+  ne_lat: number
+  ne_lng: number
+  sw_lat: number
+  sw_lng: number
+}
+
+export interface RouteData {
+  polyline: string
+  distance_m: number
+  static_duration_s: number
+  bounds: RouteBounds
+  cached: boolean
+}
+
+export function getRoute(bookingId: string): Promise<RouteData> {
+  return request<RouteData>(`/tracking/route/${bookingId}`)
+}
+
 // ── Auth types ────────────────────────────────────────────────
 
 export interface AuthUser {
