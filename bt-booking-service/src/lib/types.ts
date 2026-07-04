@@ -42,6 +42,7 @@ export type DbBooking = {
   pickup_time_slot: string | null
   status: BookingStatus
   special_instructions: string | null
+  receiver_email: string | null   // consignee inbox for receiver-OTP POD (migration 010)
   booking_type: BookingType
   target_driver_id: string | null
   auction_deadline: string | null

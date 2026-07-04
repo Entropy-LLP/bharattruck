@@ -1,4 +1,4 @@
-import type { AuthenticatedUser, BookingWithProfiles, CreateBookingBody, DbBooking } from './types.js'
+import type { AuthenticatedUser, BookingStatus, BookingWithProfiles, CreateBookingBody, DbBooking } from './types.js'
 import { BookingError } from './types.js'
 import { assertValidTransition } from './state.js'
 import * as repo from './repository.js'
@@ -145,6 +145,86 @@ async function transitionAssignedBooking(
     // Status changed between our read and write (concurrent transition).
     throw new BookingError(
       `Booking could not be moved to '${to}' — its status changed concurrently`,
+      'INVALID_TRANSITION',
+      409,
+    )
+  }
+  return updated
+}
+
+// -----------------------------------------------------------
+// getPodContext
+// Authorizes a driver's request to issue a receiver-OTP POD and
+// returns the context bt-cargo-ledger needs (status + the
+// consignee receiver_email). Assigned-driver-only; the trip must
+// be in_transit (POD closes an in-progress trip). Owned here
+// because bookings + driver identity live in this service.
+// -----------------------------------------------------------
+
+export type PodContext = {
+  booking_id: string
+  status: BookingStatus
+  receiver_email: string | null
+}
+
+export async function getPodContext(
+  bookingId: string,
+  actor: AuthenticatedUser,
+): Promise<PodContext> {
+  if (actor.role !== 'driver') {
+    throw new BookingError('Only the assigned driver can request a POD OTP', 'FORBIDDEN', 403)
+  }
+
+  const booking = await repo.getBookingById(bookingId)
+  if (!booking) {
+    throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
+  }
+
+  const driverRow = await repo.getDriverByUserId(actor.userId)
+  if (!driverRow) {
+    throw new BookingError('Driver profile not found', 'NOT_FOUND', 404)
+  }
+
+  if (booking.driver_id !== driverRow.id) {
+    throw new BookingError('You are not assigned to this booking', 'FORBIDDEN', 403)
+  }
+
+  if (booking.status !== 'in_transit') {
+    throw new BookingError(
+      `POD OTP can only be requested while the trip is 'in_transit' (booking is '${booking.status}')`,
+      'INVALID_TRANSITION',
+      409,
+    )
+  }
+
+  return { booking_id: booking.id, status: booking.status, receiver_email: booking.receiver_email }
+}
+
+// -----------------------------------------------------------
+// completeBookingViaPod
+// Trusted internal transition in_transit → completed, driven by a
+// verified receiver OTP in bt-cargo-ledger. Reuses the SAME state
+// machine + repository path as the driver flow (assertValidTransition
+// + transitionBookingStatus) — the state machine is NOT forked. The
+// authority here is the OTP verification upstream, so there is no
+// driver actor; we transition on the booking's own driver_id.
+// -----------------------------------------------------------
+
+export async function completeBookingViaPod(bookingId: string): Promise<DbBooking> {
+  const booking = await repo.getBookingById(bookingId)
+  if (!booking) {
+    throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
+  }
+  if (!booking.driver_id) {
+    throw new BookingError('Booking has no assigned driver', 'INVALID_TRANSITION', 409)
+  }
+
+  assertValidTransition(booking.status, 'completed')
+
+  const updated = await repo.transitionBookingStatus(bookingId, booking.driver_id, booking.status, 'completed')
+  if (!updated) {
+    throw new BookingError(
+      'Booking could not be completed — its status changed concurrently',
       'INVALID_TRANSITION',
       409,
     )
