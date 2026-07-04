@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+> **New here? Read `docs/AGENT_HANDOFF.md` first** — the self-contained brief on background, current state, decisions, and the plan.
+
 ## Repo orientation
 
 BharatTruck is an India interstate/intrastate freight-booking marketplace built on the LogisticOS microservices platform. **This is the single source-of-truth monorepo** for the whole system — all backend services, both customer PWAs, the internal ops console, the API gateway, infra, and DB migrations live here. MVP deadline: **31 Aug 2026**. North star: **Completed Paid Trips** — the bar is one shipper → one driver → one tracked, proven, paid interstate trip.
