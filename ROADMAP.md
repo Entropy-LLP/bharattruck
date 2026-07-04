@@ -1,25 +1,39 @@
 # BharatTruck — Master Development Roadmap
 
-> Umbrella index for the BharatTruck MVP. The authoritative spec is **[docs/BHARATTRUCK_MVP_PRD.md](docs/BHARATTRUCK_MVP_PRD.md)** (PDF alongside). Each service/app has its own `ROADMAP.md` (done / to-do) that we update as we build.
+> ## ⛔ SUPERSEDED (2026-07-04) — do not plan work from this file
+> This roadmap is dated **2026-07-01, before the locked scope decisions**. It still lists **cut** scope
+> (Razorpay escrow + milestone split, on-chain/blockchain anchor, RL/LinUCB pricing, a from-scratch
+> Python pricing rewrite) as in-scope, and links to the **retired `deltaos1997/*` repos**. It is kept only
+> as a historical index of per-service ROADMAPs.
+>
+> **The authoritative plan is [docs/EXECUTION_ROADMAP.md](docs/EXECUTION_ROADMAP.md)** (how we work + committed cuts),
+> with [docs/BHARATTRUCK_MVP_PRD.md](docs/BHARATTRUCK_MVP_PRD.md) as the product spec and the frozen
+> [docs/MAPS_TRACKING_CONTRACT.md](docs/MAPS_TRACKING_CONTRACT.md) winning on tracking/maps. **Where any weekly
+> plan below conflicts with `EXECUTION_ROADMAP.md`, EXECUTION_ROADMAP wins.** The single source of truth is
+> this **monorepo** — the polyrepo-per-service framing below is obsolete.
 >
 > **MVP deadline:** 31 Aug 2026 (~8 weeks) · **North Star:** Completed Paid Trips · **Goal:** feasibility, not scale/legal.
 > **The bar:** one shipper → one driver → one tracked, proven, paid interstate trip.
 
 ---
 
-## Per-repo roadmaps
+## Per-service directories (all in THIS monorepo — links are folders, not repos)
 
-| Repo | Owns | Overall status |
+> The old `deltaos1997/*` / standalone repos are **retired — never push to them**. Everything below is a
+> directory in this monorepo. "Owns" columns mentioning escrow / milestone split / on-chain ledger / LinUCB
+> describe the **old** aspiration; those are **OUT of MVP** (see `docs/EXECUTION_ROADMAP.md §3`).
+
+| Directory | Owns | Overall status |
 |---|---|---|
-| [bt-auth-service](https://github.com/deltaos1997/bt-auth-service) | Identity, truck-derived roles, KYC | 🟡 auth works · KYC stub |
-| [bt-booking-service](https://github.com/deltaos1997/bt-booking-service) | Loads, auction/contract, negotiation, lifecycle, GPS ingest | 🟡 front half works · fulfillment missing |
-| [bt-pricing-service](https://github.com/deltaos1997/bt-pricing-service) | Pricing (CTO cost-engine + LinUCB) | 🟡 rule-based placeholder · Python engine to integrate |
-| [bt-payment-service](https://github.com/deltaos1997/bt-payment-service) | Payments, escrow, milestone payout split | ⛔ stub |
-| [bt-cargo-ledger](https://github.com/deltaos1997/bt-cargo-ledger) | POD (receiver OTP), checkpoints, on-chain ledger | ⛔ stub (chain off) |
-| [bt-tracking-service](https://github.com/deltaos1997/bt-tracking-service) | Live tracking, maps, geofence, halt alerts | ⛔ empty / unbuilt |
-| [bt-ops-web](https://github.com/deltaos1997/bt-ops-web) | Ops console (KYC approval, trips, overrides) | ⛔ stub (fake login + mock) |
-| [bt-driver-app](https://github.com/deltaos1997/bt-driver-app) (`driver/`) | Driver + Fleet Owner PWA → Capacitor | 🟡 partial · build broken |
-| [bt-shipper-app](https://github.com/deltaos1997/bt-shipper-app) (`shipper/`) | Shipper PWA | 🟡 partial · build broken |
+| [bt-auth-service/](bt-auth-service/) | Identity, truck-derived roles, KYC | 🟡 auth works · KYC stub |
+| [bt-booking-service/](bt-booking-service/) | Loads, auction/contract, negotiation, lifecycle, GPS ingest | 🟡 front half works · fulfillment missing |
+| [bt-pricing-service/](bt-pricing-service/) | Pricing (CTO cost-engine; ~~LinUCB~~ **CUT**) | 🟢 deterministic quote engine works (v1) |
+| [bt-payment-service/](bt-payment-service/) | Payments (cash-recorded; ~~escrow/milestone split~~ **CUT**) | ⛔ stub |
+| [bt-cargo-ledger/](bt-cargo-ledger/) | POD (receiver OTP), checkpoints (~~on-chain~~ **CUT**) | ⛔ stub (chain off) |
+| [bt-tracking-service/](bt-tracking-service/) | Live tracking, maps, geofence (~~halt alerts~~ **CUT**) | 🟢 built Ph.0–2 (`/route` `/eta` `/track` `/health`) |
+| [bt-ops-web/](bt-ops-web/) | Ops console (KYC approval, trips, overrides) | ⛔ stub (fake login + mock) |
+| [driver/](driver/) | Driver + Fleet Owner PWA → Capacitor | 🟡 partial · build broken |
+| [shipper/](shipper/) | Shipper PWA | 🟡 partial · build broken |
 
 _Legend: ✅ done · 🟡 partial · ⛔ stub/empty_
 
@@ -42,7 +56,13 @@ _Legend: ✅ done · 🟡 partial · ⛔ stub/empty_
 
 ---
 
-## 8-week plan (30 Jun → 31 Aug 2026)
+## 8-week plan (OBSOLETE — replaced by `docs/EXECUTION_ROADMAP.md §5`)
+
+> ⛔ The table below is the **pre-decision (2026-07-01)** sequencing and is **superseded**. It front-loads
+> cut scope (W5 Python/LinUCB pricing rewrite, W7 on-chain anchor + Razorpay escrow/milestone split) and
+> puts tracking at W6. **Use the re-baselined W0–W8 plan in [docs/EXECUTION_ROADMAP.md §5](docs/EXECUTION_ROADMAP.md)
+> instead** (W1 lifecycle spine → W2 tracking → W3 POD + cash payment → W4 ops → W5 real KYC → W6 Capacitor).
+> Kept only for historical reference.
 
 | Wk | Theme | Highlights |
 |---|---|---|
@@ -50,9 +70,9 @@ _Legend: ✅ done · 🟡 partial · ⛔ stub/empty_
 | W2 | Identity & roles | MSG91 OTP · truck-derived roles · Vahan/RC · driver KYC · fleet↔driver |
 | W3 | Ops console | real auth+RBAC · KYC approval queue · users/fleets/trucks |
 | W4 | Booking loop | pickup/delivery endpoints · auction expiry · negotiation cap · quote-lock |
-| W5 | Pricing | Python/FastAPI · CTO breakdown · GST/TDS · LinUCB (synthetic) |
+| W5 | Pricing | ~~Python/FastAPI · LinUCB~~ **CUT** — keep deterministic CTO breakdown + quote-lock (already v1) |
 | W6 | Tracking & maps | tracking service · GPS ingest · shipper live map · geofence · deep-link nav |
-| W7 | POD · ledger · payments | receiver OTP closes trip · checkpoint photos + on-chain anchor · Razorpay escrow + milestone split |
+| W7 | POD · ledger · payments | receiver OTP closes trip · ~~on-chain anchor · Razorpay escrow + milestone split~~ **CUT** → cash-recorded payment |
 | W8 | Harden & wrap | Capacitor Android · ops overrides · notifications · end-to-end corridor test |
 
 **Safe cut-order if time slips:** RL dynamic pricing → halt alerts → detention → reviews → escrow-down-to-cash/direct. **Never cut:** lifecycle closure, tracking map, POD-OTP, KYC gate.
