@@ -24,6 +24,7 @@ import {
   GOOGLE_MAPS_BROWSER_KEY,
   GOOGLE_MAPS_MAP_ID,
   type LatLng,
+  type MapBounds,
 } from '@/lib/maps'
 
 interface LiveTrackMapProps {
@@ -31,6 +32,8 @@ interface LiveTrackMapProps {
   dest: LatLng
   /** Encoded polyline of the base road route (from bt-tracking-service). */
   encodedPolyline?: string
+  /** Route viewport to fit; falls back to the decoded path / pickup+drop. */
+  bounds?: MapBounds
   /** Current driver position; hidden when null/undefined. */
   driver?: LatLng | null
   className?: string
@@ -42,6 +45,7 @@ export default function LiveTrackMap({
   origin,
   dest,
   encodedPolyline,
+  bounds,
   driver,
   className,
 }: LiveTrackMapProps) {
@@ -77,7 +81,7 @@ export default function LiveTrackMap({
               <span style={{ fontSize: 30, lineHeight: 1 }}>🚚</span>
             </AdvancedMarker>
           )}
-          <RouteOverlay path={path} origin={origin} dest={dest} />
+          <RouteOverlay path={path} origin={origin} dest={dest} bounds={bounds} />
         </Map>
       </APIProvider>
     </div>
@@ -93,10 +97,12 @@ function RouteOverlay({
   path,
   origin,
   dest,
+  bounds,
 }: {
   path: LatLng[]
   origin: LatLng
   dest: LatLng
+  bounds?: MapBounds
 }) {
   const map = useMap()
 
@@ -115,15 +121,22 @@ function RouteOverlay({
         : null
     line?.setMap(map)
 
-    const bounds = new google.maps.LatLngBounds()
-    const pts = path.length > 1 ? path : [origin, dest]
-    pts.forEach((p) => bounds.extend(p))
-    if (!bounds.isEmpty()) map.fitBounds(bounds, 48)
+    // Fit the route's own viewport when we have it (from the tracking
+    // service); otherwise fall back to the decoded path, then pickup+drop.
+    const box = new google.maps.LatLngBounds()
+    if (bounds) {
+      box.extend({ lat: bounds.sw_lat, lng: bounds.sw_lng })
+      box.extend({ lat: bounds.ne_lat, lng: bounds.ne_lng })
+    } else {
+      const pts = path.length > 1 ? path : [origin, dest]
+      pts.forEach((p) => box.extend(p))
+    }
+    if (!box.isEmpty()) map.fitBounds(box, 48)
 
     return () => {
       line?.setMap(null)
     }
-  }, [map, path, origin, dest])
+  }, [map, path, origin, dest, bounds])
 
   return null
 }

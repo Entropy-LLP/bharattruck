@@ -10,11 +10,10 @@ import {
   rejectQuote,
   counterQuote,
   cancelBooking,
-  getBookingLocation,
-  getRoute,
+  getTrack,
   markAsPaid,
 } from '@/lib/api'
-import type { DriverLocation, RouteData } from '@/lib/api'
+import type { TrackData, TrackEta, TrackLocation } from '@/lib/api'
 import { bookingStatusConfig, quoteStatusConfig } from '@/lib/status'
 import type { Booking, Quote } from '@/lib/types'
 import Navbar from '@/components/Navbar'
@@ -384,19 +383,20 @@ export default function BookingDetailPage({
 // --- Trip Tracking Section ---
 
 function TripTrackingSection({ booking }: { booking: Booking }) {
-  const [location, setLocation] = useState<DriverLocation | null>(null)
+  const [track, setTrack] = useState<TrackData | null>(null)
   const [pollError, setPollError] = useState(false)
 
+  // One read-through call (LOCKED D-#8) gives location + route + ETA + status.
+  // Fetch once for any tracked status (so the route/pins show even before the
+  // trip starts); keep the 10s live poll (D-010) running only while moving.
   useEffect(() => {
-    if (booking.status !== 'in_transit') return
-
     let cancelled = false
 
     async function poll() {
       try {
-        const loc = await getBookingLocation(booking.id)
+        const t = await getTrack(booking.id)
         if (!cancelled) {
-          setLocation(loc)
+          setTrack(t)
           setPollError(false)
         }
       } catch {
@@ -405,6 +405,13 @@ function TripTrackingSection({ booking }: { booking: Booking }) {
     }
 
     poll()
+
+    if (booking.status !== 'in_transit') {
+      return () => {
+        cancelled = true
+      }
+    }
+
     const interval = setInterval(poll, 10_000)
     return () => {
       cancelled = true
@@ -439,8 +446,8 @@ function TripTrackingSection({ booking }: { booking: Booking }) {
         })}
       </div>
 
-      {/* Live tracking map (Phase 1 — replaces the text-only location panel) */}
-      <ShipperTrackPanel booking={booking} location={location} pollError={pollError} />
+      {/* Live tracking map — driven by the /track read-through aggregate */}
+      <ShipperTrackPanel booking={booking} track={track} pollError={pollError} />
     </div>
   )
 }
@@ -460,11 +467,11 @@ function ageText(ms: number): string {
 
 function ShipperTrackPanel({
   booking,
-  location,
+  track,
   pollError,
 }: {
   booking: Booking
-  location: DriverLocation | null
+  track: TrackData | null
   pollError: boolean
 }) {
   const origin = useMemo(
@@ -476,17 +483,7 @@ function ShipperTrackPanel({
     [booking.dest_lat, booking.dest_lng],
   )
 
-  // Route is static for a booking → fetch once (server caches 6h). Degrades
-  // gracefully to pins-only if the tracking service isn't reachable.
-  const [route, setRoute] = useState<RouteData | null>(null)
-  useEffect(() => {
-    let cancelled = false
-    getRoute(booking.id)
-      .then((r) => { if (!cancelled) setRoute(r) })
-      .catch(() => { if (!cancelled) setRoute(null) })
-    return () => { cancelled = true }
-  }, [booking.id])
-
+  const location = track?.location ?? null
   const delivered = booking.status === 'completed' || booking.status === 'paid'
   const ageMs = location ? Date.now() - new Date(location.updated_at).getTime() : Infinity
   const fresh = ageMs <= STALE_AFTER_MS
@@ -495,12 +492,19 @@ function ShipperTrackPanel({
 
   return (
     <div className="space-y-2">
-      <LiveTrackMap origin={origin} dest={dest} encodedPolyline={route?.polyline} driver={driverPt} />
+      <LiveTrackMap
+        origin={origin}
+        dest={dest}
+        encodedPolyline={track?.route.polyline}
+        bounds={track?.route.bounds}
+        driver={driverPt}
+      />
       <TrackCaption
         status={booking.status}
         delivered={delivered}
         completedAt={booking.completed_at}
         location={location}
+        eta={track?.eta ?? null}
         fresh={fresh}
         ageMs={ageMs}
         pollError={pollError}
@@ -509,11 +513,17 @@ function ShipperTrackPanel({
   )
 }
 
+function etaSuffix(eta: TrackEta | null): string {
+  if (!eta) return ''
+  return ` · ETA ${eta.eta_text}${eta.stale ? ' (est.)' : ''}`
+}
+
 function TrackCaption({
   status,
   delivered,
   completedAt,
   location,
+  eta,
   fresh,
   ageMs,
   pollError,
@@ -521,7 +531,8 @@ function TrackCaption({
   status: Booking['status']
   delivered: boolean
   completedAt: string | null
-  location: DriverLocation | null
+  location: TrackLocation | null
+  eta: TrackEta | null
   fresh: boolean
   ageMs: number
   pollError: boolean
@@ -543,7 +554,7 @@ function TrackCaption({
     return (
       <p className="text-xs text-gray-400">
         {pollError
-          ? 'Could not fetch driver location — retrying…'
+          ? 'Could not fetch live tracking — retrying…'
           : status === 'accepted'
             ? 'Driver assigned — waiting for the trip to start.'
             : 'Waiting for driver to start sharing location…'}
@@ -555,7 +566,7 @@ function TrackCaption({
     return (
       <p className="text-xs text-gray-500 flex items-center gap-1.5">
         <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse inline-block" />
-        {`Live · updated ${ageText(ageMs)}${location.speed_kmh !== null ? ` · ${Math.round(location.speed_kmh)} km/h` : ''}`}
+        {`Live · updated ${ageText(ageMs)}${location.speed_kmh !== null ? ` · ${Math.round(location.speed_kmh)} km/h` : ''}${etaSuffix(eta)}`}
       </p>
     )
   }
@@ -563,7 +574,7 @@ function TrackCaption({
   return (
     <p className="text-xs text-amber-600 flex items-center gap-1.5">
       <span className="w-2 h-2 rounded-full bg-amber-400 inline-block" />
-      {`Driver offline — last seen ${ageText(ageMs)}`}
+      {`Driver offline — last seen ${ageText(ageMs)}${etaSuffix(eta)}`}
     </p>
   )
 }

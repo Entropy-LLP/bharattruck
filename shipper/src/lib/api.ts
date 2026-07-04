@@ -307,6 +307,62 @@ export function getRoute(bookingId: string): Promise<RouteData> {
   return request<RouteData>(`/tracking/route/${bookingId}`)
 }
 
+// ── Live tracking read-through aggregate (LOCKED D-#8) ───────
+// GET /api/tracking/track/:bookingId — ONE call for the shipper live map:
+// current location + base route + live ETA + status + alerts. Poll every 10s
+// (D-010). Snake_case, {success,data} envelope. Mirrors bt-tracking-service
+// src/routes/tracking.ts `/track/:bookingId`.
+
+export interface TrackLocation {
+  lat: number
+  lng: number
+  heading: number | null
+  speed_kmh: number | null
+  updated_at: string
+}
+
+export interface TrackEta {
+  eta_s: number
+  eta_text: string
+  remaining_m: number
+  traffic: string
+  computed_at: string
+  stale: boolean
+}
+
+export interface TrackAlert {
+  id: string
+  type: string
+  message: string | null
+  lat: number | null
+  lng: number | null
+  acknowledged: boolean
+  created_at: string
+}
+
+export interface TrackData {
+  booking_id: string
+  status: string
+  /** Latest live fix; null until the driver starts sharing location. */
+  location: TrackLocation | null
+  route: {
+    polyline: string
+    distance_m: number
+    bounds: RouteBounds
+  }
+  /** Live traffic ETA; null when there's no location and nothing cached. */
+  eta: TrackEta | null
+  destination: {
+    lat: number
+    lng: number
+  }
+  alerts: TrackAlert[]
+}
+
+export function getTrack(bookingId: string): Promise<TrackData> {
+  return request<TrackData>(`/tracking/track/${bookingId}`)
+}
+
 // ── Auth types ────────────────────────────────────────────────
 
 export interface AuthUser {

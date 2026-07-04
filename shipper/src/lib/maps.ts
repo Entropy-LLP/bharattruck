@@ -17,6 +17,14 @@ export interface LatLng {
   lng: number
 }
 
+/** Geographic viewport of a route (matches the tracking-service `bounds`). */
+export interface MapBounds {
+  ne_lat: number
+  ne_lng: number
+  sw_lat: number
+  sw_lng: number
+}
+
 /** HTTP-referrer-restricted browser key for the Maps JavaScript API. */
 export const GOOGLE_MAPS_BROWSER_KEY =
   process.env.NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY ?? ''
