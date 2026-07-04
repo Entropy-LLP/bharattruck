@@ -1,0 +1,64 @@
+@import "tailwindcss";
+@import "@fontsource/space-grotesk/400.css";
+@import "@fontsource/space-grotesk/500.css";
+@import "@fontsource/space-grotesk/600.css";
+@import "@fontsource/space-grotesk/700.css";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: "Space Grotesk", system-ui, sans-serif;
+
+  /* Brand */
+  --color-accent:        #F97316;
+  --color-accent-hover:  #EA6E00;
+  --color-accent-muted:  #7C3400;
+
+  /* Dark palette */
+  --color-dark-bg:       #09090B;
+  --color-dark-surface:  #111111;
+  --color-dark-elevated: #1A1A1A;
+  --color-dark-border:   #2A2A2A;
+  --color-dark-text:     #FFFFFF;
+  --color-dark-muted:    #888888;
+
+  /* Light palette */
+  --color-light-bg:      #FAFAFA;
+  --color-light-surface: #FFFFFF;
+  --color-light-border:  #E4E4E7;
+  --color-light-text:    #09090B;
+  --color-light-muted:   #71717A;
+
+  /* Status */
+  --color-success: #22C55E;
+  --color-warning: #FBBF24;
+  --color-error:   #EF4444;
+  --color-info:    #3B82F6;
+}
+
+* {
+  box-sizing: border-box;
+  padding: 0;
+  margin: 0;
+}
+
+html {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+html.dark body {
+  background-color: #09090B;
+  color: #FFFFFF;
+}
+
+html:not(.dark) body {
+  background-color: #FAFAFA;
+  color: #09090B;
+}
+
+/* Scrollbar — dark */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #2A2A2A; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #3A3A3A; }

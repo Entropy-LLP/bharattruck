@@ -1,0 +1,30 @@
+{
+  "name": "bt-ops-web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start -p 3000"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-code": "^2.1.92",
+    "@fontsource/space-grotesk": "^5.2.10",
+    "autoprefixer": "^10.4.27",
+    "axios": "^1.7.2",
+    "lucide-react": "^1.7.0",
+    "next": "^14.2.4",
+    "next-themes": "^0.4.6",
+    "postcss": "^8.5.8",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.2.2",
+    "@types/node": "^20.14.0",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "tailwindcss": "^4.2.2",
+    "typescript": "^5.4.5"
+  }
+}

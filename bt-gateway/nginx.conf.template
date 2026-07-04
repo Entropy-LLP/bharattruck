@@ -1,0 +1,207 @@
+# URL map:
+#   /api/auth/       -> AUTH_SERVICE_URL     (OTP, JWT, Google OAuth)
+#   /api/kyc/        -> AUTH_SERVICE_URL
+#   /api/onboarding/ -> AUTH_SERVICE_URL     (driver onboarding)
+#   /api/bookings/   -> BOOKING_SERVICE_URL
+#   /api/quotes/     -> BOOKING_SERVICE_URL
+#   /api/location/   -> BOOKING_SERVICE_URL  (driver GPS pings)
+#   /api/pricing/    -> PRICING_SERVICE_URL
+#   /api/payments/   -> PAYMENT_SERVICE_URL
+#   /api/cargo/      -> CARGO_SERVICE_URL
+#   /ws/             -> BOOKING_SERVICE_URL  (WebSocket)
+#   /health          -> gateway itself
+
+worker_processes auto;
+error_log /var/log/nginx/error.log warn;
+pid /var/run/nginx.pid;
+
+events {
+  worker_connections 1024;
+}
+
+http {
+
+  resolver ${DNS_RESOLVER} valid=30s ipv6=off;
+  resolver_timeout 5s;
+
+  gzip on;
+  gzip_types application/json text/plain application/javascript;
+  gzip_min_length 256;
+  gzip_vary on;
+
+  log_format main
+    '$remote_addr [$time_local] '
+    '"$request" $status $body_bytes_sent '
+    'rt=$request_time urt=$upstream_response_time '
+    'id=$req_id upstream=$upstream_addr '
+    '"$http_user_agent"';
+
+  access_log /var/log/nginx/access.log main;
+
+  map $http_x_request_id $req_id {
+    default   $http_x_request_id;
+    ""        $request_id;
+  }
+
+  limit_req_zone $binary_remote_addr zone=otp_zone:10m rate=5r/m;
+  limit_req_zone $binary_remote_addr zone=api_zone:20m rate=60r/m;
+  limit_req_status 429;
+
+  proxy_set_header X-Real-IP         $remote_addr;
+  proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+  proxy_set_header X-Forwarded-Proto $scheme;
+  proxy_set_header X-Request-Id      $req_id;
+
+  # TLS to upstream (Render services use https with SNI)
+  proxy_ssl_server_name on;
+  proxy_ssl_protocols   TLSv1.2 TLSv1.3;
+
+  proxy_next_upstream error timeout http_502 http_503;
+  proxy_next_upstream_timeout 5s;
+  proxy_next_upstream_tries 2;
+
+  server {
+    listen 80;
+    server_name _;
+
+    client_max_body_size 10m;
+    proxy_connect_timeout 30s;
+    proxy_send_timeout    30s;
+    proxy_read_timeout    90s;
+    proxy_intercept_errors on;
+
+    # Pass the upstream's hostname so Render routes to the correct service.
+    # proxy_set_header Host is set per-location via $proxy_host (default).
+    # Forward the original host for logging/redirects.
+    proxy_set_header X-Forwarded-Host $host;
+
+    add_header X-Content-Type-Options  "nosniff" always;
+    add_header X-Frame-Options         "DENY" always;
+    add_header X-XSS-Protection        "1; mode=block" always;
+    add_header Referrer-Policy         "strict-origin-when-cross-origin" always;
+
+    # Strip backend CORS headers — gateway is the single CORS authority
+    proxy_hide_header Access-Control-Allow-Origin;
+    proxy_hide_header Access-Control-Allow-Methods;
+    proxy_hide_header Access-Control-Allow-Headers;
+    proxy_hide_header Access-Control-Expose-Headers;
+    proxy_hide_header Access-Control-Allow-Credentials;
+    proxy_hide_header Access-Control-Max-Age;
+
+    add_header Access-Control-Allow-Origin  "${CORS_ALLOWED_ORIGINS}" always;
+    add_header Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE, OPTIONS" always;
+    add_header Access-Control-Allow-Headers "Authorization, Content-Type, X-Request-Id" always;
+    add_header Access-Control-Expose-Headers "X-Request-Id" always;
+
+    if ($request_method = OPTIONS) {
+      return 204;
+    }
+
+    error_page 502 /errors/502.json;
+    error_page 503 /errors/503.json;
+    error_page 504 /errors/504.json;
+
+    location /errors/502.json {
+      internal;
+      default_type application/json;
+      return 502 '{"error":"bad_gateway","message":"Service temporarily unavailable. Please retry shortly."}\n';
+    }
+
+    location /errors/503.json {
+      internal;
+      default_type application/json;
+      return 503 '{"error":"service_unavailable","message":"Service is starting up or under maintenance."}\n';
+    }
+
+    location /errors/504.json {
+      internal;
+      default_type application/json;
+      return 504 '{"error":"gateway_timeout","message":"Service did not respond in time."}\n';
+    }
+
+    location = /health {
+      access_log off;
+      default_type application/json;
+      return 200 '{"status":"ok","service":"bt-gateway"}\n';
+    }
+
+    location /ws/ {
+      set $booking_ws_upstream ${BOOKING_SERVICE_URL};
+      rewrite ^/ws/(.*) /ws/$1 break;
+      proxy_pass $booking_ws_upstream;
+      proxy_http_version 1.1;
+      proxy_set_header Upgrade    $http_upgrade;
+      proxy_set_header Connection "upgrade";
+      proxy_read_timeout 3600s;
+      proxy_buffering off;
+    }
+
+    location /api/auth/ {
+      limit_req zone=otp_zone burst=10 nodelay;
+      set $auth_upstream ${AUTH_SERVICE_URL};
+      rewrite ^/api/auth/(.*) /auth/$1 break;
+      proxy_pass $auth_upstream;
+    }
+
+    location /api/kyc/ {
+      limit_req zone=api_zone burst=20 nodelay;
+      set $auth_kyc_upstream ${AUTH_SERVICE_URL};
+      rewrite ^/api/kyc/(.*) /kyc/$1 break;
+      proxy_pass $auth_kyc_upstream;
+    }
+
+    location /api/onboarding/ {
+      limit_req zone=api_zone burst=20 nodelay;
+      set $auth_onboarding_upstream ${AUTH_SERVICE_URL};
+      rewrite ^/api/onboarding/(.*) /onboarding/$1 break;
+      proxy_pass $auth_onboarding_upstream;
+    }
+
+    location /api/bookings/ {
+      limit_req zone=api_zone burst=30 nodelay;
+      set $booking_upstream ${BOOKING_SERVICE_URL};
+      rewrite ^/api/bookings/(.*) /bookings/$1 break;
+      proxy_pass $booking_upstream;
+    }
+
+    location /api/quotes/ {
+      limit_req zone=api_zone burst=30 nodelay;
+      set $quotes_upstream ${BOOKING_SERVICE_URL};
+      rewrite ^/api/quotes/(.*) /quotes/$1 break;
+      proxy_pass $quotes_upstream;
+    }
+
+    location /api/location/ {
+      limit_req zone=api_zone burst=60 nodelay;
+      set $location_upstream ${BOOKING_SERVICE_URL};
+      rewrite ^/api/location/(.*) /location/$1 break;
+      proxy_pass $location_upstream;
+    }
+
+    location /api/pricing/ {
+      limit_req zone=api_zone burst=30 nodelay;
+      set $pricing_upstream ${PRICING_SERVICE_URL};
+      rewrite ^/api/pricing/(.*) /pricing/$1 break;
+      proxy_pass $pricing_upstream;
+    }
+
+    location /api/payments/ {
+      limit_req zone=api_zone burst=20 nodelay;
+      set $payment_upstream ${PAYMENT_SERVICE_URL};
+      rewrite ^/api/payments/(.*) /payments/$1 break;
+      proxy_pass $payment_upstream;
+    }
+
+    location /api/cargo/ {
+      limit_req zone=api_zone burst=20 nodelay;
+      set $cargo_upstream ${CARGO_SERVICE_URL};
+      rewrite ^/api/cargo/(.*) /cargo/$1 break;
+      proxy_pass $cargo_upstream;
+    }
+
+    location / {
+      default_type application/json;
+      return 404 '{"error":"not_found","message":"No route matched this path"}\n';
+    }
+  }
+}
