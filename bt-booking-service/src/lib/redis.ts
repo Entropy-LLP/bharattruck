@@ -10,6 +10,13 @@ export const redis = new Redis(url, {
 
 export const LOCATION_TTL_SECONDS = 30
 
+// Durable breadcrumb throttle window (D-007: ~1 point / 10–15s).
+// The first /location/update in each window per booking wins the
+// location_history insert via an atomic SET NX EX gate; the rest
+// stay Redis-only.
+export const BREADCRUMB_THROTTLE_SECONDS = 12
+
 export const driverLocationKey  = (driverId: string)  => `loc:driver:${driverId}`
 export const driverBookingKey   = (driverId: string)  => `loc:driver-booking:${driverId}`
 export const bookingDriverKey   = (bookingId: string) => `loc:booking-driver:${bookingId}`
+export const breadcrumbGateKey  = (bookingId: string) => `loc:bc-gate:${bookingId}`

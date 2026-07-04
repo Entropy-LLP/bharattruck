@@ -141,6 +141,63 @@ export async function acceptBooking(
 }
 
 // -----------------------------------------------------------
+// transitionBookingStatus
+// Atomically moves a booking fromStatus → toStatus for the
+// booking assigned to driverId. The WHERE status=fromStatus AND
+// driver_id=driverId guard is optimistic concurrency + a
+// defence-in-depth ownership check on top of the service-layer
+// 403: only the assigned driver, and only from the expected
+// state, wins the update. Returns null if nothing matched
+// (state changed underneath us, or not the assigned driver).
+// -----------------------------------------------------------
+
+export async function transitionBookingStatus(
+  bookingId: string,
+  driverId: string,
+  fromStatus: BookingStatus,
+  toStatus: BookingStatus,
+): Promise<DbBooking | null> {
+  const { data, error } = await supabase
+    .from('bookings')
+    .update({
+      status:     toStatus,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', bookingId)
+    .eq('status', fromStatus)
+    .eq('driver_id', driverId)
+    .select('*')
+    .maybeSingle()
+
+  if (error) throw new Error(`DB transition failed: ${error.message}`)
+  return data as DbBooking | null
+}
+
+// -----------------------------------------------------------
+// insertLocationBreadcrumb
+// Durable dense-GPS breadcrumb write for location_history
+// (migration 009, owned by bt-booking-service per D-007).
+// Column shape matches docs/MAPS_TRACKING_PLAN.md §4.1 so the
+// bt-tracking-service reader and infra's migration 009 line up.
+// -----------------------------------------------------------
+
+export type LocationBreadcrumb = {
+  booking_id:  string
+  driver_id:   string
+  lat:         number
+  lng:         number
+  heading:     number | null
+  speed_kmh:   number | null
+  accuracy_m:  number | null
+  recorded_at: string
+}
+
+export async function insertLocationBreadcrumb(row: LocationBreadcrumb): Promise<void> {
+  const { error } = await supabase.from('location_history').insert(row)
+  if (error) throw new Error(`DB breadcrumb insert failed: ${error.message}`)
+}
+
+// -----------------------------------------------------------
 // cancelBooking
 // Cancels from any of the provided statuses (caller decides
 // which statuses are valid — business rule stays in service).

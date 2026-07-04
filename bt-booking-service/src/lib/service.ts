@@ -86,6 +86,73 @@ export async function acceptBooking(
 }
 
 // -----------------------------------------------------------
+// startBooking / completeBooking
+// Drive the trip lifecycle forward:
+//   accepted   → in_transit   (driver starts the trip)
+//   in_transit → completed    (transition exposed now; the
+//                              POD/receiver-OTP-driven closure
+//                              that *calls* this lands later)
+// Only the assigned driver (drivers.id via getDriverByUserId)
+// may transition. The state machine (assertValidTransition)
+// enforces legal moves server-side and rejects illegal ones
+// with a 4xx envelope, never a 500.
+// -----------------------------------------------------------
+
+export async function startBooking(
+  bookingId: string,
+  actor: AuthenticatedUser,
+): Promise<DbBooking> {
+  return transitionAssignedBooking(bookingId, actor, 'in_transit')
+}
+
+export async function completeBooking(
+  bookingId: string,
+  actor: AuthenticatedUser,
+): Promise<DbBooking> {
+  return transitionAssignedBooking(bookingId, actor, 'completed')
+}
+
+async function transitionAssignedBooking(
+  bookingId: string,
+  actor: AuthenticatedUser,
+  to: 'in_transit' | 'completed',
+): Promise<DbBooking> {
+  // Only drivers transition trips; a shipper/admin hitting these gets 403.
+  if (actor.role !== 'driver') {
+    throw new BookingError('Only the assigned driver can transition a trip', 'FORBIDDEN', 403)
+  }
+
+  const booking = await repo.getBookingById(bookingId)
+  if (!booking) {
+    throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
+  }
+
+  const driverRow = await repo.getDriverByUserId(actor.userId)
+  if (!driverRow) {
+    throw new BookingError('Driver profile not found', 'NOT_FOUND', 404)
+  }
+
+  // Assigned-driver-only: a driver who is not this booking's driver gets 403.
+  if (booking.driver_id !== driverRow.id) {
+    throw new BookingError('You are not assigned to this booking', 'FORBIDDEN', 403)
+  }
+
+  // Server-side state-machine guard: illegal moves → 409, not 500.
+  assertValidTransition(booking.status, to)
+
+  const updated = await repo.transitionBookingStatus(bookingId, driverRow.id, booking.status, to)
+  if (!updated) {
+    // Status changed between our read and write (concurrent transition).
+    throw new BookingError(
+      `Booking could not be moved to '${to}' — its status changed concurrently`,
+      'INVALID_TRANSITION',
+      409,
+    )
+  }
+  return updated
+}
+
+// -----------------------------------------------------------
 // cancelBooking
 // Shipper can cancel their own booking; driver can cancel
 // only a booking assigned to them. Both can cancel from
