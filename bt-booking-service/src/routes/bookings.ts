@@ -58,6 +58,19 @@ export async function bookingRoutes(app: FastifyInstance) {
     }
   })
 
+  // GET /bookings/:id/pod-context — assigned driver fetches POD context
+  // (status + consignee receiver_email) to request a receiver OTP.
+  app.get('/:id/pod-context', async (req, reply) => {
+    const id = parseId(reply, req.params)
+    if (!id) return
+    try {
+      const ctx = await svc.getPodContext(id, req.user)
+      return reply.send({ success: true, data: ctx })
+    } catch (err) {
+      return handleError(reply, err)
+    }
+  })
+
   // GET /bookings — shipper: own bookings | driver: pending bookings | admin: all
   app.get('/', async (req, reply) => {
     try {

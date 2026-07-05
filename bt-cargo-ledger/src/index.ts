@@ -2,6 +2,7 @@ import 'dotenv/config'
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
 import { shipmentRoutes } from './routes/shipments.js'
+import { podRoutes } from './routes/pod.js'
 
 const app = Fastify({
   logger: {
@@ -13,6 +14,7 @@ const app = Fastify({
 async function bootstrap() {
   await app.register(cors, { origin: true })
   await app.register(shipmentRoutes, { prefix: '/shipments' })
+  await app.register(podRoutes, { prefix: '/pod' })
   app.get('/health', () => ({
     status: 'ok',
     service: 'bt-cargo-ledger',
