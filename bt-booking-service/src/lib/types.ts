@@ -4,7 +4,7 @@ import { z } from 'zod'
 // BookingStatus — mirrors the DB enum booking_status exactly
 // -----------------------------------------------------------
 
-export type BookingStatus = 'pending' | 'accepted' | 'in_transit' | 'completed' | 'cancelled' | 'negotiating'
+export type BookingStatus = 'pending' | 'accepted' | 'in_transit' | 'completed' | 'paid' | 'cancelled' | 'negotiating'
 
 // -----------------------------------------------------------
 // BookingType — direct (1:1) or auction (1:many quotes)

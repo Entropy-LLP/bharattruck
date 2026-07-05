@@ -12,7 +12,8 @@ export const VALID_TRANSITIONS: Record<BookingStatus, BookingStatus[]> = {
   negotiating:  ['accepted', 'cancelled'],
   accepted:     ['in_transit', 'cancelled'],
   in_transit:   ['completed'],
-  completed:    [],
+  completed:    ['paid'],       // cash-recorded settlement closes the money loop
+  paid:         [],
   cancelled:    [],
 }
 
