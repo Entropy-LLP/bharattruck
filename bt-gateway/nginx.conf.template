@@ -5,6 +5,7 @@
 #   /api/bookings/   -> BOOKING_SERVICE_URL
 #   /api/quotes/     -> BOOKING_SERVICE_URL
 #   /api/location/   -> BOOKING_SERVICE_URL  (driver GPS pings)
+#   /api/tracking/   -> TRACKING_SERVICE_URL (route/eta/track read-through; port 3006)
 #   /api/pricing/    -> PRICING_SERVICE_URL
 #   /api/payments/   -> PAYMENT_SERVICE_URL
 #   /api/cargo/      -> CARGO_SERVICE_URL
@@ -176,6 +177,16 @@ http {
       set $location_upstream ${BOOKING_SERVICE_URL};
       rewrite ^/api/location/(.*) /location/$1 break;
       proxy_pass $location_upstream;
+    }
+
+    # Maps & Tracking read-through (bt-tracking-service, routes mounted at /tracking).
+    # App calls /api/tracking/route|eta|track/:bookingId ; service does its own JWT+RBAC.
+    # Polled ~every 10s per booking, so a slightly higher burst than the default api routes.
+    location /api/tracking/ {
+      limit_req zone=api_zone burst=40 nodelay;
+      set $tracking_upstream ${TRACKING_SERVICE_URL};
+      rewrite ^/api/tracking/(.*) /tracking/$1 break;
+      proxy_pass $tracking_upstream;
     }
 
     location /api/pricing/ {

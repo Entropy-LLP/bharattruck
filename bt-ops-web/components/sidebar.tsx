@@ -3,10 +3,17 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import {
   LayoutDashboard, ShieldCheck, MapPin, Truck,
-  Users, AlertCircle, ChevronRight, Zap
+  Users, AlertCircle, ChevronRight, Zap, type LucideIcon
 } from 'lucide-react'
 
-const OPS_NAV = [
+interface NavItem {
+  href: string
+  icon: LucideIcon
+  label: string
+  badge?: string
+}
+
+const OPS_NAV: NavItem[] = [
   { href: '/ops/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
   { href: '/ops/kyc',       icon: ShieldCheck,    label: 'KYC Review',  badge: '12' },
   { href: '/ops/trips',     icon: MapPin,         label: 'Live Trips',  badge: '34' },
@@ -14,7 +21,7 @@ const OPS_NAV = [
   { href: '/ops/disputes',  icon: AlertCircle,    label: 'Disputes',    badge: '3' },
 ]
 
-const FLEET_NAV = [
+const FLEET_NAV: NavItem[] = [
   { href: '/portal/dashboard', icon: LayoutDashboard, label: 'Overview' },
   { href: '/portal/vehicles',  icon: Truck,           label: 'Vehicles' },
   { href: '/portal/drivers',   icon: Users,           label: 'Drivers' },
