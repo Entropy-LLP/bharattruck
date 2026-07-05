@@ -5,7 +5,9 @@ import {
   driverLocationKey,
   driverBookingKey,
   bookingDriverKey,
+  breadcrumbGateKey,
   LOCATION_TTL_SECONDS,
+  BREADCRUMB_THROTTLE_SECONDS,
 } from '../lib/redis.js'
 import { BookingError } from '../lib/types.js'
 import * as repo from '../lib/repository.js'
@@ -101,6 +103,36 @@ export async function locationRoutes(app: FastifyInstance) {
       pipeline.set(bookingDriverKey(booking_id), driverId, 'EX', LOCATION_TTL_SECONDS)
     }
     await pipeline.exec()
+
+    // Durable dense-GPS breadcrumb (location_history, D-007). Owned here in
+    // bt-booking-service; bt-tracking-service only READS it. Throttled to
+    // ~1 point / BREADCRUMB_THROTTLE_SECONDS per booking via an atomic
+    // SET NX EX gate — the first update in each window wins the insert.
+    // Best-effort: a breadcrumb failure must never break live GPS ingestion
+    // (Redis above is the source of truth for the live position), so we log
+    // and swallow rather than 500 the request. This also lets ingestion keep
+    // working before infra's migration 009 lands the table.
+    if (booking_id) {
+      try {
+        const fresh = await redis.set(
+          breadcrumbGateKey(booking_id), '1', 'EX', BREADCRUMB_THROTTLE_SECONDS, 'NX',
+        )
+        if (fresh === 'OK') {
+          await repo.insertLocationBreadcrumb({
+            booking_id,
+            driver_id:   driverId,
+            lat,
+            lng,
+            heading:     heading ?? null,
+            speed_kmh:   speed_kmh ?? null,
+            accuracy_m:  accuracy_m ?? null,
+            recorded_at: now,
+          })
+        }
+      } catch (err) {
+        app.log.warn({ err, driver_id: driverId, booking_id }, 'Breadcrumb persist failed (live tracking unaffected)')
+      }
+    }
 
     app.log.info({ driver_id: driverId, lat, lng, booking_id }, 'Location updated')
 

@@ -80,6 +80,30 @@ export async function bookingRoutes(app: FastifyInstance) {
     }
   })
 
+  // PATCH /bookings/:id/start — assigned driver moves accepted → in_transit
+  app.patch('/:id/start', async (req, reply) => {
+    const id = parseId(reply, req.params)
+    if (!id) return
+    try {
+      const booking = await svc.startBooking(id, req.user)
+      return reply.send({ success: true, data: booking })
+    } catch (err) {
+      return handleError(reply, err)
+    }
+  })
+
+  // PATCH /bookings/:id/complete — assigned driver moves in_transit → completed
+  app.patch('/:id/complete', async (req, reply) => {
+    const id = parseId(reply, req.params)
+    if (!id) return
+    try {
+      const booking = await svc.completeBooking(id, req.user)
+      return reply.send({ success: true, data: booking })
+    } catch (err) {
+      return handleError(reply, err)
+    }
+  })
+
   // PATCH /bookings/:id/cancel — cancel from pending or accepted
   app.patch('/:id/cancel', async (req, reply) => {
     const id = parseId(reply, req.params)
