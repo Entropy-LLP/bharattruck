@@ -90,7 +90,9 @@ jobs:
           if [ -f package.json ] && node -e "process.exit(require('./package.json').dependencies?.next?0:1)"; then
             NEXT_VER=$(node -p "require('next/package.json').version")
             echo "Next app detected (v$NEXT_VER) — ensuring @next/swc-linux-x64-gnu@$NEXT_VER"
-            npm install --no-save "@next/swc-linux-x64-gnu@${NEXT_VER}"
+            # Best-effort: Next 16 (Turbopack) needs it; Next <=14 has no matching binary and builds via
+            # webpack anyway, so a missing version must NOT fail the job.
+            npm install --no-save "@next/swc-linux-x64-gnu@${NEXT_VER}" || echo "swc binary unavailable for v$NEXT_VER — fine for Next<=14 (webpack build)"
           else
             echo "not a Next app — skipping"
           fi
