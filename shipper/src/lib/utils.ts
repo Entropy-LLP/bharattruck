@@ -1,5 +1,13 @@
+import { clsx, type ClassValue } from "clsx"
+import { twMerge } from "tailwind-merge"
+
+/** Tailwind-aware className combiner used by shadcn/ui primitives. */
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs))
+}
+
 export function formatPrice(amount: number): string {
-  return `\u20B9${amount.toLocaleString('en-IN')}`
+  return `₹${amount.toLocaleString('en-IN')}`
 }
 
 export function relativeTime(dateStr: string): string {
