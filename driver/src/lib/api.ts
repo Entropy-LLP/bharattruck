@@ -1,4 +1,17 @@
-import type { Booking, Quote, NegotiationEntry } from './types'
+import type {
+  Booking,
+  Quote,
+  NegotiationEntry,
+  DriverProfile,
+  License,
+  Insurance,
+  Vehicle,
+  BankAccount,
+  OnboardingProfile,
+  OnboardingStatus,
+  VehicleBodyType,
+  VehicleAxleConfig,
+} from './types'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
 const TOKEN_KEY = 'bt_driver_token'
@@ -245,6 +258,133 @@ export function pushLocation(body: LocationUpdate) {
       body: JSON.stringify(body),
     },
   )
+}
+
+// ── Driver onboarding ─────────────────────────────────────────
+// Real clients for bt-auth-service `/onboarding/*` (reached through
+// the gateway at `/api/onboarding/*`). All are authenticated, so they
+// use `request` (token refresh + redirect on hard 401).
+
+export interface UpdateProfileInput {
+  full_name?: string
+  photo_url?: string
+  languages?: string[]
+  home_base_city?: string
+  home_base_lat?: number
+  home_base_lng?: number
+}
+
+export interface CreateVehicleInput {
+  rc_number: string
+  rc_storage_path?: string
+  vehicle_photos?: string[]
+  capacity_tons?: number
+  body_type?: VehicleBodyType
+  axle_config?: VehicleAxleConfig
+  maker_model?: string
+  fuel_type?: string
+  rc_expiry?: string
+}
+
+export interface SubmitLicenseInput {
+  dl_number: string
+  dl_storage_path?: string
+  vehicle_classes?: string[]
+  expiry_date?: string
+}
+
+export type UpdateLicenseInput = Partial<SubmitLicenseInput>
+
+export interface SubmitInsuranceInput {
+  policy_number: string
+  provider?: string
+  storage_path?: string
+  expiry_date?: string
+}
+
+export interface LinkBankAccountInput {
+  account_number: string
+  ifsc: string
+  bank_name?: string
+  account_holder_name: string
+  is_primary?: boolean
+}
+
+export function getOnboardingProfile(): Promise<OnboardingProfile> {
+  return request<OnboardingProfile>('/onboarding/profile')
+}
+
+export function getOnboardingStatus(): Promise<OnboardingStatus> {
+  return request<OnboardingStatus>('/onboarding/status')
+}
+
+export function updateDriverProfile(
+  body: UpdateProfileInput,
+): Promise<{ driver: DriverProfile }> {
+  return request<{ driver: DriverProfile }>('/onboarding/profile', {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  })
+}
+
+export function getVehicles(): Promise<{ vehicles: Vehicle[] }> {
+  return request<{ vehicles: Vehicle[] }>('/onboarding/vehicles')
+}
+
+export function createVehicle(
+  body: CreateVehicleInput,
+): Promise<{ vehicle: Vehicle }> {
+  return request<{ vehicle: Vehicle }>('/onboarding/vehicle', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+export function submitLicense(
+  body: SubmitLicenseInput,
+): Promise<{ license: License }> {
+  return request<{ license: License }>('/onboarding/license', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+export function updateLicense(
+  body: UpdateLicenseInput,
+): Promise<{ license: License }> {
+  return request<{ license: License }>('/onboarding/license', {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  })
+}
+
+export function submitInsurance(
+  vehicleId: string,
+  body: SubmitInsuranceInput,
+): Promise<{ insurance: Insurance }> {
+  return request<{ insurance: Insurance }>(`/onboarding/vehicle/${vehicleId}/insurance`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+export function getBankAccounts(): Promise<{ bank_accounts: BankAccount[] }> {
+  return request<{ bank_accounts: BankAccount[] }>('/onboarding/bank-accounts')
+}
+
+export function linkBankAccount(
+  body: LinkBankAccountInput,
+): Promise<{ bank_account: BankAccount }> {
+  return request<{ bank_account: BankAccount }>('/onboarding/bank-account', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+export function deleteBankAccount(id: string): Promise<{ message: string }> {
+  return request<{ message: string }>(`/onboarding/bank-account/${id}`, {
+    method: 'DELETE',
+  })
 }
 
 // ── Auth types ────────────────────────────────────────────────
