@@ -12,6 +12,13 @@
 
 Legend: ✅ positive · ⚠️ watch · ❌ breach · — not yet observed.
 
+- **2026-07-05** — `backend` T-BE-5 (pricing cost-breakdown + JWT) CTO-VERIFIED + APPROVED + MERGED (be70d72):
+  isolated worktree at 1bf8407 → build exit 0, harness 17/17; fuel math spot-checked (HCV/100 = 100/3.5×90
+  = 2571→ceil 2572 ✓); JWT auth real (401 no/bad token). ✅✅ Flagged EVERY vehicle-class + constant
+  assumption in cto-cost.ts for the founder's Q9 decision rather than silently picking; adopted PRD Appendix A
+  taxonomy + aligned MCV/HCV mileage to frozen tracking D-009. Textbook honest handling of an underspecified
+  input. Closes the pricing DoD gap I'd wrongly called "done" earlier.
+
 - **2026-07-05** — `backend` T-BE-4 (cash payment) CTO-VERIFIED + APPROVED + MERGED: isolated worktree at
   5f9baae → 3 services build exit 0; payment.e2e 17/17 (cross-service), paid.e2e 9/9; NO regressions
   (lifecycle 18/18, booking-pod 11/11, cargo-pod 16/16 all green). Code audit: settle() idempotent
