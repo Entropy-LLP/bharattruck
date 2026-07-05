@@ -21,10 +21,17 @@ MVP bar but not blocking today. **P2** = hardening / hygiene. Owning node in **[
 >    monorepo folders now. Nobody pushes to the retired standalones/mirrors.
 > 3. **Blockchain / on-chain anchor = OUT** of MVP (deferred). **Receiver-OTP POD = IN.** Checkpoint
 >    photos may be captured but are NOT anchored on-chain for the first paid trip. Confirmed.
-> 4. **Pricing = the existing deterministic rate-card/CTO-breakdown quote engine (v1, already works)** with
->    quote-lock. The from-scratch Python/FastAPI + LinUCB rewrite is **OUT**. Quote-lock claim stays; no new
->    pricing week is scheduled — `bt-pricing-service` is spine-complete for the slice unless the slice needs
->    a specific fix.
+> 4. **Pricing = the existing deterministic rate-card quote engine (v1).** The from-scratch Python/FastAPI +
+>    LinUCB rewrite is **OUT**. **CORRECTION (2026-07-05, CTO-verified against code + PRD Part 11):** the
+>    earlier "spine-complete" call was WRONG. `bt-pricing-service/src/index.ts` is a single-file static
+>    rate-card (`distance × rate_per_km × load_mult`) returning only a COMMERCIAL split (base/platform_fee/
+>    driver_receives). It does **NOT** produce the PRD-DoD **fuel/driver/per-km operating-cost breakdown**
+>    (the "CTO cost-breakdown anchor", Appendix A) and has **no auth** (P1 #11). "Price locked at booking" is
+>    plausibly covered by booking-service's `awarded_quote_id` (the agreed auction price), but the breakdown
+>    visibility is a real gap. **Planned task T-BE-5 (deferred behind the core lifecycle→payment→ops slice):**
+>    add the deterministic CTO cost-breakdown (fuel = distance/mileage × diesel; driver wage; per-km) from
+>    Appendix A constants + a JWT boundary. NOT slice-blocking, but a PRD-DoD item — do not call pricing
+>    "done" until this lands.
 > 5. **Maps numbering reconciled to the frozen scheme:** decisions are **`D-001..D-013`** (inline "Decision
 >    1–8" labels are historical aliases, not a second scheme) and phases follow
 >    **`MAPS_TRACKING_SESSIONS.md` (Phase 0–6)**. `MAPS_TRACKING_PLAN.md §8`'s phase numbers are subordinate.
