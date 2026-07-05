@@ -12,6 +12,14 @@
 
 Legend: ✅ positive · ⚠️ watch · ❌ breach · — not yet observed.
 
+- **2026-07-05** — `backend` T-BE-2 (POD) CTO-VERIFIED + APPROVED: isolated detached worktree at 9aa5bbc →
+  both services `tsc` exit 0; booking pod harness 11/11, cargo cross-service harness 16/16 (27/27 total,
+  matches report). Code audit: crypto `randomInt` OTP, salted+peppered SHA-256, `timingSafeEqual` compare,
+  internal-auth fails closed. ✅✅ Also caught that the CTO's own "atomicity RPC" suggestion conflicted with
+  locked decisions and proved the as-built already blocks double-complete — I ruled in backend's favor
+  (Option A, defer RPC to T-BE-4). Excellent senior judgment. Real-Postgres pod_receipts/receiver_email
+  pending migration 010.
+
 - **2026-07-04** — `frontend` T-FE-2 CODE CTO-VERIFIED + APPROVED (visual demo deferred): isolated detached
   worktree at 11165a7 → shipper `next build` "✓ Compiled successfully" exit 0; TrackData types match the real
   bt-tracking-service /track shape exactly; 10s poll gated on in_transit with clearInterval cleanup; no stubs.
