@@ -1,48 +1,83 @@
-import type { FastifyInstance } from 'fastify'
+import type { FastifyInstance, FastifyReply, FastifyPluginOptions } from 'fastify'
 import { z } from 'zod'
+import { PaymentError } from '../lib/errors.js'
+import { settle, type PaymentDeps } from '../lib/payment-service.js'
+import { defaultBookingClient } from '../lib/booking-client.js'
+import { defaultPaymentStore } from '../lib/payment-store.js'
 
-const CreateOrderBody = z.object({
+// NOTE: the previous Razorpay/escrow handlers here (order/webhook/release)
+// were fabricated stubs (`rzp_stub_order_id`, TODO Sprint 7). Escrow is OUT
+// of the MVP (cash-recorded/direct first), so they are removed in favour of
+// the real settlement flow below. Escrow returns as a later upgrade.
+
+const SettleBody = z.object({
   booking_id: z.string().uuid(),
-  amount: z.number().positive(),   // in INR
-  shipper_id: z.string().uuid(),
+  amount:     z.number().positive(),
+  mode:       z.enum(['cash', 'upi', 'direct']),
+  reference:  z.string().max(200).optional(),
 })
 
-export async function paymentRoutes(app: FastifyInstance) {
+type PaymentRouteOptions = FastifyPluginOptions & { deps?: PaymentDeps }
 
-  // POST /payments/order — create Razorpay order (shipper pays into escrow)
-  app.post('/order', async (req, reply) => {
-    const body = CreateOrderBody.safeParse(req.body)
-    if (!body.success) return reply.status(400).send({ success: false, error: body.error.errors[0].message })
-    // TODO Sprint 7: create Razorpay order, store in Supabase, return order_id + key_id to client
-    return reply.status(201).send({
-      success: true,
-      data: {
-        order_id: 'rzp_stub_order_id',
-        amount: body.data.amount * 100,  // Razorpay uses paise
-        currency: 'INR',
-        note: 'Razorpay integration — Sprint 7',
-      },
-    })
+function handleError(reply: FastifyReply, err: unknown) {
+  if (err instanceof PaymentError) {
+    return reply.status(err.httpStatus).send({ success: false, error: err.message, code: err.code })
+  }
+  reply.log.error(err, 'Unhandled error in payment routes')
+  return reply.status(500).send({ success: false, error: 'Internal server error' })
+}
+
+// -----------------------------------------------------------
+// paymentRoutes — JWT-gated cash-recorded settlement (P1 #11).
+// Deps default to real wiring; tests register with injected deps.
+// -----------------------------------------------------------
+
+export async function paymentRoutes(app: FastifyInstance, opts: PaymentRouteOptions) {
+  const deps: PaymentDeps = opts.deps ?? {
+    booking: defaultBookingClient(),
+    store:   defaultPaymentStore(),
+    logger:  app.log,
+  }
+
+  // POST /payments/settle — ops/admin or paying shipper records a
+  // cash/UPI/direct settlement for a completed trip; booking → paid.
+  app.post('/settle', async (req, reply) => {
+    const body = SettleBody.safeParse(req.body)
+    if (!body.success) {
+      return reply.status(400).send({ success: false, error: body.error.errors[0].message, code: 'VALIDATION_ERROR' })
+    }
+    try {
+      const data = await settle(
+        { bookingId: body.data.booking_id, amount: body.data.amount, mode: body.data.mode, reference: body.data.reference ?? null },
+        req.user,
+        req.headers.authorization!,
+        deps,
+      )
+      return reply.send({ success: true, data })
+    } catch (err) {
+      return handleError(reply, err)
+    }
   })
 
-  // POST /payments/webhook — Razorpay webhook (payment confirmed → hold in escrow)
-  app.post('/webhook', async (req, reply) => {
-    // TODO Sprint 7: verify Razorpay signature, update payment status in Supabase
-    app.log.info({ body: req.body }, 'Razorpay webhook received')
-    return reply.send({ success: true })
-  })
-
-  // POST /payments/release — release escrow to driver (called after delivery confirmed)
-  app.post('/release', async (req, reply) => {
-    const { booking_id } = (req.body as any) ?? {}
-    // TODO Sprint 7: verify delivery status, initiate Razorpay payout to driver bank account
-    return reply.send({ success: true, data: { booking_id, status: 'payout_initiated', note: 'Sprint 7' } })
-  })
-
-  // GET /payments/status/:booking_id
+  // GET /payments/status/:booking_id — ops/admin or shipper-owner reads
+  // the recorded payment + payout for a booking.
   app.get('/status/:booking_id', async (req, reply) => {
-    const { booking_id } = req.params as { booking_id: string }
-    // TODO: fetch from Supabase
-    return reply.send({ success: true, data: { booking_id, status: 'stub' } })
+    const params = z.object({ booking_id: z.string().uuid() }).safeParse(req.params)
+    if (!params.success) {
+      return reply.status(400).send({ success: false, error: params.error.errors[0].message, code: 'VALIDATION_ERROR' })
+    }
+    const bookingId = params.data.booking_id
+    try {
+      if (req.user.role !== 'admin' && req.user.role !== 'shipper') {
+        throw new PaymentError('Not authorized to view settlement', 'FORBIDDEN', 403)
+      }
+      // Delegate ownership authz to booking-service (shipper must own it).
+      await deps.booking.getBooking(bookingId, req.headers.authorization!)
+      const payment = await deps.store.getPayment(bookingId)
+      const payout = await deps.store.getPayout(bookingId)
+      return reply.send({ success: true, data: { booking_id: bookingId, payment, payout } })
+    } catch (err) {
+      return handleError(reply, err)
+    }
   })
 }

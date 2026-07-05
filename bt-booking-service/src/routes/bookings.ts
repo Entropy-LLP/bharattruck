@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { BookingError, CreateBookingBodySchema } from '../lib/types.js'
 import * as svc from '../lib/service.js'
+import { emitTripCompleted } from '../lib/payment-emit.js'
 
 const UuidParamSchema = z.object({ id: z.string().uuid('id must be a valid UUID') })
 
@@ -111,6 +112,7 @@ export async function bookingRoutes(app: FastifyInstance) {
     if (!id) return
     try {
       const booking = await svc.completeBooking(id, req.user)
+      emitTripCompleted(booking, req.log)  // best-effort payout-saga trigger
       return reply.send({ success: true, data: booking })
     } catch (err) {
       return handleError(reply, err)

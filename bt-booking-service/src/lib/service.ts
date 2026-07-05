@@ -233,6 +233,40 @@ export async function completeBookingViaPod(bookingId: string): Promise<DbBookin
 }
 
 // -----------------------------------------------------------
+// markBookingPaid
+// Trusted internal transition completed → paid, driven by a
+// recorded cash/direct settlement in bt-payment-service. Same
+// state machine + repository path as the driver flow (the state
+// machine is NOT forked). No driver actor — the authority is the
+// settlement recorded upstream — so we transition on the booking's
+// own driver_id. Idempotency is upstream (payment-service unique
+// per booking); here the optimistic WHERE status='completed' guard
+// means a replay after the flip returns 409, never a double-apply.
+// -----------------------------------------------------------
+
+export async function markBookingPaid(bookingId: string): Promise<DbBooking> {
+  const booking = await repo.getBookingById(bookingId)
+  if (!booking) {
+    throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
+  }
+  if (!booking.driver_id) {
+    throw new BookingError('Booking has no assigned driver', 'INVALID_TRANSITION', 409)
+  }
+
+  assertValidTransition(booking.status, 'paid')
+
+  const updated = await repo.transitionBookingStatus(bookingId, booking.driver_id, booking.status, 'paid')
+  if (!updated) {
+    throw new BookingError(
+      'Booking could not be marked paid — its status changed concurrently',
+      'INVALID_TRANSITION',
+      409,
+    )
+  }
+  return updated
+}
+
+// -----------------------------------------------------------
 // cancelBooking
 // Shipper can cancel their own booking; driver can cancel
 // only a booking assigned to them. Both can cancel from

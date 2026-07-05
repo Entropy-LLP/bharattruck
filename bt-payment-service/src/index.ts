@@ -1,7 +1,10 @@
 import 'dotenv/config'
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
+import authPlugin from './plugins/auth.js'
+import internalAuthPlugin from './plugins/internal-auth.js'
 import { paymentRoutes } from './routes/payments.js'
+import { internalPaymentRoutes } from './routes/internal.js'
 
 const app = Fastify({
   logger: {
@@ -12,8 +15,22 @@ const app = Fastify({
 
 async function bootstrap() {
   await app.register(cors, { origin: true })
-  await app.register(paymentRoutes, { prefix: '/payments' })
+
+  // Health check — no auth required
   app.get('/health', () => ({ status: 'ok', service: 'bt-payment-service', ts: new Date().toISOString() }))
+
+  // JWT-gated money endpoints (P1 #11)
+  await app.register(async (authedApp) => {
+    await authedApp.register(authPlugin)
+    await authedApp.register(paymentRoutes, { prefix: '/payments' })
+  })
+
+  // Internal service-to-service routes (shared-secret gated, not public)
+  await app.register(async (internalApp) => {
+    await internalApp.register(internalAuthPlugin)
+    await internalApp.register(internalPaymentRoutes, { prefix: '/internal' })
+  })
+
   await app.listen({ port: Number(process.env.PORT ?? 3004), host: '0.0.0.0' })
 }
 
