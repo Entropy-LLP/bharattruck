@@ -12,6 +12,17 @@
 
 Legend: ✅ positive · ⚠️ watch · ❌ breach · — not yet observed.
 
+- **2026-07-05** — `backend` T-BE-4 (cash payment) CTO-VERIFIED + APPROVED + MERGED: isolated worktree at
+  5f9baae → 3 services build exit 0; payment.e2e 17/17 (cross-service), paid.e2e 9/9; NO regressions
+  (lifecycle 18/18, booking-pod 11/11, cargo-pod 16/16 all green). Code audit: settle() idempotent
+  (unique booking_id), self-healing, HARD-fails on money (throws, not best-effort), correct authz. ✅✅ Also
+  REMOVED the fabricated Razorpay escrow stubs (rzp_stub_order_id/"TODO Sprint 7") + dropped razorpay dep —
+  enacts the escrow-OUT decision + clears a no-stubs-in-main violation; flagged it for a ruling (correct).
+  Migration 011 authored to its schema. Excellent, careful money-path work.
+- **2026-07-05** — `frontend` T-FE-2 retrofit CTO-VERIFIED + APPROVED + MERGED: shipper build green; clean
+  rebase onto main; shadcn Card/Badge wrap with localizable badge labels (not hardcoded in JSX); frozen Maps
+  contract intact. main advanced to ceada44 (S1-S4 code + tracking all integrated).
+
 - **2026-07-05** — `frontend` shadcn-foundation CTO-VERIFIED + APPROVED + MERGED to main: isolated worktree at
   52f45f5 → both apps `✓ Compiled successfully` exit 0; verified the flagged risk (lib/utils.ts kept cn() AND
   all 5 existing helpers in both apps — reconciliation real, no lost helper); no stubs in ui primitives;
