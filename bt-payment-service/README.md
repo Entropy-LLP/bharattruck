@@ -1,5 +1,7 @@
 # bt-payment-service
 
+> **MVP note (T-BE-4):** the MVP settles **cash-recorded / direct** (`POST /payments/settle` → booking `paid` + driver payout record). **Razorpay escrow is OUT of the MVP** (a later upgrade), so the previous escrow/Razorpay stub routes (`/order`, `/webhook`, `/release`, `rzp_stub_order_id`) were removed. The escrow lifecycle described below is aspirational/deferred, not current behaviour.
+
 Payment microservice for LogisticOS — handles escrow-based payments between shippers and drivers via Razorpay.
 
 ## Overview
