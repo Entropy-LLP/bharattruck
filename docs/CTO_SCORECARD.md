@@ -12,6 +12,14 @@
 
 Legend: ✅ positive · ⚠️ watch · ❌ breach · — not yet observed.
 
+- **2026-07-05** — `frontend` shadcn-foundation CTO-VERIFIED + APPROVED + MERGED to main: isolated worktree at
+  52f45f5 → both apps `✓ Compiled successfully` exit 0; verified the flagged risk (lib/utils.ts kept cn() AND
+  all 5 existing helpers in both apps — reconciliation real, no lost helper); no stubs in ui primitives;
+  frozen Maps contract untouched (shadcn = chrome only). Good catch on the init-overwrites-utils gotcha.
+- **2026-07-05** — INTEGRATION milestone: main advanced a3cdcf6 → b5511d1 (pushed origin) = CTO infra +
+  T-FE-1 + T-BE-1 (lifecycle) + T-BE-2 (POD) + shadcn + migrations 009/010. All CTO-verified before merge;
+  lifecycle 18/18 re-passed on integrated tree. First real main integration.
+
 - **2026-07-05** — `backend` T-BE-2 (POD) CTO-VERIFIED + APPROVED: isolated detached worktree at 9aa5bbc →
   both services `tsc` exit 0; booking pod harness 11/11, cargo cross-service harness 16/16 (27/27 total,
   matches report). Code audit: crypto `randomInt` OTP, salted+peppered SHA-256, `timingSafeEqual` compare,
