@@ -26,6 +26,12 @@ Legend: ✅ positive · ⚠️ watch · ❌ breach · — not yet observed.
   Told to rebase onto 43b8010 + strip the /portal fleet mock before integrate.
 - **2026-07-09** — `frontend` T-FE-3 rebased (e8ac7f0), /portal mock fully stripped, build green — re-verified
   by CTO and MERGED to main (1130fd5). Ops console real + integrated. T-FE-4 (override buttons) cleared to start.
+- **2026-07-09** — `frontend` T-FE-4 (ops override buttons) CTO-VERIFIED + APPROVED + MERGED (a09cc37):
+  ops-web build green; forceCompleteBooking/reassignBooking are REAL gateway calls matching T-BE-6's
+  routes/ops.ts exactly; 403/404/409 surfaced; no fakes; driver_id input (picker deferred per CTO). This
+  completes the ops-override DoD + the last frontend slice item. **ENTIRE VERTICAL SLICE now code-complete +
+  CTO-verified on main** (S1 lifecycle → S2 tracking → S3 POD → S4 payment → pricing → S5 ops). Only the
+  tracking VISUAL (Phase-0 Maps-gated) + provisioning remain for a live demo.
 
 - **2026-07-05** — `backend` T-BE-5 (pricing cost-breakdown + JWT) CTO-VERIFIED + APPROVED + MERGED (be70d72):
   isolated worktree at 1bf8407 → build exit 0, harness 17/17; fuel math spot-checked (HCV/100 = 100/3.5×90
