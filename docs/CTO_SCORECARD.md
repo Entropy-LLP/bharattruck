@@ -12,6 +12,14 @@
 
 Legend: ✅ positive · ⚠️ watch · ❌ breach · — not yet observed.
 
+- **2026-07-09** — `backend` T-BE-7 FIX (67ec8ee) CTO-RE-VERIFIED + APPROVED + MERGED (1210ff2), GitHub CI
+  GREEN. Addressed the changes_requested fully AND caught a deeper 2nd layer I hadn't flagged (symlinked
+  file: dep can't resolve shared's transitive deps from its empty node_modules → fixed with committed dist +
+  bt-booking-service/.npmrc install-links=true). Verified in MY exact fresh-checkout test (git worktree, 0
+  node_modules): npm ci=0, shared resolves, build 0, 4 harnesses 18/11/9/16 green; then GitHub CI booking job
+  = success (34s). Turned the false-positive into a methodology upgrade (git-worktree fresh checkout as the
+  verification standard). Strong recovery from the earlier ⚠️.
+
 - **2026-07-09** — `backend` T-BE-7 (shared-libs Option C) → CHANGES_REQUESTED. Refactor design is sound
   (BookingError subclasses shared AppError, re-exports preserve harness import names, additive ErrorCode).
   BUT ⚠️ verification-depth miss: its "fresh checkout" prototype was a FALSE POSITIVE — packages/shared/
