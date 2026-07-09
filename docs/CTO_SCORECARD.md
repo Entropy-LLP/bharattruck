@@ -12,6 +12,15 @@
 
 Legend: ✅ positive · ⚠️ watch · ❌ breach · — not yet observed.
 
+- **2026-07-09** — `backend` T-BE-7 (shared-libs Option C) → CHANGES_REQUESTED. Refactor design is sound
+  (BookingError subclasses shared AppError, re-exports preserve harness import names, additive ErrorCode).
+  BUT ⚠️ verification-depth miss: its "fresh checkout" prototype was a FALSE POSITIVE — packages/shared/
+  node_modules still had typescript from an earlier install, so prepare's `tsc` ran. In a TRUE fresh checkout
+  (CTO reproduced: rm dist + shared/node_modules + booking/node_modules → npm ci) it FAILS `tsc: command not
+  found` → would turn main CI red. Not a breach (backend was transparent about HOW it tested, which surfaced
+  the gap), but a real reminder: reproduce the actual CI condition. Fix = commit shared dist + drop prepare,
+  re-verify against the exact fresh-checkout test. CTO stage-gate caught it before main.
+
 - **2026-07-09** — OUTAGE + RECOVERY: the claude-ipc broker + both engineer sessions went down for a
   multi-day gap. cto re-registered, sent heartbeats. Both engineers REVIVED, re-registered, re-sent reports.
   Diagnosis before revival: backend's T-BE-6 was complete-but-uncommitted in its worktree (I verified it in
