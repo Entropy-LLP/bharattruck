@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { AppError, type ErrorCode } from '@bharattruck/shared/errors'
 
 // -----------------------------------------------------------
 // BookingStatus — mirrors the DB enum booking_status exactly
@@ -111,15 +112,11 @@ export type BookingWithProfiles = DbBooking & {
 }
 
 // -----------------------------------------------------------
-// Auth types
+// Auth types — canonical in @bharattruck/shared/auth (the users.id vs
+// drivers.id identity contract lives there); re-exported for existing importers.
 // -----------------------------------------------------------
 
-export type UserRole = 'shipper' | 'driver' | 'admin'
-
-export type AuthenticatedUser = {
-  userId: string      // public.users.id (from JWT userId claim)
-  role: UserRole
-}
+export type { AuthenticatedUser, UserRole } from '@bharattruck/shared/auth'
 
 // -----------------------------------------------------------
 // CreateBookingBodySchema — request body for POST /bookings
@@ -179,31 +176,23 @@ export const CounterQuoteBodySchema = z.object({
 export type CounterQuoteBody = z.infer<typeof CounterQuoteBodySchema>
 
 // -----------------------------------------------------------
-// BookingError — domain error with HTTP status attached
+// BookingError — domain error, now a thin subclass of the shared AppError
+// (canonical error envelope in @bharattruck/shared/errors). Keeps the exact
+// (message, code, httpStatus=400) signature + a `.httpStatus` getter so every
+// existing call site and route handler is unchanged. Booking's domain codes
+// (AUCTION_CLOSED, DUPLICATE_QUOTE, QUOTE_NOT_FOUND, ALREADY_AWARDED) were added
+// to the shared ErrorCode union.
 // -----------------------------------------------------------
 
-export type BookingErrorCode =
-  | 'NOT_FOUND'
-  | 'FORBIDDEN'
-  | 'INVALID_TRANSITION'
-  | 'VALIDATION_ERROR'
-  | 'AUCTION_CLOSED'
-  | 'DUPLICATE_QUOTE'
-  | 'QUOTE_NOT_FOUND'
-  | 'ALREADY_AWARDED'
+export type BookingErrorCode = ErrorCode
 
-export class BookingError extends Error {
-  public readonly code: BookingErrorCode
-  public readonly httpStatus: number
-
-  constructor(
-    message: string,
-    code: BookingErrorCode,
-    httpStatus = 400,
-  ) {
-    super(message)
+export class BookingError extends AppError {
+  constructor(message: string, code: ErrorCode, httpStatus = 400) {
+    super(message, code, httpStatus)
     this.name = 'BookingError'
-    this.code = code
-    this.httpStatus = httpStatus
+  }
+
+  get httpStatus(): number {
+    return this.statusCode
   }
 }

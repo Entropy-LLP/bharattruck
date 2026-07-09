@@ -17,6 +17,12 @@ export type ErrorCode =
   | 'RATE_LIMITED'
   | 'UPSTREAM_ERROR'
   | 'INTERNAL'
+  // Booking-domain codes (auction/quote), added as bt-booking-service migrated onto
+  // shared errors (T-BE-7). Additive + backward-compatible for envelope consumers.
+  | 'AUCTION_CLOSED'
+  | 'DUPLICATE_QUOTE'
+  | 'QUOTE_NOT_FOUND'
+  | 'ALREADY_AWARDED'
 
 /** The single error envelope every service returns on failure. snake_case-friendly + stable. */
 export interface ErrorEnvelope {
