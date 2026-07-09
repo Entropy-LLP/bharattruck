@@ -6,12 +6,15 @@ import {
   listBookings,
   getBookingLocation,
   cancelBooking,
+  forceCompleteBooking,
+  reassignBooking,
   type Booking,
   type BookingStatus,
   type DriverLocation,
 } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
@@ -29,8 +32,12 @@ const STATUS_BADGE: Record<BookingStatus, { label: string; className: string }> 
   cancelled:   { label: 'Cancelled',   className: 'bg-red-500/15 text-red-500' },
 }
 
-// Backend cancelBooking accepts an admin/ops actor only from these states.
+// Which ops override each status permits (mirrors the T-BE-6 state guards).
 const CANCELLABLE: BookingStatus[] = ['pending', 'negotiating', 'accepted']
+const FORCE_COMPLETABLE: BookingStatus[] = ['accepted', 'in_transit']
+const REASSIGNABLE: BookingStatus[] = ['accepted', 'in_transit']
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 const LOCATION_POLL_MS = 15_000
 const STALE_AFTER_MS = 30_000
@@ -49,6 +56,10 @@ export default function TripsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [cancelTarget, setCancelTarget] = useState<Booking | null>(null)
+  const [forceTarget, setForceTarget] = useState<Booking | null>(null)
+  const [reassignTarget, setReassignTarget] = useState<Booking | null>(null)
+  const [reassignDriverId, setReassignDriverId] = useState('')
+  const [busy, setBusy] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -92,15 +103,55 @@ export default function TripsPage() {
   )
   const liveCount = inTransitIds.length
 
+  function applyUpdate(updated: Booking) {
+    setBookings(prev => prev.map(b => (b.id === updated.id ? updated : b)))
+  }
+
   async function confirmCancel() {
     if (!cancelTarget) return
     const id = cancelTarget.id
     setCancelTarget(null)
     try {
-      const updated = await cancelBooking(id)
-      setBookings(prev => prev.map(b => (b.id === id ? updated : b)))
+      applyUpdate(await cancelBooking(id))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Cancel failed')
+    }
+  }
+
+  async function confirmForceComplete() {
+    if (!forceTarget) return
+    const id = forceTarget.id
+    setBusy(true)
+    try {
+      applyUpdate(await forceCompleteBooking(id))
+      setForceTarget(null)
+      setError(null)
+    } catch (err) {
+      // Surface the real backend error (403 non-ops / 409 illegal source / 404).
+      setError(err instanceof Error ? err.message : 'Force-complete failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function confirmReassign() {
+    if (!reassignTarget) return
+    const driverId = reassignDriverId.trim()
+    if (!UUID_RE.test(driverId)) {
+      setError('Enter a valid driver UUID to reassign')
+      return
+    }
+    setBusy(true)
+    try {
+      applyUpdate(await reassignBooking(reassignTarget.id, driverId))
+      setReassignTarget(null)
+      setReassignDriverId('')
+      setError(null)
+    } catch (err) {
+      // Surface the real backend error (403 non-ops / 404 booking-or-driver-missing).
+      setError(err instanceof Error ? err.message : 'Reassign failed')
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -202,18 +253,44 @@ export default function TripsPage() {
                       )}
                     </TableCell>
                     <TableCell className="text-right">
-                      {CANCELLABLE.includes(b.status) ? (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="text-red-500 border-red-500/30 hover:bg-red-500/10"
-                          onClick={() => setCancelTarget(b)}
-                        >
-                          Cancel
-                        </Button>
-                      ) : (
-                        <span className="text-xs dark:text-[#555] text-[#A1A1AA]">—</span>
-                      )}
+                      {(() => {
+                        const canForce = FORCE_COMPLETABLE.includes(b.status)
+                        const canReassign = REASSIGNABLE.includes(b.status)
+                        const canCancel = CANCELLABLE.includes(b.status)
+                        if (!canForce && !canReassign && !canCancel) {
+                          return <span className="text-xs dark:text-[#555] text-[#A1A1AA]">—</span>
+                        }
+                        return (
+                          <div className="flex items-center justify-end gap-2">
+                            {canForce && (
+                              <Button
+                                variant="outline" size="sm"
+                                className="text-green-600 border-green-500/30 hover:bg-green-500/10"
+                                onClick={() => setForceTarget(b)}
+                              >
+                                Force-complete
+                              </Button>
+                            )}
+                            {canReassign && (
+                              <Button
+                                variant="outline" size="sm"
+                                onClick={() => { setReassignDriverId(''); setReassignTarget(b) }}
+                              >
+                                Reassign
+                              </Button>
+                            )}
+                            {canCancel && (
+                              <Button
+                                variant="outline" size="sm"
+                                className="text-red-500 border-red-500/30 hover:bg-red-500/10"
+                                onClick={() => setCancelTarget(b)}
+                              >
+                                Cancel
+                              </Button>
+                            )}
+                          </div>
+                        )
+                      })()}
                     </TableCell>
                   </TableRow>
                 )
@@ -223,13 +300,15 @@ export default function TripsPage() {
         </div>
       )}
 
-      {/* Override note: force-complete / reassign land once backend adds the
-          ops-only endpoints (raised as a blocker). Cancel is live today. */}
+      {/* Override capability note. */}
       <p className="text-xs dark:text-[#555] text-[#A1A1AA]">
-        Override: cancelling a stuck trip is available before pickup (pending / assigned).
-        Force-complete and reassign for in-transit trips are pending backend ops endpoints.
+        Ops overrides: <span className="font-medium">Cancel</span> (before pickup),
+        {' '}<span className="font-medium">Force-complete</span> and
+        {' '}<span className="font-medium">Reassign</span> (assigned / in transit) act on the
+        real trip via ops-only endpoints. Actions require an ops/admin session.
       </p>
 
+      {/* Cancel */}
       <Dialog open={!!cancelTarget} onOpenChange={(open) => !open && setCancelTarget(null)}>
         <DialogContent>
           <DialogHeader>
@@ -242,11 +321,59 @@ export default function TripsPage() {
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCancelTarget(null)}>Keep trip</Button>
-            <Button
-              className="bg-red-600 text-white hover:bg-red-700"
-              onClick={confirmCancel}
-            >
+            <Button className="bg-red-600 text-white hover:bg-red-700" onClick={confirmCancel}>
               Cancel trip
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Force-complete */}
+      <Dialog open={!!forceTarget} onOpenChange={(open) => !open && !busy && setForceTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Force-complete this trip?</DialogTitle>
+            <DialogDescription>
+              {forceTarget && (
+                <>Booking <span className="font-mono">{forceTarget.id.slice(0, 8)}…</span> ({forceTarget.shipper_name}) will be marked <span className="font-medium">delivered</span> and trigger payout — bypassing the driver. Use only when the trip is physically complete.</>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" disabled={busy} onClick={() => setForceTarget(null)}>Back</Button>
+            <Button className="bg-green-600 text-white hover:bg-green-700" disabled={busy} onClick={confirmForceComplete}>
+              {busy && <Loader2 size={14} className="animate-spin" />} Force-complete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Reassign */}
+      <Dialog open={!!reassignTarget} onOpenChange={(open) => !open && !busy && setReassignTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reassign to another driver</DialogTitle>
+            <DialogDescription>
+              {reassignTarget && (
+                <>Move booking <span className="font-mono">{reassignTarget.id.slice(0, 8)}…</span> to a different driver. The trip status is kept.</>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-1">
+            <label htmlFor="reassign-driver" className="text-sm font-medium">New driver ID (UUID)</label>
+            <Input
+              id="reassign-driver"
+              value={reassignDriverId}
+              onChange={(e) => setReassignDriverId(e.target.value)}
+              placeholder="e.g. 3f2a…-…-…"
+              autoComplete="off"
+              className="mt-1.5 font-mono"
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" disabled={busy} onClick={() => setReassignTarget(null)}>Back</Button>
+            <Button disabled={busy || !UUID_RE.test(reassignDriverId.trim())} onClick={confirmReassign}>
+              {busy && <Loader2 size={14} className="animate-spin" />} Reassign
             </Button>
           </DialogFooter>
         </DialogContent>
