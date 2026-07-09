@@ -265,10 +265,26 @@ export function getTrack(bookingId: string): Promise<TrackData> {
 }
 
 // ── Ops overrides ─────────────────────────────────────────────
-// cancelBooking is admin-capable today (pending/accepted). force-complete +
-// reassign need new ops-only endpoints (raised as a blocker to the CTO); they
-// will be added here once backend lands them.
+// All ops/admin-gated on the gateway (the JWT role is enforced server-side).
 
+/** Abort a trip before pickup (pending / negotiating / accepted). */
 export function cancelBooking(id: string): Promise<Booking> {
   return request<Booking>(`/bookings/${id}/cancel`, { method: 'PATCH' })
+}
+
+/**
+ * Force a stuck trip to completed (T-BE-6). Ops-only; valid source is
+ * accepted | in_transit (409 otherwise). Bypasses the assigned-driver guard
+ * and triggers the same payout saga as a normal completion.
+ */
+export function forceCompleteBooking(id: string): Promise<Booking> {
+  return request<Booking>(`/bookings/${id}/force-complete`, { method: 'POST' })
+}
+
+/** Reassign a trip to a different driver (T-BE-6). Ops-only; status kept. */
+export function reassignBooking(id: string, driverId: string): Promise<Booking> {
+  return request<Booking>(`/bookings/${id}/reassign`, {
+    method: 'POST',
+    body: JSON.stringify({ driver_id: driverId }),
+  })
 }
