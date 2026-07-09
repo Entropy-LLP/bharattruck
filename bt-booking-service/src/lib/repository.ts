@@ -239,3 +239,72 @@ export async function getDriverByUserId(
   if (error) throw new Error(`Driver lookup failed: ${error.message}`)
   return data
 }
+
+// -----------------------------------------------------------
+// getDriverById
+// Validate that a drivers.id exists (used by ops reassign).
+// -----------------------------------------------------------
+
+export async function getDriverById(
+  driverId: string,
+): Promise<{ id: string } | null> {
+  const { data, error } = await supabase
+    .from('drivers')
+    .select('id')
+    .eq('id', driverId)
+    .maybeSingle()
+
+  if (error) throw new Error(`Driver lookup failed: ${error.message}`)
+  return data
+}
+
+// -----------------------------------------------------------
+// forceTransitionByStatus
+// Ops override: atomically move a booking to toStatus from any of the
+// allowed source statuses, WITHOUT the assigned-driver guard (ops acts on
+// behalf of the platform). Optimistic on status only — returns null if the
+// booking is not in one of fromStatuses (already moved / illegal source).
+// -----------------------------------------------------------
+
+export async function forceTransitionByStatus(
+  bookingId: string,
+  fromStatuses: BookingStatus[],
+  toStatus: BookingStatus,
+): Promise<DbBooking | null> {
+  const { data, error } = await supabase
+    .from('bookings')
+    .update({
+      status:     toStatus,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', bookingId)
+    .in('status', fromStatuses)
+    .select('*')
+    .maybeSingle()
+
+  if (error) throw new Error(`DB force-transition failed: ${error.message}`)
+  return data as DbBooking | null
+}
+
+// -----------------------------------------------------------
+// reassignDriver
+// Ops override: set bookings.driver_id, keeping the current status.
+// -----------------------------------------------------------
+
+export async function reassignDriver(
+  bookingId: string,
+  driverId: string,
+): Promise<DbBooking | null> {
+  const { data, error } = await supabase
+    .from('bookings')
+    .update({
+      driver_id:  driverId,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', bookingId)
+    .select('*')
+    .maybeSingle()
+
+  if (error) throw new Error(`DB reassign failed: ${error.message}`)
+  return data as DbBooking | null
+}
