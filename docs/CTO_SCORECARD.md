@@ -24,6 +24,8 @@ Legend: ✅ positive · ⚠️ watch · ❌ breach · — not yet observed.
   bt-ops-web build green (lint+types OK); /ops/trips is REAL (gateway client, no mock, 15s location poll);
   real JWT/RBAC + OpsGuard + cancel override; junk deps fixed (claude-code removed, lucide-react 0.469).
   Told to rebase onto 43b8010 + strip the /portal fleet mock before integrate.
+- **2026-07-09** — `frontend` T-FE-3 rebased (e8ac7f0), /portal mock fully stripped, build green — re-verified
+  by CTO and MERGED to main (1130fd5). Ops console real + integrated. T-FE-4 (override buttons) cleared to start.
 
 - **2026-07-05** — `backend` T-BE-5 (pricing cost-breakdown + JWT) CTO-VERIFIED + APPROVED + MERGED (be70d72):
   isolated worktree at 1bf8407 → build exit 0, harness 17/17; fuel math spot-checked (HCV/100 = 100/3.5×90
