@@ -2,8 +2,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import {
-  LayoutDashboard, ShieldCheck, MapPin, Truck,
-  Users, AlertCircle, ChevronRight, Zap, type LucideIcon
+  LayoutDashboard, MapPin, ChevronRight, Zap, type LucideIcon
 } from 'lucide-react'
 
 interface NavItem {
@@ -13,26 +12,19 @@ interface NavItem {
   badge?: string
 }
 
+// Ops console only. Only real, built pages are surfaced. KYC review (backend
+// KYC is 501-stubbed — W5), Users, and Disputes are deferred to their own
+// slices and intentionally not linked until they're real. The fleet-owner
+// portal is a separate persona/slice (not part of the ops console).
 const OPS_NAV: NavItem[] = [
   { href: '/ops/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
-  { href: '/ops/kyc',       icon: ShieldCheck,    label: 'KYC Review',  badge: '12' },
-  { href: '/ops/trips',     icon: MapPin,         label: 'Live Trips',  badge: '34' },
-  { href: '/ops/users',     icon: Users,          label: 'Users' },
-  { href: '/ops/disputes',  icon: AlertCircle,    label: 'Disputes',    badge: '3' },
+  { href: '/ops/trips',     icon: MapPin,         label: 'Live Trips' },
 ]
 
-const FLEET_NAV: NavItem[] = [
-  { href: '/portal/dashboard', icon: LayoutDashboard, label: 'Overview' },
-  { href: '/portal/vehicles',  icon: Truck,           label: 'Vehicles' },
-  { href: '/portal/drivers',   icon: Users,           label: 'Drivers' },
-]
-
-interface SidebarProps { role: 'ops' | 'fleet' }
-
-export function Sidebar({ role }: SidebarProps) {
+export function Sidebar() {
   const pathname = usePathname()
-  const nav = role === 'ops' ? OPS_NAV : FLEET_NAV
-  const sectionLabel = role === 'ops' ? 'OPERATIONS' : 'FLEET PORTAL'
+  const nav = OPS_NAV
+  const sectionLabel = 'OPERATIONS'
 
   return (
     <aside className="w-60 shrink-0 flex flex-col h-screen
@@ -47,7 +39,7 @@ export function Sidebar({ role }: SidebarProps) {
         <div>
           <p className="font-bold text-sm dark:text-white text-[#09090B] leading-none">BharatTruck</p>
           <p className="text-[10px] dark:text-[#888] text-[#71717A] mt-0.5 leading-none">
-            {role === 'ops' ? 'Ops Console' : 'Fleet Portal'}
+            Ops Console
           </p>
         </div>
       </div>
@@ -93,7 +85,7 @@ export function Sidebar({ role }: SidebarProps) {
           <div className="flex-1 min-w-0">
             <p className="text-xs font-medium dark:text-white text-[#09090B] truncate">Admin User</p>
             <p className="text-[10px] dark:text-[#888] text-[#71717A]">
-              {role === 'ops' ? 'Ops Team' : 'Fleet Owner'}
+              Ops Team
             </p>
           </div>
         </div>

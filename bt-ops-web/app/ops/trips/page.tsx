@@ -1,156 +1,256 @@
-import type { Metadata } from 'next'
-import { Badge } from '@/components/badge'
-import { MapPin, Navigation, Clock, Truck, Phone, AlertTriangle } from 'lucide-react'
+'use client'
 
-export const metadata: Metadata = { title: 'Live Trips' }
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { MapPin, Truck, RefreshCw, Loader2, AlertTriangle } from 'lucide-react'
+import {
+  listBookings,
+  getBookingLocation,
+  cancelBooking,
+  type Booking,
+  type BookingStatus,
+  type DriverLocation,
+} from '@/lib/api'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import {
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+} from '@/components/ui/table'
+import {
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+} from '@/components/ui/dialog'
 
-const LIVE_TRIPS = [
-  { id: 'BT-2041', shipper: 'Raj Textiles', driver: 'Suresh Kumar', driverPhone: '98765 43210', from: 'Dharavi, Mumbai', to: 'Kharadi, Pune', vehicle: 'HCV · MH-04-AB-1234', progress: 68, eta: '47 min', status: 'in_transit', weight: '4,200 kg', cargo: 'Textiles' },
-  { id: 'BT-2042', shipper: 'Verma Foods', driver: 'Ramesh Singh', driverPhone: '87654 32109', from: 'Connaught Place, Delhi', to: 'Malviya Nagar, Jaipur', vehicle: 'LCV · DL-08-CD-5678', progress: 23, eta: '3h 12m', status: 'in_transit', weight: '1,800 kg', cargo: 'Perishables' },
-  { id: 'BT-2043', shipper: 'Patel Pharma', driver: 'Mehul Patel', driverPhone: '76543 21098', from: 'GIDC, Ahmedabad', to: 'Surat Main Market', vehicle: 'Mini Truck · GJ-01-EF-9012', progress: 91, eta: '8 min', status: 'near_destination', weight: '600 kg', cargo: 'Pharma' },
-  { id: 'BT-2044', shipper: 'Nair Spices', driver: 'Venkat Rao', driverPhone: '65432 10987', from: 'Koramangala, Bangalore', to: 'T. Nagar, Chennai', vehicle: 'HCV · KA-05-GH-3456', progress: 5, eta: '8h 40m', status: 'pickup_confirmed', weight: '6,000 kg', cargo: 'General' },
-  { id: 'BT-2045', shipper: 'Gupta Metals', driver: 'Arvind Yadav', driverPhone: '54321 09876', from: 'Howrah, Kolkata', to: 'Patna Junction', vehicle: 'Trailer · WB-02-IJ-7890', progress: 44, eta: '2h 5m', status: 'in_transit', weight: '12,000 kg', cargo: 'Heavy Machinery' },
-]
+const STATUS_BADGE: Record<BookingStatus, { label: string; className: string }> = {
+  pending:     { label: 'Pending',     className: 'bg-zinc-500/15 text-zinc-500' },
+  negotiating: { label: 'Negotiating', className: 'bg-blue-500/15 text-blue-500' },
+  accepted:    { label: 'Assigned',    className: 'bg-amber-500/15 text-amber-500' },
+  in_transit:  { label: 'In Transit',  className: 'bg-[#F97316]/15 text-[#F97316]' },
+  completed:   { label: 'Delivered',   className: 'bg-green-500/15 text-green-600' },
+  paid:        { label: 'Paid',        className: 'bg-emerald-500/15 text-emerald-600' },
+  cancelled:   { label: 'Cancelled',   className: 'bg-red-500/15 text-red-500' },
+}
 
-const STATUS_CONF: Record<string, { variant: 'accent'|'success'|'warning'|'info'|'muted'|'error'; label: string }> = {
-  in_transit:        { variant: 'accent',  label: 'In Transit'    },
-  near_destination:  { variant: 'success', label: 'Near Dest.'    },
-  pickup_confirmed:  { variant: 'info',    label: 'Just Started'  },
+// Backend cancelBooking accepts an admin/ops actor only from these states.
+const CANCELLABLE: BookingStatus[] = ['pending', 'negotiating', 'accepted']
+
+const LOCATION_POLL_MS = 15_000
+const STALE_AFTER_MS = 30_000
+
+function ageText(ms: number): string {
+  const s = Math.floor(ms / 1000)
+  if (s < 60) return `${s}s ago`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m ago`
+  return `${Math.floor(m / 60)}h ago`
 }
 
 export default function TripsPage() {
+  const [bookings, setBookings] = useState<Booking[]>([])
+  const [locations, setLocations] = useState<Record<string, DriverLocation | null>>({})
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [cancelTarget, setCancelTarget] = useState<Booking | null>(null)
+
+  const load = useCallback(async () => {
+    try {
+      const data = await listBookings()
+      setBookings(data)
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load trips')
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  // Live location for in-transit trips, refreshed on an interval (D-010).
+  const inTransitIds = useMemo(
+    () => bookings.filter(b => b.status === 'in_transit').map(b => b.id),
+    [bookings],
+  )
+  useEffect(() => {
+    if (inTransitIds.length === 0) return
+    let cancelled = false
+    async function pollLocations() {
+      const entries = await Promise.all(
+        inTransitIds.map(async (id) => {
+          try { return [id, await getBookingLocation(id)] as const }
+          catch { return [id, null] as const }
+        }),
+      )
+      if (!cancelled) setLocations(Object.fromEntries(entries))
+    }
+    pollLocations()
+    const t = setInterval(pollLocations, LOCATION_POLL_MS)
+    return () => { cancelled = true; clearInterval(t) }
+  }, [inTransitIds])
+
+  const active = useMemo(
+    () => bookings.filter(b => b.status !== 'cancelled'),
+    [bookings],
+  )
+  const liveCount = inTransitIds.length
+
+  async function confirmCancel() {
+    if (!cancelTarget) return
+    const id = cancelTarget.id
+    setCancelTarget(null)
+    try {
+      const updated = await cancelBooking(id)
+      setBookings(prev => prev.map(b => (b.id === id ? updated : b)))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Cancel failed')
+    }
+  }
+
   return (
     <div className="p-6 space-y-5 max-w-7xl mx-auto">
-
       <div className="flex items-center justify-between flex-wrap gap-4">
         <div>
           <h1 className="text-2xl font-bold dark:text-white text-[#09090B]">Live Trips</h1>
           <p className="text-sm dark:text-[#888] text-[#71717A] mt-1">
-            34 active trips across 2 cities
+            {loading ? 'Loading…' : `${active.length} active · ${liveCount} in transit`}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full bg-[#22C55E] animate-pulse" />
-          <span className="text-sm font-medium text-[#22C55E]">Live tracking active</span>
+        <div className="flex items-center gap-3">
+          {liveCount > 0 && (
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-[#22C55E] animate-pulse" />
+              <span className="text-sm font-medium text-[#22C55E]">Live tracking active</span>
+            </div>
+          )}
+          <Button variant="outline" size="sm" onClick={() => load()}>
+            <RefreshCw size={14} /> Refresh
+          </Button>
         </div>
       </div>
 
-      {/* Map placeholder */}
-      <div className="relative w-full h-56 rounded-2xl overflow-hidden
-        dark:bg-[#111111] bg-[#F4F4F5]
-        dark:border-[#2A2A2A] border-[#E4E4E7] border
-        flex items-center justify-center">
-        <div className="absolute inset-0 opacity-10"
-          style={{
-            backgroundImage: 'radial-gradient(#F97316 1px, transparent 1px)',
-            backgroundSize: '32px 32px',
-          }} />
-        {/* Mock route lines */}
-        <svg className="absolute inset-0 w-full h-full opacity-30" viewBox="0 0 800 224">
-          <path d="M 80 180 Q 300 60 500 100 T 720 80" stroke="#F97316" strokeWidth="2" fill="none" strokeDasharray="6 3" />
-          <path d="M 120 160 Q 250 40 600 120" stroke="#3B82F6" strokeWidth="2" fill="none" strokeDasharray="6 3" />
-          <circle cx="80" cy="180" r="5" fill="#F97316" />
-          <circle cx="720" cy="80" r="5" fill="#F97316" />
-          <circle cx="500" cy="100" r="8" fill="#F97316" className="animate-ping" opacity="0.5" />
-        </svg>
-        <div className="relative text-center">
-          <MapPin size={24} className="text-[#F97316] mx-auto mb-2" />
-          <p className="text-sm font-medium dark:text-white text-[#09090B]">Live Map</p>
-          <p className="text-xs dark:text-[#888] text-[#71717A]">Google Maps integration · Sprint 3</p>
+      {error && (
+        <div className="flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-500">
+          <AlertTriangle size={15} /> {error}
         </div>
-      </div>
+      )}
 
-      {/* Trips list */}
-      <div className="space-y-3">
-        {LIVE_TRIPS.map(trip => (
-          <div key={trip.id}
-            className="dark:bg-[#111111] bg-white rounded-2xl border dark:border-[#2A2A2A] border-[#E4E4E7] p-5
-              hover:dark:border-[#3A3A3A] hover:border-[#D4D4D8] transition-all">
-            <div className="flex items-start justify-between gap-4 mb-4">
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-xl bg-[#F97316]/10 flex items-center justify-center">
-                  <Truck size={16} className="text-[#F97316]" />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-sm font-semibold dark:text-white text-[#09090B]">{trip.id}</span>
-                    <Badge variant={STATUS_CONF[trip.status].variant} dot>
-                      {STATUS_CONF[trip.status].label}
-                    </Badge>
-                    {trip.cargo === 'Perishables' && (
-                      <span className="text-[10px] bg-[#FBBF24]/10 text-[#FBBF24] px-1.5 py-0.5 rounded-full font-semibold border border-[#FBBF24]/20">
-                        PERISHABLE
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-xs dark:text-[#888] text-[#71717A] mt-0.5">{trip.shipper} · {trip.cargo} · {trip.weight}</p>
-                </div>
-              </div>
-              <div className="flex items-center gap-1.5 dark:text-[#888] text-[#71717A] shrink-0">
-                <Clock size={12} />
-                <span className="text-xs font-medium">ETA {trip.eta}</span>
-              </div>
-            </div>
+      {loading ? (
+        <div className="flex items-center justify-center py-20">
+          <Loader2 className="h-6 w-6 animate-spin text-[#F97316]" />
+        </div>
+      ) : active.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-20 text-center">
+          <Truck size={28} className="text-[#F97316] mb-3" />
+          <p className="text-sm dark:text-white text-[#09090B] font-medium">No active trips</p>
+          <p className="text-xs dark:text-[#888] text-[#71717A] mt-1">Trips appear here once a booking is placed.</p>
+        </div>
+      ) : (
+        <div className="rounded-2xl border dark:border-[#2A2A2A] border-[#E4E4E7] overflow-hidden dark:bg-[#111111] bg-white">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Booking</TableHead>
+                <TableHead>Route</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Live position</TableHead>
+                <TableHead className="text-right">Override</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {active.map((b) => {
+                const loc = locations[b.id]
+                const ageMs = loc ? Date.now() - new Date(loc.updated_at).getTime() : Infinity
+                const fresh = ageMs <= STALE_AFTER_MS
+                const badge = STATUS_BADGE[b.status]
+                return (
+                  <TableRow key={b.id}>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        <div className="w-8 h-8 rounded-lg bg-[#F97316]/10 flex items-center justify-center shrink-0">
+                          <Truck size={14} className="text-[#F97316]" />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="font-mono text-xs dark:text-white text-[#09090B]">{b.id.slice(0, 8)}…</p>
+                          <p className="text-xs dark:text-[#888] text-[#71717A] truncate max-w-[160px]">{b.shipper_name}</p>
+                        </div>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <div className="text-xs dark:text-[#CCC] text-[#3F3F46] max-w-[220px]">
+                        <p className="truncate">{b.source_address}</p>
+                        <p className="truncate dark:text-[#888] text-[#71717A]">→ {b.destination_address}</p>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant="secondary" className={badge.className}>{badge.label}</Badge>
+                    </TableCell>
+                    <TableCell>
+                      {b.status === 'in_transit' ? (
+                        loc ? (
+                          <div className="flex items-center gap-1.5 text-xs">
+                            <MapPin size={12} className={fresh ? 'text-[#22C55E]' : 'text-amber-500'} />
+                            <span className="dark:text-[#CCC] text-[#3F3F46] font-mono">
+                              {loc.lat.toFixed(3)}, {loc.lng.toFixed(3)}
+                            </span>
+                            <span className={fresh ? 'text-[#22C55E]' : 'text-amber-500'}>
+                              · {ageText(ageMs)}
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="text-xs dark:text-[#888] text-[#71717A]">awaiting GPS…</span>
+                        )
+                      ) : (
+                        <span className="text-xs dark:text-[#555] text-[#A1A1AA]">—</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      {CANCELLABLE.includes(b.status) ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="text-red-500 border-red-500/30 hover:bg-red-500/10"
+                          onClick={() => setCancelTarget(b)}
+                        >
+                          Cancel
+                        </Button>
+                      ) : (
+                        <span className="text-xs dark:text-[#555] text-[#A1A1AA]">—</span>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                )
+              })}
+            </TableBody>
+          </Table>
+        </div>
+      )}
 
-            {/* Route */}
-            <div className="flex items-center gap-3 mb-4">
-              <div className="flex-1">
-                <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full bg-[#22C55E] shrink-0" />
-                  <p className="text-xs dark:text-white text-[#09090B] font-medium truncate">{trip.from}</p>
-                </div>
-                <div className="ml-1 w-px h-4 dark:bg-[#2A2A2A] bg-[#E4E4E7] my-0.5" />
-                <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full bg-[#F97316] shrink-0" />
-                  <p className="text-xs dark:text-white text-[#09090B] font-medium truncate">{trip.to}</p>
-                </div>
-              </div>
-            </div>
+      {/* Override note: force-complete / reassign land once backend adds the
+          ops-only endpoints (raised as a blocker). Cancel is live today. */}
+      <p className="text-xs dark:text-[#555] text-[#A1A1AA]">
+        Override: cancelling a stuck trip is available before pickup (pending / assigned).
+        Force-complete and reassign for in-transit trips are pending backend ops endpoints.
+      </p>
 
-            {/* Progress bar */}
-            <div className="mb-4">
-              <div className="flex items-center justify-between mb-1.5">
-                <span className="text-xs dark:text-[#888] text-[#71717A]">Progress</span>
-                <span className="text-xs font-semibold dark:text-white text-[#09090B]">{trip.progress}%</span>
-              </div>
-              <div className="w-full h-1.5 dark:bg-[#2A2A2A] bg-[#E4E4E7] rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-[#F97316] rounded-full transition-all"
-                  style={{ width: `${trip.progress}%` }} />
-              </div>
-            </div>
-
-            {/* Driver + actions */}
-            <div className="flex items-center justify-between pt-3 border-t dark:border-[#1A1A1A] border-[#F4F4F5]">
-              <div className="flex items-center gap-2">
-                <div className="w-6 h-6 rounded-full dark:bg-[#1A1A1A] bg-[#F4F4F5] flex items-center justify-center text-[10px] font-bold dark:text-white text-[#09090B]">
-                  {trip.driver[0]}
-                </div>
-                <span className="text-xs dark:text-[#888] text-[#71717A]">{trip.driver}</span>
-                <span className="text-xs dark:text-[#555] text-[#A1A1AA]">·</span>
-                <span className="text-xs dark:text-[#555] text-[#A1A1AA]">{trip.vehicle}</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium
-                  dark:bg-[#1A1A1A] bg-[#F4F4F5] dark:text-[#888] text-[#71717A]
-                  dark:hover:text-white hover:text-[#09090B] transition-colors
-                  dark:border-[#2A2A2A] border-[#E4E4E7] border">
-                  <Phone size={11} /> {trip.driverPhone}
-                </button>
-                <button className="p-1.5 rounded-lg text-[#FBBF24] hover:bg-[#FBBF24]/10 transition-colors" title="Flag trip">
-                  <AlertTriangle size={13} />
-                </button>
-                <button className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium
-                  dark:bg-[#1A1A1A] bg-[#F4F4F5] dark:text-white text-[#09090B]
-                  dark:border-[#2A2A2A] border-[#E4E4E7] border
-                  hover:border-[#F97316] transition-colors">
-                  <Navigation size={11} /> Track
-                </button>
-              </div>
-            </div>
-          </div>
-        ))}
-      </div>
+      <Dialog open={!!cancelTarget} onOpenChange={(open) => !open && setCancelTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Cancel this trip?</DialogTitle>
+            <DialogDescription>
+              {cancelTarget && (
+                <>Booking <span className="font-mono">{cancelTarget.id.slice(0, 8)}…</span> ({cancelTarget.shipper_name}) will be cancelled. This cannot be undone.</>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCancelTarget(null)}>Keep trip</Button>
+            <Button
+              className="bg-red-600 text-white hover:bg-red-700"
+              onClick={confirmCancel}
+            >
+              Cancel trip
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
