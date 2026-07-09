@@ -1,10 +1,12 @@
-# bt-ops-web — Next.js 14 standalone container for Cloud Run.
+# driver PWA — Next.js 16 standalone container for Cloud Run.
+# NEXT_PUBLIC_* are public (inlined into client JS) so they are baked at build time.
 FROM node:20-alpine AS builder
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
 ENV NEXT_PUBLIC_API_URL=https://bt-gateway-itcdoenefa-el.a.run.app
+ENV NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY=AIzaSyCxNs_ks8T_V2r_YDeTtvL53fBSWMChzYw
 RUN npm run build
 
 FROM node:20-alpine AS runner
