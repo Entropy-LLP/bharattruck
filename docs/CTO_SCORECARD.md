@@ -12,6 +12,19 @@
 
 Legend: ✅ positive · ⚠️ watch · ❌ breach · — not yet observed.
 
+- **2026-07-09** — OUTAGE + RECOVERY: the claude-ipc broker + both engineer sessions went down for a
+  multi-day gap. cto re-registered, sent heartbeats. Both engineers REVIVED, re-registered, re-sent reports.
+  Diagnosis before revival: backend's T-BE-6 was complete-but-uncommitted in its worktree (I verified it in
+  place: build + ops.e2e 16/16); backend then committed it itself. No main work lost (all on origin).
+- **2026-07-09** — `backend` T-BE-6 (ops overrides) CTO-VERIFIED (twice: uncommitted-in-worktree, then
+  committed 89b7b11) + APPROVED + MERGED (43b8010): build exit 0, ops.e2e 16/16 (force-complete/reassign,
+  ops/admin guards, audit rows, ops-source allowlist not forking the state machine), no regressions.
+  Migration 012 (ops_overrides + user_role 'admin') authored. Backend slice spine COMPLETE.
+- **2026-07-09** — `frontend` T-FE-3 (ops console) CTO-VERIFIED + APPROVED (pending rebase before merge):
+  bt-ops-web build green (lint+types OK); /ops/trips is REAL (gateway client, no mock, 15s location poll);
+  real JWT/RBAC + OpsGuard + cancel override; junk deps fixed (claude-code removed, lucide-react 0.469).
+  Told to rebase onto 43b8010 + strip the /portal fleet mock before integrate.
+
 - **2026-07-05** — `backend` T-BE-5 (pricing cost-breakdown + JWT) CTO-VERIFIED + APPROVED + MERGED (be70d72):
   isolated worktree at 1bf8407 → build exit 0, harness 17/17; fuel math spot-checked (HCV/100 = 100/3.5×90
   = 2571→ceil 2572 ✓); JWT auth real (401 no/bad token). ✅✅ Flagged EVERY vehicle-class + constant
