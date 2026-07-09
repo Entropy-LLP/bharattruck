@@ -7,6 +7,7 @@ import { bookingRoutes } from './routes/bookings.js'
 import { quoteRoutes } from './routes/quotes.js'
 import { locationRoutes } from './routes/location.js'
 import { internalRoutes } from './routes/internal.js'
+import { opsRoutes } from './routes/ops.js'
 
 const app = Fastify({
   logger: {
@@ -26,6 +27,7 @@ async function bootstrap() {
     await authedApp.register(authPlugin)
     await authedApp.register(bookingRoutes, { prefix: '/bookings' })
     await authedApp.register(quoteRoutes, { prefix: '/bookings' })
+    await authedApp.register(opsRoutes, { prefix: '/bookings' })
     await authedApp.register(locationRoutes, { prefix: '/location' })
   })
 

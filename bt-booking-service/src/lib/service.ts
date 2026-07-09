@@ -267,6 +267,84 @@ export async function markBookingPaid(bookingId: string): Promise<DbBooking> {
 }
 
 // -----------------------------------------------------------
+// Ops overrides (admin/ops only) — force-complete a stuck trip and
+// reassign a booking's driver. These are the manual exception-handling
+// tools for the ops console (PRD Part 11 DoD). They bypass the
+// assigned-driver guard because ops acts on behalf of the platform, but
+// still keep the booking_status enum authoritative.
+//
+// NOTE (design, flagged to CTO): force-complete allows a source of
+// 'accepted' OR 'in_transit'. 'accepted'→'completed' is NOT a legal move
+// in the normal state machine (assertValidTransition would 409 it, and
+// drivers must go via in_transit), so this ops-only path validates against
+// an explicit source allowlist rather than assertValidTransition. The
+// in_transit→completed case is the same target the normal machine allows.
+// -----------------------------------------------------------
+
+const OPS_FORCE_COMPLETE_SOURCES: BookingStatus[] = ['accepted', 'in_transit']
+
+function assertOps(actor: AuthenticatedUser): void {
+  if (actor.role !== 'admin') {
+    throw new BookingError('Ops override requires an ops/admin role', 'FORBIDDEN', 403)
+  }
+}
+
+export async function forceCompleteBooking(
+  bookingId: string,
+  actor: AuthenticatedUser,
+): Promise<{ booking: DbBooking; fromStatus: BookingStatus }> {
+  assertOps(actor)
+
+  const booking = await repo.getBookingById(bookingId)
+  if (!booking) {
+    throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
+  }
+  if (!OPS_FORCE_COMPLETE_SOURCES.includes(booking.status)) {
+    throw new BookingError(
+      `Cannot force-complete a booking in '${booking.status}' status (only accepted or in_transit)`,
+      'INVALID_TRANSITION',
+      409,
+    )
+  }
+
+  const fromStatus = booking.status
+  const updated = await repo.forceTransitionByStatus(bookingId, OPS_FORCE_COMPLETE_SOURCES, 'completed')
+  if (!updated) {
+    throw new BookingError(
+      'Booking could not be force-completed — its status changed concurrently',
+      'INVALID_TRANSITION',
+      409,
+    )
+  }
+  return { booking: updated, fromStatus }
+}
+
+export async function reassignBooking(
+  bookingId: string,
+  driverId: string,
+  actor: AuthenticatedUser,
+): Promise<{ booking: DbBooking; fromDriverId: string | null }> {
+  assertOps(actor)
+
+  const booking = await repo.getBookingById(bookingId)
+  if (!booking) {
+    throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
+  }
+
+  const driver = await repo.getDriverById(driverId)
+  if (!driver) {
+    throw new BookingError(`Driver ${driverId} not found`, 'NOT_FOUND', 404)
+  }
+
+  const fromDriverId = booking.driver_id
+  const updated = await repo.reassignDriver(bookingId, driverId)
+  if (!updated) {
+    throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
+  }
+  return { booking: updated, fromDriverId }
+}
+
+// -----------------------------------------------------------
 // cancelBooking
 // Shipper can cancel their own booking; driver can cancel
 // only a booking assigned to them. Both can cancel from
