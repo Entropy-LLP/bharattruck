@@ -8,16 +8,21 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
-    "./errors": { "types": "./dist/errors.d.ts", "import": "./dist/errors.js" }
+    "./errors": { "types": "./dist/errors.d.ts", "import": "./dist/errors.js" },
+    "./auth": { "types": "./dist/auth.d.ts", "import": "./dist/auth.js" },
+    "./db": { "types": "./dist/db.d.ts", "import": "./dist/db.js" }
   },
   "scripts": {
     "build": "tsc",
     "test": "node --test --experimental-strip-types"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.43.4",
+    "jsonwebtoken": "^9.0.2",
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@types/jsonwebtoken": "^9.0.6",
     "typescript": "^5.4.5"
   }
 }
