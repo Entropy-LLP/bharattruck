@@ -12,6 +12,12 @@
 
 Legend: ✅ positive · ⚠️ watch · ❌ breach · — not yet observed.
 
+- **2026-07-09** — `frontend` T-FE-5 (driver PWA + Screen Wake Lock, D-008) CTO-VERIFIED + APPROVED + MERGED
+  (f6af302): SW correctly skips cross-origin (/api gateway) + all non-GET (live GPS/booking never cached —
+  the critical safety point); wake-lock feature-detected + re-acquires on visibilitychange + releases on
+  unmount; driver build green (16/16), re-confirmed on merged main. Redeployed to the live driver Cloud Run
+  app (wake-lock matters for on-corridor phone GPS). Solid work across T-FE-1..5.
+
 - **2026-07-09** — `backend` T-BE-7 FIX (67ec8ee) CTO-RE-VERIFIED + APPROVED + MERGED (1210ff2), GitHub CI
   GREEN. Addressed the changes_requested fully AND caught a deeper 2nd layer I hadn't flagged (symlinked
   file: dep can't resolve shared's transitive deps from its empty node_modules → fixed with committed dist +
