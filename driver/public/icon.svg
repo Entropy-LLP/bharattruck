@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="BharatTruck Driver">
+  <rect width="512" height="512" rx="112" fill="#2563eb"/>
+  <g fill="#ffffff">
+    <!-- cargo box -->
+    <rect x="96" y="196" width="200" height="120" rx="14"/>
+    <!-- cab -->
+    <path d="M296 236h64l52 56v24h-116z"/>
+    <!-- wheels -->
+    <circle cx="168" cy="340" r="34" fill="#1e3a8a"/>
+    <circle cx="168" cy="340" r="16" fill="#ffffff"/>
+    <circle cx="360" cy="340" r="34" fill="#1e3a8a"/>
+    <circle cx="360" cy="340" r="16" fill="#ffffff"/>
+  </g>
+</svg>
