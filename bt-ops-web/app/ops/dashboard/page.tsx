@@ -1,133 +1,120 @@
-import type { Metadata } from 'next'
+'use client'
+
+import { useEffect, useMemo, useState } from 'react'
+import { Truck, MapPin, TrendingUp, Loader2, AlertTriangle, PackageCheck } from 'lucide-react'
 import { StatCard } from '@/components/stat-card'
 import { Badge } from '@/components/badge'
-import {
-  Truck, Users, IndianRupee, MapPin,
-  ShieldCheck, TrendingUp, Clock, AlertCircle
-} from 'lucide-react'
+import { listBookings, type Booking, type BookingStatus } from '@/lib/api'
 
-export const metadata: Metadata = { title: 'Dashboard' }
-
-const RECENT_BOOKINGS = [
-  { id: 'BT-2041', shipper: 'Raj Textiles', route: 'Mumbai → Pune', driver: 'Suresh Kumar', amount: '₹4,200', status: 'in_transit' },
-  { id: 'BT-2040', shipper: 'Sharma Exports', route: 'Delhi → Jaipur', driver: 'Ramesh Singh', amount: '₹7,800', status: 'delivered' },
-  { id: 'BT-2039', shipper: 'Patel Agro', route: 'Ahmedabad → Surat', driver: 'Mehul Patel', amount: '₹3,500', status: 'pending' },
-  { id: 'BT-2038', shipper: 'Kapoor Logistics', route: 'Bangalore → Chennai', driver: 'Venkat Rao', amount: '₹9,200', status: 'delivered' },
-  { id: 'BT-2037', shipper: 'Singh Traders', route: 'Kolkata → Patna', driver: 'Arvind Yadav', amount: '₹5,600', status: 'cancelled' },
-]
-
-const STATUS_BADGE: Record<string, { variant: 'success'|'warning'|'error'|'info'|'muted'|'accent'; label: string }> = {
-  in_transit: { variant: 'accent',  label: 'In Transit' },
-  delivered:  { variant: 'success', label: 'Delivered'  },
-  pending:    { variant: 'warning', label: 'Pending'    },
-  cancelled:  { variant: 'error',   label: 'Cancelled'  },
+type BadgeVariant = 'success' | 'warning' | 'error' | 'info' | 'muted' | 'accent'
+const STATUS_BADGE: Record<BookingStatus, { variant: BadgeVariant; label: string }> = {
+  pending:     { variant: 'warning', label: 'Pending'     },
+  negotiating: { variant: 'info',    label: 'Negotiating' },
+  accepted:    { variant: 'accent',  label: 'Assigned'    },
+  in_transit:  { variant: 'accent',  label: 'In Transit'  },
+  completed:   { variant: 'success', label: 'Delivered'   },
+  paid:        { variant: 'success', label: 'Paid'        },
+  cancelled:   { variant: 'error',   label: 'Cancelled'   },
 }
 
-const KYC_QUEUE = [
-  { name: 'Ravi Shankar', role: 'Driver', doc: 'Driving License', time: '2 min ago' },
-  { name: 'Anjali Mehta', role: 'Shipper', doc: 'Aadhaar + PAN', time: '14 min ago' },
-  { name: 'Surya Fleet Pvt Ltd', role: 'Fleet Owner', doc: 'GST + Company PAN', time: '31 min ago' },
-]
+function inr(n: number): string {
+  return `₹${n.toLocaleString('en-IN')}`
+}
 
 export default function OpsDashboard() {
+  const [bookings, setBookings] = useState<Booking[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    listBookings()
+      .then((data) => { setBookings(data); setError(null) })
+      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load'))
+      .finally(() => setLoading(false))
+  }, [])
+
+  const stats = useMemo(() => {
+    const by = (s: BookingStatus) => bookings.filter(b => b.status === s).length
+    const inTransit = by('in_transit')
+    const active = bookings.filter(b => ['accepted', 'in_transit'].includes(b.status)).length
+    const delivered = by('completed') + by('paid')
+    const nonCancelled = bookings.filter(b => b.status !== 'cancelled').length
+    const completionRate = nonCancelled > 0 ? ((delivered / nonCancelled) * 100).toFixed(1) : '—'
+    return { total: bookings.length, inTransit, active, delivered, completionRate }
+  }, [bookings])
+
+  const recent = useMemo(
+    () => [...bookings]
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .slice(0, 6),
+    [bookings],
+  )
+
   return (
     <div className="p-6 space-y-6 max-w-7xl mx-auto">
-
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold dark:text-white text-[#09090B]">
-            Good morning, Ops Team 👋
-          </h1>
+          <h1 className="text-2xl font-bold dark:text-white text-[#09090B]">Operations Overview</h1>
           <p className="text-sm dark:text-[#888] text-[#71717A] mt-1">
-            Monday, 30 March 2026 · Mumbai
+            {loading ? 'Loading…' : `${stats.total} bookings on the platform`}
           </p>
         </div>
-        <div className="flex items-center gap-2 px-4 py-2 rounded-xl
-          dark:bg-[#22C55E]/10 bg-[#22C55E]/10
-          dark:border-[#22C55E]/20 border-[#22C55E]/20 border">
+        <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[#22C55E]/10 border-[#22C55E]/20 border">
           <span className="w-2 h-2 rounded-full bg-[#22C55E] animate-pulse" />
           <span className="text-sm font-medium text-[#22C55E]">Platform Live</span>
         </div>
       </div>
 
-      {/* Stats */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard label="Active Trips" value="34" sub="Across 2 cities" icon={MapPin}
-          trend={{ value: '12%', up: true }} accent />
-        <StatCard label="Total Users" value="1,248" sub="218 drivers · 1,030 shippers" icon={Users}
-          trend={{ value: '8%', up: true }} />
-        <StatCard label="GMV Today" value="₹2.4L" sub="↑ from ₹1.9L yesterday" icon={IndianRupee}
-          trend={{ value: '26%', up: true }} />
-        <StatCard label="KYC Pending" value="12" sub="3 flagged for review" icon={ShieldCheck}
-          trend={{ value: '3', up: false }} />
-      </div>
-
-      {/* Second row */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard label="Bookings Today" value="89" icon={Truck} trend={{ value: '5%', up: true }} />
-        <StatCard label="Completion Rate" value="96.2%" icon={TrendingUp} trend={{ value: '1.1%', up: true }} />
-        <StatCard label="Avg Match Time" value="4m 12s" sub="Target: &lt;5 min" icon={Clock} />
-        <StatCard label="Open Disputes" value="3" icon={AlertCircle} trend={{ value: '2', up: false }} />
-      </div>
-
-      {/* Tables */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-
-        {/* Recent bookings */}
-        <div className="lg:col-span-2 dark:bg-[#111111] bg-white rounded-2xl border dark:border-[#2A2A2A] border-[#E4E4E7]">
-          <div className="px-5 py-4 flex items-center justify-between border-b dark:border-[#2A2A2A] border-[#E4E4E7]">
-            <h2 className="font-semibold dark:text-white text-[#09090B]">Recent Bookings</h2>
-            <a href="/ops/trips" className="text-xs text-[#F97316] hover:underline font-medium">View all →</a>
-          </div>
-          <div className="divide-y dark:divide-[#1A1A1A] divide-[#F4F4F5]">
-            {RECENT_BOOKINGS.map(b => (
-              <div key={b.id} className="px-5 py-3.5 flex items-center gap-4 hover:dark:bg-[#1A1A1A] hover:bg-[#FAFAFA] transition-colors">
-                <div className="w-16 text-xs font-mono dark:text-[#555] text-[#A1A1AA]">{b.id}</div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium dark:text-white text-[#09090B] truncate">{b.shipper}</p>
-                  <p className="text-xs dark:text-[#888] text-[#71717A] truncate">{b.route}</p>
-                </div>
-                <div className="text-right hidden sm:block">
-                  <p className="text-sm font-semibold dark:text-white text-[#09090B]">{b.amount}</p>
-                  <p className="text-xs dark:text-[#888] text-[#71717A]">{b.driver}</p>
-                </div>
-                <Badge variant={STATUS_BADGE[b.status].variant}>
-                  {STATUS_BADGE[b.status].label}
-                </Badge>
-              </div>
-            ))}
-          </div>
+      {error && (
+        <div className="flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-500">
+          <AlertTriangle size={15} /> {error}
         </div>
+      )}
 
-        {/* KYC queue */}
-        <div className="dark:bg-[#111111] bg-white rounded-2xl border dark:border-[#2A2A2A] border-[#E4E4E7]">
-          <div className="px-5 py-4 flex items-center justify-between border-b dark:border-[#2A2A2A] border-[#E4E4E7]">
-            <h2 className="font-semibold dark:text-white text-[#09090B]">KYC Queue</h2>
-            <Badge variant="warning">12 pending</Badge>
+      {loading ? (
+        <div className="flex items-center justify-center py-20">
+          <Loader2 className="h-6 w-6 animate-spin text-[#F97316]" />
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <StatCard label="Active Trips" value={String(stats.active)} sub="Assigned + in transit" icon={MapPin} accent />
+            <StatCard label="In Transit" value={String(stats.inTransit)} sub="Live on the road now" icon={Truck} />
+            <StatCard label="Delivered" value={String(stats.delivered)} sub="Completed + paid" icon={PackageCheck} />
+            <StatCard label="Completion Rate" value={stats.completionRate === '—' ? '—' : `${stats.completionRate}%`} sub="Of non-cancelled trips" icon={TrendingUp} />
           </div>
-          <div className="divide-y dark:divide-[#1A1A1A] divide-[#F4F4F5]">
-            {KYC_QUEUE.map((item, i) => (
-              <div key={i} className="px-5 py-4 hover:dark:bg-[#1A1A1A] hover:bg-[#FAFAFA] transition-colors cursor-pointer">
-                <div className="flex items-start justify-between gap-2 mb-2">
-                  <p className="text-sm font-medium dark:text-white text-[#09090B]">{item.name}</p>
-                  <Badge variant="muted">{item.role}</Badge>
-                </div>
-                <p className="text-xs dark:text-[#888] text-[#71717A] mb-2">{item.doc}</p>
-                <div className="flex items-center justify-between">
-                  <p className="text-xs dark:text-[#555] text-[#A1A1AA]">{item.time}</p>
-                  <button className="text-xs text-[#F97316] font-medium hover:underline">Review →</button>
-                </div>
-              </div>
-            ))}
-            <div className="px-5 py-3 text-center">
-              <a href="/ops/kyc" className="text-xs text-[#F97316] hover:underline font-medium">
-                See all 12 pending →
-              </a>
+
+          <div className="dark:bg-[#111111] bg-white rounded-2xl border dark:border-[#2A2A2A] border-[#E4E4E7]">
+            <div className="px-5 py-4 flex items-center justify-between border-b dark:border-[#2A2A2A] border-[#E4E4E7]">
+              <h2 className="font-semibold dark:text-white text-[#09090B]">Recent Bookings</h2>
+              <a href="/ops/trips" className="text-xs text-[#F97316] hover:underline font-medium">View live trips →</a>
             </div>
+            {recent.length === 0 ? (
+              <p className="px-5 py-8 text-center text-sm dark:text-[#888] text-[#71717A]">No bookings yet.</p>
+            ) : (
+              <div className="divide-y dark:divide-[#1A1A1A] divide-[#F4F4F5]">
+                {recent.map((b) => {
+                  const badge = STATUS_BADGE[b.status]
+                  return (
+                    <div key={b.id} className="px-5 py-3.5 flex items-center gap-4 hover:dark:bg-[#1A1A1A] hover:bg-[#FAFAFA] transition-colors">
+                      <div className="w-16 text-xs font-mono dark:text-[#555] text-[#A1A1AA]">{b.id.slice(0, 8)}…</div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium dark:text-white text-[#09090B] truncate">{b.shipper_name}</p>
+                        <p className="text-xs dark:text-[#888] text-[#71717A] truncate">{b.source_address} → {b.destination_address}</p>
+                      </div>
+                      <div className="text-right hidden sm:block">
+                        <p className="text-sm font-semibold dark:text-white text-[#09090B]">{inr(b.final_price ?? b.quoted_price)}</p>
+                        <p className="text-xs dark:text-[#888] text-[#71717A]">{b.weight_kg} kg</p>
+                      </div>
+                      <Badge variant={badge.variant}>{badge.label}</Badge>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
           </div>
-        </div>
-      </div>
+        </>
+      )}
     </div>
   )
 }

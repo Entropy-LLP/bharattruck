@@ -1,11 +1,13 @@
 import { Sidebar } from '@/components/sidebar'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { Bell } from 'lucide-react'
+import { OpsGuard } from '@/components/ops-guard'
 
 export default function OpsLayout({ children }: { children: React.ReactNode }) {
   return (
+    <OpsGuard>
     <div className="flex h-screen dark:bg-[#09090B] bg-[#FAFAFA] overflow-hidden">
-      <Sidebar role="ops" />
+      <Sidebar />
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
 
         {/* Top bar */}
@@ -34,5 +36,6 @@ export default function OpsLayout({ children }: { children: React.ReactNode }) {
         </main>
       </div>
     </div>
+    </OpsGuard>
   )
 }
