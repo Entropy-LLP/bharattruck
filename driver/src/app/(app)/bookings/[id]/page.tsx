@@ -18,6 +18,7 @@ import {
 import type { Booking, Quote, NegotiationEntry } from '@/lib/types'
 import { formatPrice, formatDate, formatDateTime, relativeTime, getCountdown } from '@/lib/utils'
 import { quoteStatusConfig } from '@/lib/status'
+import { useScreenWakeLock } from '@/lib/use-wake-lock'
 import Spinner from '@/components/spinner'
 
 export default function BookingDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -694,6 +695,11 @@ function ActiveTripSection({
   const [elapsed, setElapsed] = useState('')
   const watchRef = useRef<number | null>(null)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Keep the screen awake for the whole in-transit trip so the OS doesn't
+  // throttle background GPS (frozen D-008). This section only renders while
+  // in_transit, so the lock is scoped to the active trip.
+  useScreenWakeLock(booking.status === 'in_transit')
 
   // Start GPS tracking on mount — best-effort, never blocks trip flow
   useEffect(() => {
