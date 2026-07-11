@@ -4,9 +4,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev:api": "tsx watch src/index.ts",
+    "dev:ml": "cd ml-engine && python -m uvicorn service:app --host 0.0.0.0 --port 8090",
+    "dev": "concurrently -n \"api,ml\" -c \"cyan,green\" \"npm run dev:api\" \"npm run dev:ml\"",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "pretrain": "cd ml-engine && python pretrain.py",
+    "start:api": "node dist/index.js",
+    "start:ml": "cd ml-engine && python -m uvicorn service:app --host 0.0.0.0 --port 8090",
+    "start": "concurrently -n \"api,ml\" -c \"cyan,green\" \"npm run start:api\" \"npm run start:ml\""
   },
   "dependencies": {
     "@fastify/cors": "^9.0.1",
@@ -20,6 +25,7 @@
   "devDependencies": {
     "@types/jsonwebtoken": "^9.0.6",
     "@types/node": "^20.14.0",
+    "concurrently": "^10.0.3",
     "tsx": "^4.15.1",
     "typescript": "^5.4.5"
   }
