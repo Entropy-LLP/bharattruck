@@ -1,0 +1,58 @@
+# docker-compose.yml
+# Docker Compose configuration to spin up a local development stack.
+# Starts a PostgreSQL database instance along with the Payment Service.
+# Configures volume persistence for DB data and health check sequencing.
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: payment_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: payment_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # Run PostgreSQL pg_isready to verify the database is accepting connections
+      test: ["CMD-SHELL", "pg_isready -U postgres -d payment_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: payment_service_app
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - ENV=development
+      - DEBUG=true
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - DB_NAME=payment_db
+      # Connect to the db container on the docker network
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/payment_db
+      - LOG_LEVEL=INFO
+      - LOG_FORMAT=text
+      - BACKEND_CORS_ORIGINS=http://localhost:3000,http://localhost:8000,http://127.0.0.1:3000,http://127.0.0.1:8000
+    depends_on:
+      db:
+        # Wait for the DB to pass its health checks before spinning up the app
+        condition: service_healthy
+    volumes:
+      # Mount local app directory to support hot-reload development
+      - ./app:/app/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+volumes:
+  pgdata:
+    driver: local

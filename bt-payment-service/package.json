@@ -4,9 +4,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev:api": "tsx watch src/index.ts",
+    "dev:gateway": "cd payment-gateway && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000",
+    "dev": "concurrently -n \"api,gateway\" -c \"cyan,magenta\" \"npm run dev:api\" \"npm run dev:gateway\"",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "db:migrate": "cd payment-gateway && python -m alembic upgrade head",
+    "start:api": "node dist/index.js",
+    "start:gateway": "cd payment-gateway && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000",
+    "start": "concurrently -n \"api,gateway\" -c \"cyan,magenta\" \"npm run start:api\" \"npm run start:gateway\""
   },
   "dependencies": {
     "@fastify/cors": "^9.0.1",
@@ -21,6 +26,7 @@
   "devDependencies": {
     "@types/jsonwebtoken": "^9.0.6",
     "@types/node": "^20.14.0",
+    "concurrently": "^10.0.3",
     "tsx": "^4.15.1",
     "typescript": "^5.4.5"
   }

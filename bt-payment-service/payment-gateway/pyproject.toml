@@ -1,0 +1,50 @@
+# pyproject.toml
+# This file centralizes configuration for Python tools such as linters, formatters, and type checkers.
+# It helps maintain a unified code style and linting standards across the development team.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+python_classes = ["Test*"]
+addopts = "-v --tb=short"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::UserWarning",
+]
+
+[tool.ruff]
+# Target Python version
+target-version = "py312"
+
+# Line length matching PEP 8 (relaxed slightly to 88 or 100 characters)
+line-length = 100
+
+# Specify source code directories
+src = ["app"]
+
+[tool.ruff.lint]
+# Select rules (E: pycodestyle, F: Pyflakes, I: isort, N: pep8-naming, UP: pyupgrade, B: bugbear)
+select = ["E", "F", "I", "N", "UP", "B", "C4", "SIM", "RUF"]
+ignore = [
+    "D100", # Missing docstring in public module (handled dynamically)
+    "D104", # Missing docstring in public package
+]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+known-first-party = ["app"]
+section-order = ["future", "standard-library", "third-party", "first-party", "local-folder"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_configs = true
+ignore_missing_imports = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+show_error_codes = true
+exclude = ["venv", ".venv", "alembic"]
