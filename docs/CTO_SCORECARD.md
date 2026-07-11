@@ -127,3 +127,13 @@ Legend: ✅ positive · ⚠️ watch · ❌ breach · — not yet observed.
   `nginx -t` (syntax ok). Infra owned by CTO until an infra engineer joins.
 
 _Nothing here is a final judgment — it's a running record the founder can audit at any time._
+
+- **2026-07-11** — SCOPE/COORD EVENT: a second coder (kartik, kinbox-ctrl) pushed 2 commits to main
+  (8ceaae4 "payment service", a961ddf "pricing service") adding Python engines — a FastAPI payment-gateway
+  with **escrow**+Razorpay and a Python **RL/ML** pricing engine — both OUT of MVP per the locked decisions,
+  and needing a Python runtime the Node Cloud Run Dockerfiles don't have (would crash the live deploy).
+  No force-push/no data loss (clean additive on top of 278438b; my verified TS services intact). Founder
+  ruling: QUARANTINE (keep MVP scope). CTO actions: preserved both commits on feat/python-engines (pushed),
+  then force-reset origin/main 278438b (verified TS cash-payment + deterministic pricing, matches live deploy
+  + DB schema + FE contract). Python escrow/RL = post-feasibility upgrade on that branch. Hygiene to fix
+  before any future merge: committed .pyc/__pycache__/.npz/.png artifacts.
