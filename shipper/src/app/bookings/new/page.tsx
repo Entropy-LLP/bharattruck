@@ -40,8 +40,14 @@ export default function NewBookingPage() {
   const [bookingType, setBookingType] = useState<'direct' | 'auction'>('auction')
 
   // Quote-affecting fields are controlled so we can (a) build the quote request
-  // and (b) invalidate a stale lock the moment any of them changes.
-  const [distanceKm, setDistanceKm] = useState('')
+  // and (b) invalidate a stale lock the moment any of them changes. The route
+  // coords drive the quote AND the booking: distance_km is DERIVED server-side
+  // from them (the shipper never types a distance), and the SAME coords are sent
+  // on booking-create so the booking binds to exactly what was priced.
+  const [sourceLat, setSourceLat] = useState('')
+  const [sourceLng, setSourceLng] = useState('')
+  const [destLat, setDestLat] = useState('')
+  const [destLng, setDestLng] = useState('')
   const [vehicleType, setVehicleType] = useState<PriceQuoteVehicleType>('lcv')
   const [loadType, setLoadType] = useState<PriceQuoteLoadType>('general')
   const [weightKg, setWeightKg] = useState('')
@@ -56,10 +62,13 @@ export default function NewBookingPage() {
   }
 
   async function handleGetQuote() {
-    const distance = parseFloat(distanceKm)
+    const sLat = parseFloat(sourceLat)
+    const sLng = parseFloat(sourceLng)
+    const dLat = parseFloat(destLat)
+    const dLng = parseFloat(destLng)
     const weight = parseFloat(weightKg)
-    if (!Number.isFinite(distance) || distance <= 0) {
-      toast.error('Enter a valid distance (km) before getting a quote')
+    if (![sLat, sLng, dLat, dLng].every(Number.isFinite)) {
+      toast.error('Enter valid pickup & drop coordinates before getting a quote')
       return
     }
     if (!Number.isFinite(weight) || weight <= 0) {
@@ -70,7 +79,10 @@ export default function NewBookingPage() {
     setQuoting(true)
     try {
       const q = await getPriceQuote({
-        distance_km: distance,
+        source_lat: sLat,
+        source_lng: sLng,
+        dest_lat: dLat,
+        dest_lng: dLng,
         vehicle_type: vehicleType,
         load_type: loadType,
         weight_kg: weight,
@@ -102,11 +114,13 @@ export default function NewBookingPage() {
 
     const payload = {
       source_address: form.get('source_address') as string,
-      source_lat: parseFloat(form.get('source_lat') as string),
-      source_lng: parseFloat(form.get('source_lng') as string),
+      // Same controlled coords + cargo that were priced, so the booking binds to
+      // the locked quote (server rejects any mismatch).
+      source_lat: parseFloat(sourceLat),
+      source_lng: parseFloat(sourceLng),
       destination_address: form.get('destination_address') as string,
-      dest_lat: parseFloat(form.get('dest_lat') as string),
-      dest_lng: parseFloat(form.get('dest_lng') as string),
+      dest_lat: parseFloat(destLat),
+      dest_lng: parseFloat(destLng),
       load_type: loadType,
       weight_kg: weight,
       quote_id: quote.quote_id,
@@ -161,11 +175,29 @@ export default function NewBookingPage() {
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label htmlFor="source_lat" className={labelClass}>Latitude</label>
-                <input id="source_lat" name="source_lat" type="number" step="any" required className={inputClass} placeholder="19.0760" />
+                <input
+                  id="source_lat"
+                  type="number"
+                  step="any"
+                  required
+                  value={sourceLat}
+                  onChange={(e) => { setSourceLat(e.target.value); invalidateQuote() }}
+                  className={inputClass}
+                  placeholder="19.0760"
+                />
               </div>
               <div>
                 <label htmlFor="source_lng" className={labelClass}>Longitude</label>
-                <input id="source_lng" name="source_lng" type="number" step="any" required className={inputClass} placeholder="72.8777" />
+                <input
+                  id="source_lng"
+                  type="number"
+                  step="any"
+                  required
+                  value={sourceLng}
+                  onChange={(e) => { setSourceLng(e.target.value); invalidateQuote() }}
+                  className={inputClass}
+                  placeholder="72.8777"
+                />
               </div>
             </div>
           </fieldset>
@@ -180,11 +212,29 @@ export default function NewBookingPage() {
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label htmlFor="dest_lat" className={labelClass}>Latitude</label>
-                <input id="dest_lat" name="dest_lat" type="number" step="any" required className={inputClass} placeholder="12.9716" />
+                <input
+                  id="dest_lat"
+                  type="number"
+                  step="any"
+                  required
+                  value={destLat}
+                  onChange={(e) => { setDestLat(e.target.value); invalidateQuote() }}
+                  className={inputClass}
+                  placeholder="12.9716"
+                />
               </div>
               <div>
                 <label htmlFor="dest_lng" className={labelClass}>Longitude</label>
-                <input id="dest_lng" name="dest_lng" type="number" step="any" required className={inputClass} placeholder="77.5946" />
+                <input
+                  id="dest_lng"
+                  type="number"
+                  step="any"
+                  required
+                  value={destLng}
+                  onChange={(e) => { setDestLng(e.target.value); invalidateQuote() }}
+                  className={inputClass}
+                  placeholder="77.5946"
+                />
               </div>
             </div>
           </fieldset>
@@ -222,19 +272,6 @@ export default function NewBookingPage() {
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label htmlFor="distance_km" className={labelClass}>Distance (km)</label>
-                <input
-                  id="distance_km"
-                  type="number"
-                  min="1"
-                  step="any"
-                  value={distanceKm}
-                  onChange={(e) => { setDistanceKm(e.target.value); invalidateQuote() }}
-                  className={inputClass}
-                  placeholder="1400"
-                />
-              </div>
-              <div>
                 <label htmlFor="weight_kg" className={labelClass}>Weight (kg)</label>
                 <input
                   id="weight_kg"
@@ -245,6 +282,11 @@ export default function NewBookingPage() {
                   className={inputClass}
                   placeholder="5000"
                 />
+              </div>
+              <div className="flex items-end">
+                <p className="text-xs text-gray-500 pb-2">
+                  Distance is calculated from the pickup &amp; drop coordinates above.
+                </p>
               </div>
             </div>
 
@@ -263,10 +305,13 @@ export default function NewBookingPage() {
               {quote && (
                 <div className="mt-4 rounded-lg border border-green-200 bg-green-50 p-4">
                   <div className="flex items-baseline justify-between">
-                    <span className="text-sm font-semibold text-gray-900">Locked Price</span>
+                    <span className="text-sm font-semibold text-gray-900">
+                      {bookingType === 'auction' ? 'Estimated Price' : 'Locked Price'}
+                    </span>
                     <span className="text-lg font-bold text-green-700">{inr(quote.quoted_price)}</span>
                   </div>
                   <dl className="mt-3 space-y-1 text-xs text-gray-600">
+                    <div className="flex justify-between text-gray-500"><dt>Distance (est.)</dt><dd>{quote.breakdown.distance_km} km</dd></div>
                     <div className="flex justify-between"><dt>Fuel</dt><dd>{inr(quote.breakdown.fuel_cost)}</dd></div>
                     <div className="flex justify-between"><dt>Driver wage</dt><dd>{inr(quote.breakdown.driver_wage)}</dd></div>
                     <div className="flex justify-between"><dt>Per-km operating</dt><dd>{inr(quote.breakdown.per_km_operating_cost)}</dd></div>
@@ -275,8 +320,18 @@ export default function NewBookingPage() {
                     <div className="flex justify-between text-gray-500"><dt>Vehicle class</dt><dd>{quote.breakdown.vehicle_class}</dd></div>
                   </dl>
                   <p className="mt-3 text-[11px] text-gray-500">
-                    This price is locked and will be charged on booking. Valid until{' '}
-                    {new Date(quote.expires_at).toLocaleString('en-IN')}.
+                    {bookingType === 'auction' ? (
+                      <>
+                        This is a reference estimate for an auction booking — the final charge is the
+                        winning driver&apos;s awarded bid, not this locked price. Estimate valid until{' '}
+                        {new Date(quote.expires_at).toLocaleString('en-IN')}.
+                      </>
+                    ) : (
+                      <>
+                        This price is locked and will be charged on booking. Valid until{' '}
+                        {new Date(quote.expires_at).toLocaleString('en-IN')}.
+                      </>
+                    )}
                   </p>
                 </div>
               )}

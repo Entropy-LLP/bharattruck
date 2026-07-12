@@ -18,7 +18,17 @@ export type LockedQuote = {
   quoted_price: number
   currency: string
   expires_at: string
+  // consumed_at is the source of truth for "already consumed" (immutable; survives
+  // a booking hard-delete). consumed_by_booking_id has ON DELETE SET NULL and must
+  // NOT be used as the replay guard.
+  consumed_at: string | null
   consumed_by_booking_id: string | null
+  // Priced route + cargo — booking-create BINDS the booking to these so a lock
+  // priced for a short/light trip cannot be spent on a long/heavy one.
+  source_lat: number
+  source_lng: number
+  dest_lat: number
+  dest_lng: number
   distance_km: number
   vehicle_type: string
   vehicle_class: string

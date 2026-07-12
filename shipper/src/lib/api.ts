@@ -274,7 +274,13 @@ export type PriceQuoteLoadType =
   | 'heavy_machinery'
 
 export interface PriceQuoteInput {
-  distance_km: number
+  // The booking's route; the server DERIVES distance_km from these coords (never
+  // client-supplied) and prices from it. Send the SAME coords on booking-create so
+  // the booking binds to the priced trip.
+  source_lat: number
+  source_lng: number
+  dest_lat: number
+  dest_lng: number
   vehicle_type: PriceQuoteVehicleType
   load_type: PriceQuoteLoadType
   weight_kg: number

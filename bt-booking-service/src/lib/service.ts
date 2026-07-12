@@ -18,10 +18,22 @@ import { defaultPricingClient, type PricingClient } from './pricing-client.js'
 // pricing outage is UPSTREAM_ERROR (502) — all raised as BookingError.
 //
 // The true replay/expiry guard is the DB conditional UPDATE inside pricing's
-// consumeQuote (WHERE consumed_by_booking_id IS NULL AND expires_at > now()).
-// The pre-checks below keep the happy path clean and give precise errors;
-// step 4 is the concurrency-safe guard against a double-submit of one quote_id.
+// consumeQuote (WHERE consumed_at IS NULL AND expires_at > now()). The pre-checks
+// below keep the happy path clean and give precise errors; step 5 is the
+// concurrency-safe guard against a double-submit of one quote_id.
+//
+// Step 3 is the WHOLE POINT of the lock: the booking's route + cargo MUST match
+// the coords/weight/load the quote was priced from, or the price SHOWN would not
+// be the price for the trip actually booked (a shipper could quote a 1 km / 1 kg
+// trip then book a 1400 km / 20 t trip on the same lock). distance_km is NOT
+// checked directly — it is DERIVED from the coords server-side at quote time, so
+// binding the coords binds the priced distance.
 // -----------------------------------------------------------
+
+// Coordinate match tolerance (~1 m). The shipper sends the SAME coords to the
+// quote and the booking; the quote's coords come back rounded to the column's
+// 6 dp, well inside this epsilon.
+const COORD_EPSILON = 1e-5
 
 export async function createBooking(
   body: CreateBookingBody,
@@ -39,20 +51,39 @@ export async function createBooking(
   if (quote.shipper_id !== actor.userId) {
     throw new BookingError('Quote does not belong to you', 'FORBIDDEN', 403)
   }
-  if (quote.consumed_by_booking_id) {
+  if (quote.consumed_at) {
     throw new BookingError('Quote already used', 'INVALID_TRANSITION', 409)
   }
   if (new Date(quote.expires_at).getTime() <= Date.now()) {
     throw new BookingError('Quote has expired — request a new quote', 'VALIDATION_ERROR', 400)
   }
 
-  // 3. Insert the booking with the SERVER-SIDE locked price (client price is gone).
+  // 3. BIND the booking to the priced route + cargo. Any mismatch → 4xx; the
+  //    locked price is only valid for the exact trip it was quoted for.
+  if (
+    Math.abs(body.source_lat - quote.source_lat) > COORD_EPSILON ||
+    Math.abs(body.source_lng - quote.source_lng) > COORD_EPSILON ||
+    Math.abs(body.dest_lat   - quote.dest_lat)   > COORD_EPSILON ||
+    Math.abs(body.dest_lng   - quote.dest_lng)   > COORD_EPSILON ||
+    body.weight_kg !== quote.weight_kg ||
+    body.load_type !== quote.load_type
+  ) {
+    throw new BookingError(
+      'Booking route or cargo does not match the locked quote — request a new quote',
+      'VALIDATION_ERROR',
+      400,
+    )
+  }
+
+  // 4. Insert the booking with the SERVER-SIDE locked price (client price is gone).
   const booking = await repo.createBooking(body, actor, quote.quoted_price)
 
-  // 4. Atomically consume the quote (DB-enforced replay/expiry guard). On any
+  // 5. Atomically consume the quote (DB-enforced replay/expiry guard). On any
   //    failure — including a concurrent double-submit that loses the race and
   //    gets a 409 — compensate by deleting the just-created pending booking so
-  //    it never becomes visible to anyone, then re-throw the 4xx.
+  //    it never becomes visible to anyone, then re-throw the 4xx. The delete
+  //    nulls consumed_by_booking_id but NOT consumed_at, so the quote stays
+  //    consumed (no replay).
   try {
     await pricing.consumeQuote(body.quote_id, booking.id)
   } catch (err) {

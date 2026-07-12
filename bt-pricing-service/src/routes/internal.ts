@@ -15,7 +15,7 @@ const ConsumeBody = z.object({ booking_id: z.string().uuid('booking_id must be a
 
 function handleError(reply: FastifyReply, err: unknown) {
   reply.log.error(err, 'Unhandled error in internal pricing routes')
-  return reply.status(500).send({ success: false, error: 'Internal server error' })
+  return reply.status(500).send({ success: false, error: 'Internal server error', code: 'INTERNAL_ERROR' })
 }
 
 export async function internalPricingRoutes(app: FastifyInstance) {
