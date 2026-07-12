@@ -620,8 +620,8 @@ function RecordSettlementPanel({ booking, onPaid }: { booking: Booking; onPaid: 
         mode,
         reference: reference.trim() || undefined,
       })
-      // Read back the real recorded state (satisfies "settle then getPaymentStatus").
-      await getPaymentStatus(booking.id)
+      // onPaid() flips the booking to `paid`, which re-renders SettledPaymentPanel;
+      // that panel fetches the recorded status itself, so no read-back here.
       toast.success('Settlement recorded')
       onPaid()
     } catch (err: unknown) {
@@ -731,7 +731,6 @@ function SettledPaymentPanel({ booking }: { booking: Booking }) {
   }, [booking.id])
 
   const payment = status?.payment ?? null
-  const payout = status?.payout ?? null
   const modeLabel = payment
     ? (PAYMENT_MODES.find((m) => m.value === payment.mode)?.label ?? payment.mode)
     : null
@@ -770,15 +769,6 @@ function SettledPaymentPanel({ booking }: { booking: Booking }) {
           <div>
             <p className="text-xs text-gray-400">Reference</p>
             <p className="text-gray-800 font-medium break-all">{payment?.reference || '\u2014'}</p>
-          </div>
-          <div>
-            <p className="text-xs text-gray-400">Driver payout</p>
-            <p className="text-gray-800 font-medium capitalize">
-              {payout ? payout.status : 'pending'}
-              {payout && payout.status === 'recorded'
-                ? ` \u00B7 \u20B9${payout.amount.toLocaleString('en-IN')}`
-                : ''}
-            </p>
           </div>
         </div>
       )}

@@ -86,16 +86,16 @@ export async function acceptBooking(
 }
 
 // -----------------------------------------------------------
-// startBooking / completeBooking
-// Drive the trip lifecycle forward:
-//   accepted   → in_transit   (driver starts the trip)
-//   in_transit → completed    (transition exposed now; the
-//                              POD/receiver-OTP-driven closure
-//                              that *calls* this lands later)
-// Only the assigned driver (drivers.id via getDriverByUserId)
-// may transition. The state machine (assertValidTransition)
-// enforces legal moves server-side and rejects illegal ones
-// with a 4xx envelope, never a 500.
+// startBooking
+// Drives the trip lifecycle forward for the assigned driver:
+//   accepted → in_transit   (driver starts the trip)
+// Completion (in_transit → completed) is DELIBERATELY NOT a
+// driver-facing transition — there is no driver self-complete path.
+// It is closed only by the receiver-OTP POD flow
+// (completeBookingViaPod) or an ops force-complete (forceCompleteBooking).
+// Only the assigned driver (drivers.id via getDriverByUserId) may start.
+// The state machine (assertValidTransition) enforces legal moves
+// server-side and rejects illegal ones with a 4xx envelope, never a 500.
 // -----------------------------------------------------------
 
 export async function startBooking(
@@ -105,17 +105,10 @@ export async function startBooking(
   return transitionAssignedBooking(bookingId, actor, 'in_transit')
 }
 
-export async function completeBooking(
-  bookingId: string,
-  actor: AuthenticatedUser,
-): Promise<DbBooking> {
-  return transitionAssignedBooking(bookingId, actor, 'completed')
-}
-
 async function transitionAssignedBooking(
   bookingId: string,
   actor: AuthenticatedUser,
-  to: 'in_transit' | 'completed',
+  to: 'in_transit',
 ): Promise<DbBooking> {
   // Only drivers transition trips; a shipper/admin hitting these gets 403.
   if (actor.role !== 'driver') {

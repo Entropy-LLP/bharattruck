@@ -6,12 +6,29 @@
 // Bearer and hard-redirects to /login on 401); it hits the gateway with
 // a raw fetch. On a verified OTP, booking-service internally flips the
 // trip in_transit → completed (out-of-band from the driver).
+//
+// FOLLOW-UP: this page shows no shipment context (route / shipper / cargo)
+// beyond the delivery code. Rendering that safely on a public page needs a
+// public-read decision (which booking fields a code-holder may see, and a
+// public-read endpoint to serve them) — deferred, not added here.
 
 import { useState, use } from 'react'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
 
 type Phase = 'entry' | 'confirmed'
+
+// BharatTruck wordmark for the public receiver page — the consignee has no
+// app context, so brand it clearly so the email link looks trustworthy.
+function BrandHeader() {
+  return (
+    <div className="flex items-center justify-center gap-2 mb-6">
+      <span className="text-lg font-extrabold tracking-tight text-gray-900">
+        Bharat<span className="text-emerald-600">Truck</span>
+      </span>
+    </div>
+  )
+}
 
 export default function ReceiverPodPage({
   params,
@@ -66,6 +83,7 @@ export default function ReceiverPodPage({
     return (
       <main className="min-h-dvh flex items-center justify-center bg-gray-50 px-4">
         <div className="w-full max-w-sm bg-white rounded-2xl border border-gray-200 shadow-sm p-8 text-center">
+          <BrandHeader />
           <div className="w-14 h-14 rounded-full bg-emerald-100 flex items-center justify-center mx-auto mb-4">
             <svg className="w-7 h-7 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
@@ -83,10 +101,11 @@ export default function ReceiverPodPage({
   return (
     <main className="min-h-dvh flex items-center justify-center bg-gray-50 px-4">
       <div className="w-full max-w-sm bg-white rounded-2xl border border-gray-200 shadow-sm p-8">
+        <BrandHeader />
         <div className="text-center mb-6">
-          <h1 className="text-xl font-bold text-gray-900 mb-1">Confirm delivery</h1>
+          <h1 className="text-xl font-bold text-gray-900 mb-1">Confirm your delivery</h1>
           <p className="text-sm text-gray-500">
-            Enter the 6-digit code sent to your email to confirm you received this shipment.
+            Enter the delivery code from your email to confirm you received this shipment.
           </p>
         </div>
 
@@ -122,6 +141,10 @@ export default function ReceiverPodPage({
             )}
           </button>
         </form>
+
+        <p className="text-xs text-gray-400 text-center mt-4">
+          Didn&apos;t get a code? Ask the driver to resend.
+        </p>
       </div>
     </main>
   )
