@@ -233,7 +233,12 @@ export interface CreateBookingPayload {
   dest_lng: number
   load_type: string
   weight_kg: number
-  quoted_price: number
+  // Same truck class that was priced; the server binds it to the locked quote
+  // (mismatch → 4xx). Must be the exact vehicle_type sent to POST /pricing/quote.
+  vehicle_type: PriceQuoteVehicleType
+  // The price-lock handle from POST /pricing/quote — NOT a raw price. The server
+  // resolves quoted_price from the locked price_quotes row (price SHOWN == charged).
+  quote_id: string
   pickup_date: string
   pickup_time_slot?: string
   special_instructions?: string
@@ -255,6 +260,67 @@ export function createBooking(payload: CreateBookingPayload): Promise<Booking> {
 export function cancelBooking(id: string): Promise<Booking> {
   return request<Booking>(`/bookings/${id}/cancel`, {
     method: 'PATCH',
+  })
+}
+
+// ── Price quote-lock (bt-pricing-service) ─────────────────────
+// POST /api/pricing/quote → the gateway rewrites to /pricing/quote. Returns a
+// locked quote: the price SHOWN here is the price CHARGED at booking (PRD 5.4).
+// The shipper captures `quote_id` and sends it (not a raw price) on create.
+
+export type PriceQuoteVehicleType = 'mini_truck' | 'lcv' | 'hcv' | 'trailer'
+export type PriceQuoteLoadType =
+  | 'general'
+  | 'fragile'
+  | 'perishable'
+  | 'hazardous'
+  | 'heavy_machinery'
+
+export interface PriceQuoteInput {
+  // The booking's route; the server DERIVES distance_km from these coords (never
+  // client-supplied) and prices from it. Send the SAME coords on booking-create so
+  // the booking binds to the priced trip.
+  source_lat: number
+  source_lng: number
+  dest_lat: number
+  dest_lng: number
+  vehicle_type: PriceQuoteVehicleType
+  load_type: PriceQuoteLoadType
+  weight_kg: number
+}
+
+export interface PriceQuoteBreakdown {
+  vehicle_class: string
+  distance_km: number
+  mileage_kmpl: number
+  diesel_price_inr: number
+  fuel_cost: number
+  driver_wage: number
+  per_km_operating_cost: number
+  handling: number
+  operating_cost_total: number
+}
+
+export interface PriceQuote {
+  quote_id: string
+  quoted_price: number
+  currency: string
+  expires_at: string
+  breakdown: PriceQuoteBreakdown
+  // Commercial split (superset of what pricing returns today; the UI renders these).
+  base_price: number
+  weight_surcharge: number
+  total_price: number
+  platform_fee: number
+  shipper_pays: number
+  driver_receives: number
+  version: string
+}
+
+export function getPriceQuote(payload: PriceQuoteInput): Promise<PriceQuote> {
+  return request<PriceQuote>('/pricing/quote', {
+    method: 'POST',
+    body: JSON.stringify(payload),
   })
 }
 

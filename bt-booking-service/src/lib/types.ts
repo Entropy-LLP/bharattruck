@@ -128,6 +128,10 @@ const latitude  = z.number().min(-90).max(90)
 const longitude = z.number().min(-180).max(180)
 
 export const CreateBookingBodySchema = z.object({
+  // The shipper sends the price-lock handle, NOT a raw price. quoted_price is
+  // resolved server-side from the locked price_quotes row (PRD 5.4: price SHOWN
+  // == price CHARGED) — the client can no longer type its own number.
+  quote_id:             z.string().uuid(),
   source_address:       z.string().min(1),
   source_lat:           latitude,
   source_lng:           longitude,
@@ -136,7 +140,11 @@ export const CreateBookingBodySchema = z.object({
   dest_lng:             longitude,
   load_type:            z.string().min(1),
   weight_kg:            z.number().positive(),
-  quoted_price:         z.number().positive(),
+  // The requested truck class, bound to the locked quote at create time (the
+  // price scales ~2.9x across classes — mini_truck rate 12 → trailer rate 35 —
+  // so it MUST match what was priced). Enum mirrors bt-pricing-service's
+  // accepted vehicle_type set (single source of truth is pricing's QuoteBody).
+  vehicle_type:         z.enum(['mini_truck', 'lcv', 'hcv', 'trailer']),
   pickup_date:          z.string()
                           .regex(/^\d{4}-\d{2}-\d{2}$/, 'pickup_date must be YYYY-MM-DD')
                           .refine(d => {

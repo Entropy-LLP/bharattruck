@@ -2,20 +2,144 @@ import type { AuthenticatedUser, BookingStatus, BookingWithProfiles, CreateBooki
 import { BookingError } from './types.js'
 import { assertValidTransition } from './state.js'
 import * as repo from './repository.js'
+import { defaultPricingClient, type PricingClient } from './pricing-client.js'
 
 // -----------------------------------------------------------
-// createBooking
-// Only shippers can create bookings.
+// createBooking — the price quote-lock saga.
+// Only shippers can create bookings. The shipper sends a quote_id (the
+// price-lock handle), never a raw price. We read the locked quote from
+// pricing (own-your-data: booking never touches the price_quotes table),
+// validate it, set bookings.quoted_price SERVER-SIDE from the lock, insert,
+// then atomically consume the quote so it can never be replayed.
+//
+// Every validation failure is a 4xx envelope, never a 500: a missing quote is
+// NOT_FOUND, someone else's quote is FORBIDDEN, an expired quote is
+// VALIDATION_ERROR, an already-consumed quote is INVALID_TRANSITION, and a
+// pricing outage is UPSTREAM_ERROR (502) — all raised as BookingError.
+//
+// The true replay/expiry guard is the DB conditional UPDATE inside pricing's
+// consumeQuote (WHERE consumed_at IS NULL AND expires_at > now()). The pre-checks
+// below keep the happy path clean and give precise errors; step 5 is the
+// concurrency-safe guard against a double-submit of one quote_id.
+//
+// Step 3 is the WHOLE POINT of the lock: the booking's route + cargo MUST match
+// the coords/weight/load the quote was priced from, or the price SHOWN would not
+// be the price for the trip actually booked (a shipper could quote a 1 km / 1 kg
+// trip then book a 1400 km / 20 t trip on the same lock). distance_km is NOT
+// checked directly — it is DERIVED from the coords server-side at quote time, so
+// binding the coords binds the priced distance.
 // -----------------------------------------------------------
+
+// Coordinate match tolerance (~1 m). The shipper sends the SAME coords to the
+// quote and the booking; the quote's coords come back rounded to the column's
+// 6 dp, well inside this epsilon.
+const COORD_EPSILON = 1e-5
+
+// Weight is compared at the stored precision (price_quotes.weight_kg is
+// numeric(12,2)): round both sides to 2 dp (integer hundredths) and match
+// EXACTLY. This leaves no tolerance WINDOW that could be used to nudge the
+// weight across a surcharge-tier boundary, while still tolerating the DB's 2-dp
+// quantisation of the quote-time weight (a strict !== on the raw float would
+// spuriously reject a >2-decimal input).
+const weightHundredths = (kg: number): number => Math.round(kg * 100)
+
+// Minimal structural logger (same shape used by payment-emit) so the route can
+// pass req.log without service.ts depending on Fastify.
+type Logger = { warn(obj: unknown, msg: string): void }
 
 export async function createBooking(
   body: CreateBookingBody,
   actor: AuthenticatedUser,
+  pricing: PricingClient = defaultPricingClient(),
+  log?: Logger,
 ): Promise<DbBooking> {
   if (actor.role !== 'shipper') {
     throw new BookingError('Only shippers can create bookings', 'FORBIDDEN', 403)
   }
-  return repo.createBooking(body, actor)
+
+  // 1. Read the locked quote (internal call). A missing quote → NOT_FOUND (4xx).
+  const quote = await pricing.getQuote(body.quote_id)
+
+  // 2. Validate ownership / not-already-consumed / expiry — all 4xx.
+  if (quote.shipper_id !== actor.userId) {
+    throw new BookingError('Quote does not belong to you', 'FORBIDDEN', 403)
+  }
+  if (quote.consumed_at) {
+    throw new BookingError('Quote already used', 'INVALID_TRANSITION', 409)
+  }
+  if (new Date(quote.expires_at).getTime() <= Date.now()) {
+    throw new BookingError('Quote has expired — request a new quote', 'VALIDATION_ERROR', 400)
+  }
+
+  // 3. BIND the booking to the priced route + cargo. Any mismatch → 4xx; the
+  //    locked price is only valid for the exact trip it was quoted for. route +
+  //    weight + load_type + vehicle_type are ALL bound, so the priced trip and
+  //    the booked trip are the same one. vehicle_type is load-bearing here: the
+  //    rate card scales ~2.9x across classes, so without this bind a shipper
+  //    could price a mini_truck and book a trailer on the same lock.
+  //    (Weight-vs-vehicle-capacity validation — rejecting a class too small for
+  //    the weight — is a deliberate follow-up in the pricing constant-harvest PR,
+  //    which owns the capacity constants; it is intentionally NOT done here.)
+  // Fail CLOSED on any non-finite numeric before the abs comparisons
+  // (defense-in-depth: the only caller validates the body with Zod, but a NaN
+  // would make `NaN > EPS === false` fail OPEN — the opposite of the string
+  // checks, which fail closed on undefined).
+  const nums = [
+    body.source_lat, body.source_lng, body.dest_lat, body.dest_lng, body.weight_kg,
+    quote.source_lat, quote.source_lng, quote.dest_lat, quote.dest_lng, quote.weight_kg,
+  ]
+  if (
+    nums.some((n) => !Number.isFinite(n)) ||
+    Math.abs(body.source_lat - quote.source_lat) > COORD_EPSILON ||
+    Math.abs(body.source_lng - quote.source_lng) > COORD_EPSILON ||
+    Math.abs(body.dest_lat   - quote.dest_lat)   > COORD_EPSILON ||
+    Math.abs(body.dest_lng   - quote.dest_lng)   > COORD_EPSILON ||
+    weightHundredths(body.weight_kg) !== weightHundredths(quote.weight_kg) ||
+    body.load_type    !== quote.load_type ||
+    body.vehicle_type !== quote.vehicle_type
+  ) {
+    throw new BookingError(
+      'Booking route or cargo does not match the locked quote — request a new quote',
+      'VALIDATION_ERROR',
+      400,
+    )
+  }
+
+  // 4. Insert the booking with the SERVER-SIDE locked price (client price is gone).
+  const booking = await repo.createBooking(body, actor, quote.quoted_price)
+
+  // 5. Atomically consume the quote (DB-enforced replay/expiry guard). On any
+  //    failure — including a concurrent double-submit that loses the race and
+  //    gets a 409 — compensate by removing the just-created, not-yet-accepted
+  //    booking so it never becomes visible to anyone, then re-throw the 4xx.
+  //    The delete nulls consumed_by_booking_id but NOT consumed_at, so a
+  //    consumed quote stays consumed (no replay).
+  //
+  //    A failing compensation is logged (never silently swallowed) so an orphan
+  //    is observable and reconcilable by ops.
+  //
+  //    Residual narrow race (known, accepted, NON-financial): a transport-only
+  //    consume failure — the quote WAS consumed server-side but the reply was
+  //    lost — racing a concurrent driver-accept leaves an 'accepted' booking the
+  //    guarded delete can no longer remove. Price integrity still holds: the
+  //    booking carries the correct server-locked quoted_price and the quote is
+  //    correctly consumed (no replay); only the shipper's client sees a spurious
+  //    error. We do NOT redesign the state machine to close this here.
+  try {
+    await pricing.consumeQuote(body.quote_id, booking.id)
+  } catch (err) {
+    try {
+      await repo.deleteBooking(booking.id)
+    } catch (cleanupErr) {
+      log?.warn(
+        { err: cleanupErr, booking_id: booking.id, quote_id: body.quote_id },
+        'quote-lock compensation failed — booking may be orphaned (reconcile in ops)',
+      )
+    }
+    throw err
+  }
+
+  return booking
 }
 
 // -----------------------------------------------------------

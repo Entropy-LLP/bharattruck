@@ -16,6 +16,7 @@ import type {
 export async function createBooking(
   body: CreateBookingBody,
   actor: AuthenticatedUser,
+  quotedPrice: number,
 ): Promise<DbBooking> {
   // Fetch shipper profile from DB — JWT only carries userId + role
   const { data: userRow } = await supabase
@@ -41,7 +42,7 @@ export async function createBooking(
       dest_lng:             body.dest_lng,
       load_type:            body.load_type,
       weight_kg:            body.weight_kg,
-      quoted_price:         body.quoted_price,
+      quoted_price:         quotedPrice,
       pickup_date:          body.pickup_date,
       pickup_time_slot:     body.pickup_time_slot ?? null,
       special_instructions: body.special_instructions ?? null,
@@ -56,6 +57,30 @@ export async function createBooking(
 
   if (error) throw new Error(`DB insert failed: ${error.message}`)
   return data as DbBooking
+}
+
+// -----------------------------------------------------------
+// deleteBooking
+// Compensation for the quote-lock saga: if consuming the price-lock
+// fails AFTER the booking row was inserted, roll the just-created
+// booking back so it never becomes visible to anyone. Guarded on the
+// PRE-ACCEPTED statuses (a fresh booking is 'pending'; an auction one may
+// have moved to 'negotiating') — broadening past 'pending' shrinks the
+// insert→consume interleaving window. Any pre-accepted booking has no
+// payments/payouts/location_history FKs yet, so this delete is safe; once a
+// driver has accepted, the guard intentionally no longer matches.
+// -----------------------------------------------------------
+
+const PRE_ACCEPTED_STATUSES: BookingStatus[] = ['pending', 'negotiating']
+
+export async function deleteBooking(bookingId: string): Promise<void> {
+  const { error } = await supabase
+    .from('bookings')
+    .delete()
+    .eq('id', bookingId)
+    .in('status', PRE_ACCEPTED_STATUSES)
+
+  if (error) throw new Error(`DB delete failed: ${error.message}`)
 }
 
 // -----------------------------------------------------------
