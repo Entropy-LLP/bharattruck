@@ -3,19 +3,101 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
-import { createBooking } from '@/lib/api'
+import {
+  createBooking,
+  getPriceQuote,
+  ApiError,
+  type PriceQuote,
+  type PriceQuoteLoadType,
+  type PriceQuoteVehicleType,
+} from '@/lib/api'
 import Navbar from '@/components/Navbar'
 import Spinner from '@/components/Spinner'
 
-const LOAD_TYPES = ['container', 'pallets', 'bulk', 'fragile', 'liquid'] as const
+// Reconciled to bt-pricing-service's load_type enum so the SAME value flows to
+// both the quote and the booking (bookings.load_type is free text — safe).
+const LOAD_TYPES: { value: PriceQuoteLoadType; label: string }[] = [
+  { value: 'general', label: 'General' },
+  { value: 'fragile', label: 'Fragile' },
+  { value: 'perishable', label: 'Perishable' },
+  { value: 'hazardous', label: 'Hazardous' },
+  { value: 'heavy_machinery', label: 'Heavy Machinery' },
+]
+
+const VEHICLE_TYPES: { value: PriceQuoteVehicleType; label: string }[] = [
+  { value: 'mini_truck', label: 'Mini Truck' },
+  { value: 'lcv', label: 'LCV' },
+  { value: 'hcv', label: 'HCV' },
+  { value: 'trailer', label: 'Trailer' },
+]
+
+const inr = (n: number) => `₹${n.toLocaleString('en-IN')}`
 
 export default function NewBookingPage() {
   const router = useRouter()
   const [submitting, setSubmitting] = useState(false)
+  const [quoting, setQuoting] = useState(false)
   const [bookingType, setBookingType] = useState<'direct' | 'auction'>('auction')
+
+  // Quote-affecting fields are controlled so we can (a) build the quote request
+  // and (b) invalidate a stale lock the moment any of them changes.
+  const [distanceKm, setDistanceKm] = useState('')
+  const [vehicleType, setVehicleType] = useState<PriceQuoteVehicleType>('lcv')
+  const [loadType, setLoadType] = useState<PriceQuoteLoadType>('general')
+  const [weightKg, setWeightKg] = useState('')
+
+  // The locked quote (null until "Get Quote" succeeds; cleared on any change).
+  const [quote, setQuote] = useState<PriceQuote | null>(null)
+
+  // Any change to a quote-affecting field invalidates the stored lock so a
+  // stale price can never be submitted.
+  function invalidateQuote() {
+    if (quote) setQuote(null)
+  }
+
+  async function handleGetQuote() {
+    const distance = parseFloat(distanceKm)
+    const weight = parseFloat(weightKg)
+    if (!Number.isFinite(distance) || distance <= 0) {
+      toast.error('Enter a valid distance (km) before getting a quote')
+      return
+    }
+    if (!Number.isFinite(weight) || weight <= 0) {
+      toast.error('Enter a valid weight (kg) before getting a quote')
+      return
+    }
+
+    setQuoting(true)
+    try {
+      const q = await getPriceQuote({
+        distance_km: distance,
+        vehicle_type: vehicleType,
+        load_type: loadType,
+        weight_kg: weight,
+      })
+      setQuote(q)
+      toast.success('Price locked')
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Failed to get a quote')
+    } finally {
+      setQuoting(false)
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
+
+    if (!quote) {
+      toast.error('Get a locked price quote before creating the booking')
+      return
+    }
+
+    const weight = parseFloat(weightKg)
+    if (!Number.isFinite(weight) || weight <= 0) {
+      toast.error('Enter a valid weight (kg)')
+      return
+    }
+
     const form = new FormData(e.currentTarget)
 
     const payload = {
@@ -25,9 +107,9 @@ export default function NewBookingPage() {
       destination_address: form.get('destination_address') as string,
       dest_lat: parseFloat(form.get('dest_lat') as string),
       dest_lng: parseFloat(form.get('dest_lng') as string),
-      load_type: form.get('load_type') as string,
-      weight_kg: parseFloat(form.get('weight_kg') as string),
-      quoted_price: parseFloat(form.get('quoted_price') as string),
+      load_type: loadType,
+      weight_kg: weight,
+      quote_id: quote.quote_id,
       pickup_date: form.get('pickup_date') as string,
       pickup_time_slot: (form.get('pickup_time_slot') as string) || undefined,
       special_instructions: (form.get('special_instructions') as string) || undefined,
@@ -46,7 +128,14 @@ export default function NewBookingPage() {
       toast.success('Booking created!')
       router.push(`/bookings/${booking.id}`)
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : 'Failed to create booking')
+      // Expired (VALIDATION_ERROR) or already-used (INVALID_TRANSITION) lock:
+      // drop it and make the shipper re-fetch a fresh quote.
+      if (err instanceof ApiError && (err.code === 'VALIDATION_ERROR' || err.code === 'INVALID_TRANSITION')) {
+        setQuote(null)
+        toast.error('Your locked price is no longer valid — please get a new quote')
+      } else {
+        toast.error(err instanceof Error ? err.message : 'Failed to create booking')
+      }
     } finally {
       setSubmitting(false)
     }
@@ -100,26 +189,97 @@ export default function NewBookingPage() {
             </div>
           </fieldset>
 
-          {/* Cargo Details */}
+          {/* Cargo Details — these drive the price quote */}
           <fieldset className="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
-            <legend className="text-sm font-semibold text-gray-900 px-1">Cargo Details</legend>
+            <legend className="text-sm font-semibold text-gray-900 px-1">Cargo &amp; Vehicle</legend>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label htmlFor="load_type" className={labelClass}>Load Type</label>
-                <select id="load_type" name="load_type" required className={inputClass}>
-                  {LOAD_TYPES.map((t) => (
-                    <option key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)}</option>
+                <label htmlFor="vehicle_type" className={labelClass}>Vehicle Type</label>
+                <select
+                  id="vehicle_type"
+                  value={vehicleType}
+                  onChange={(e) => { setVehicleType(e.target.value as PriceQuoteVehicleType); invalidateQuote() }}
+                  className={inputClass}
+                >
+                  {VEHICLE_TYPES.map((v) => (
+                    <option key={v.value} value={v.value}>{v.label}</option>
                   ))}
                 </select>
               </div>
               <div>
-                <label htmlFor="weight_kg" className={labelClass}>Weight (kg)</label>
-                <input id="weight_kg" name="weight_kg" type="number" min="1" required className={inputClass} placeholder="5000" />
+                <label htmlFor="load_type" className={labelClass}>Load Type</label>
+                <select
+                  id="load_type"
+                  value={loadType}
+                  onChange={(e) => { setLoadType(e.target.value as PriceQuoteLoadType); invalidateQuote() }}
+                  className={inputClass}
+                >
+                  {LOAD_TYPES.map((t) => (
+                    <option key={t.value} value={t.value}>{t.label}</option>
+                  ))}
+                </select>
               </div>
             </div>
-            <div>
-              <label htmlFor="quoted_price" className={labelClass}>Quoted Price ({'\u20B9'})</label>
-              <input id="quoted_price" name="quoted_price" type="number" min="1" required className={inputClass} placeholder="25000" />
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label htmlFor="distance_km" className={labelClass}>Distance (km)</label>
+                <input
+                  id="distance_km"
+                  type="number"
+                  min="1"
+                  step="any"
+                  value={distanceKm}
+                  onChange={(e) => { setDistanceKm(e.target.value); invalidateQuote() }}
+                  className={inputClass}
+                  placeholder="1400"
+                />
+              </div>
+              <div>
+                <label htmlFor="weight_kg" className={labelClass}>Weight (kg)</label>
+                <input
+                  id="weight_kg"
+                  type="number"
+                  min="1"
+                  value={weightKg}
+                  onChange={(e) => { setWeightKg(e.target.value); invalidateQuote() }}
+                  className={inputClass}
+                  placeholder="5000"
+                />
+              </div>
+            </div>
+
+            {/* Get Quote + locked-price panel */}
+            <div className="pt-1">
+              <button
+                type="button"
+                onClick={handleGetQuote}
+                disabled={quoting}
+                className="w-full bg-gray-900 text-white rounded-lg py-2.5 text-sm font-medium hover:bg-gray-800 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {quoting && <Spinner className="h-4 w-4 border-white border-t-transparent" />}
+                {quoting ? 'Getting price…' : quote ? 'Refresh Quote' : 'Get Quote'}
+              </button>
+
+              {quote && (
+                <div className="mt-4 rounded-lg border border-green-200 bg-green-50 p-4">
+                  <div className="flex items-baseline justify-between">
+                    <span className="text-sm font-semibold text-gray-900">Locked Price</span>
+                    <span className="text-lg font-bold text-green-700">{inr(quote.quoted_price)}</span>
+                  </div>
+                  <dl className="mt-3 space-y-1 text-xs text-gray-600">
+                    <div className="flex justify-between"><dt>Fuel</dt><dd>{inr(quote.breakdown.fuel_cost)}</dd></div>
+                    <div className="flex justify-between"><dt>Driver wage</dt><dd>{inr(quote.breakdown.driver_wage)}</dd></div>
+                    <div className="flex justify-between"><dt>Per-km operating</dt><dd>{inr(quote.breakdown.per_km_operating_cost)}</dd></div>
+                    <div className="flex justify-between"><dt>Handling</dt><dd>{inr(quote.breakdown.handling)}</dd></div>
+                    <div className="flex justify-between border-t border-green-200 pt-1"><dt>Platform fee</dt><dd>{inr(quote.platform_fee)}</dd></div>
+                    <div className="flex justify-between text-gray-500"><dt>Vehicle class</dt><dd>{quote.breakdown.vehicle_class}</dd></div>
+                  </dl>
+                  <p className="mt-3 text-[11px] text-gray-500">
+                    This price is locked and will be charged on booking. Valid until{' '}
+                    {new Date(quote.expires_at).toLocaleString('en-IN')}.
+                  </p>
+                </div>
+              )}
             </div>
           </fieldset>
 
@@ -185,11 +345,11 @@ export default function NewBookingPage() {
 
           <button
             type="submit"
-            disabled={submitting}
+            disabled={submitting || !quote}
             className="w-full bg-blue-600 text-white rounded-lg py-3 font-medium hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
           >
             {submitting && <Spinner className="h-4 w-4 border-white border-t-transparent" />}
-            {submitting ? 'Creating...' : 'Create Booking'}
+            {submitting ? 'Creating...' : quote ? 'Create Booking' : 'Get a quote to continue'}
           </button>
         </form>
       </main>

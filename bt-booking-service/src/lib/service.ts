@@ -2,20 +2,65 @@ import type { AuthenticatedUser, BookingStatus, BookingWithProfiles, CreateBooki
 import { BookingError } from './types.js'
 import { assertValidTransition } from './state.js'
 import * as repo from './repository.js'
+import { defaultPricingClient, type PricingClient } from './pricing-client.js'
 
 // -----------------------------------------------------------
-// createBooking
-// Only shippers can create bookings.
+// createBooking — the price quote-lock saga.
+// Only shippers can create bookings. The shipper sends a quote_id (the
+// price-lock handle), never a raw price. We read the locked quote from
+// pricing (own-your-data: booking never touches the price_quotes table),
+// validate it, set bookings.quoted_price SERVER-SIDE from the lock, insert,
+// then atomically consume the quote so it can never be replayed.
+//
+// Every validation failure is a 4xx envelope, never a 500: a missing quote is
+// NOT_FOUND, someone else's quote is FORBIDDEN, an expired quote is
+// VALIDATION_ERROR, an already-consumed quote is INVALID_TRANSITION, and a
+// pricing outage is UPSTREAM_ERROR (502) — all raised as BookingError.
+//
+// The true replay/expiry guard is the DB conditional UPDATE inside pricing's
+// consumeQuote (WHERE consumed_by_booking_id IS NULL AND expires_at > now()).
+// The pre-checks below keep the happy path clean and give precise errors;
+// step 4 is the concurrency-safe guard against a double-submit of one quote_id.
 // -----------------------------------------------------------
 
 export async function createBooking(
   body: CreateBookingBody,
   actor: AuthenticatedUser,
+  pricing: PricingClient = defaultPricingClient(),
 ): Promise<DbBooking> {
   if (actor.role !== 'shipper') {
     throw new BookingError('Only shippers can create bookings', 'FORBIDDEN', 403)
   }
-  return repo.createBooking(body, actor)
+
+  // 1. Read the locked quote (internal call). A missing quote → NOT_FOUND (4xx).
+  const quote = await pricing.getQuote(body.quote_id)
+
+  // 2. Validate ownership / not-already-consumed / expiry — all 4xx.
+  if (quote.shipper_id !== actor.userId) {
+    throw new BookingError('Quote does not belong to you', 'FORBIDDEN', 403)
+  }
+  if (quote.consumed_by_booking_id) {
+    throw new BookingError('Quote already used', 'INVALID_TRANSITION', 409)
+  }
+  if (new Date(quote.expires_at).getTime() <= Date.now()) {
+    throw new BookingError('Quote has expired — request a new quote', 'VALIDATION_ERROR', 400)
+  }
+
+  // 3. Insert the booking with the SERVER-SIDE locked price (client price is gone).
+  const booking = await repo.createBooking(body, actor, quote.quoted_price)
+
+  // 4. Atomically consume the quote (DB-enforced replay/expiry guard). On any
+  //    failure — including a concurrent double-submit that loses the race and
+  //    gets a 409 — compensate by deleting the just-created pending booking so
+  //    it never becomes visible to anyone, then re-throw the 4xx.
+  try {
+    await pricing.consumeQuote(body.quote_id, booking.id)
+  } catch (err) {
+    await repo.deleteBooking(booking.id).catch(() => {})
+    throw err
+  }
+
+  return booking
 }
 
 // -----------------------------------------------------------
