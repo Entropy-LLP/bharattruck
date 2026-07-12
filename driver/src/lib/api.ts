@@ -233,9 +233,38 @@ export function startTrip(bookingId: string): Promise<Booking> {
   })
 }
 
-export function completeTrip(bookingId: string): Promise<Booking> {
-  return request<Booking>(`/bookings/${bookingId}/complete`, {
-    method: 'PATCH',
+// ── Proof-of-Delivery (receiver-OTP) ─────────────────────────
+// The driver never completes a trip directly — completion is driven
+// out-of-band by the receiver verifying an emailed OTP (which fires
+// booking-service's internal complete-pod). The driver only fetches
+// POD context and asks the receiver OTP to be sent.
+//   getPodContext → booking-svc GET /bookings/:id/pod-context
+//                   (driver-only, requires status === 'in_transit')
+//   requestPodOtp → bt-cargo-ledger POST /cargo/pod/request-otp
+//                   (driver JWT forwarded to booking-svc for authz)
+
+export interface PodContext {
+  booking_id: string
+  status: string
+  receiver_email: string | null
+}
+
+export interface RequestOtpResult {
+  booking_id: string
+  /** MASKED receiver email (e.g. j****@x.com) — display the full
+   *  address from getPodContext instead. */
+  sent_to: string
+  expires_in_seconds: number
+}
+
+export function getPodContext(bookingId: string): Promise<PodContext> {
+  return request<PodContext>(`/bookings/${bookingId}/pod-context`)
+}
+
+export function requestPodOtp(bookingId: string): Promise<RequestOtpResult> {
+  return request<RequestOtpResult>('/cargo/pod/request-otp', {
+    method: 'POST',
+    body: JSON.stringify({ booking_id: bookingId }),
   })
 }
 

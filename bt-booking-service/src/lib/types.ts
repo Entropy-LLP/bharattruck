@@ -153,6 +153,11 @@ export const CreateBookingBodySchema = z.object({
                           }, 'pickup_date cannot be in the past'),
   pickup_time_slot:     z.string().optional(),
   special_instructions: z.string().optional(),
+  // Consignee inbox the receiver-OTP POD code is emailed to. REQUIRED at
+  // creation: without it a fresh booking can never reach `completed` (the
+  // driver's POD request has no address to send the code to). Persisted to
+  // the bookings.receiver_email column (read back by getPodContext).
+  receiver_email:       z.string().email(),
   booking_type:         z.enum(['direct', 'auction']).default('direct'),
   target_driver_id:     z.string().uuid().optional(),
   auction_deadline:     z.string().datetime().optional(),

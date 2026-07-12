@@ -11,10 +11,13 @@ import {
   withdrawQuote,
   getQuoteHistory,
   startTrip,
-  completeTrip,
+  getPodContext,
+  requestPodOtp,
   pushLocation,
   ApiError,
 } from '@/lib/api'
+import { buildNavDeepLink } from '@/lib/nav'
+import type { PodContext } from '@/lib/api'
 import type { Booking, Quote, NegotiationEntry } from '@/lib/types'
 import { formatPrice, formatDate, formatDateTime, relativeTime, getCountdown } from '@/lib/utils'
 import { quoteStatusConfig } from '@/lib/status'
@@ -596,7 +599,39 @@ function CounterForm({
   )
 }
 
-// --- Negotiation History ---
+// --- Navigate (deep-link handoff to Google Maps) ---
+// FROZEN contract: navigation is a deep-link handoff to the phone's
+// Google Maps app — NO in-app turn-by-turn. Destination-only so Google
+// Maps uses the device's live location as the start point.
+//
+// The target follows the leg the driver is on: PICKUP (source) while the
+// cargo isn't loaded yet (status 'accepted'), DROP (dest) once the trip is
+// underway (status 'in_transit').
+
+function NavigateButton({ booking }: { booking: Booking }) {
+  const toPickup = booking.status === 'accepted'
+  const destination = toPickup
+    ? { lat: booking.source_lat, lng: booking.source_lng }
+    : { lat: booking.dest_lat, lng: booking.dest_lng }
+  const label = toPickup ? 'Navigate to pickup' : 'Navigate to delivery'
+
+  function handleNavigate() {
+    const url = buildNavDeepLink({ destination })
+    window.open(url, '_blank')
+  }
+
+  return (
+    <button
+      onClick={handleNavigate}
+      className="w-full h-12 rounded-xl border-2 border-blue-500 text-blue-700 font-semibold text-base active:scale-[0.98] transition-transform flex items-center justify-center gap-2"
+    >
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
+      </svg>
+      {label}
+    </button>
+  )
+}
 
 // --- Accepted: Start Trip ---
 
@@ -675,11 +710,55 @@ function AcceptedTripSection({
           </div>
         )}
       </div>
+
+      <NavigateButton booking={booking} />
     </div>
   )
 }
 
 // --- In Transit: Active Trip with GPS ---
+
+type DeliverPhase = 'idle' | 'confirm' | 'sent'
+
+// Persist the 'awaiting receiver confirmation' state across reloads/remounts.
+// `deliverPhase` is ephemeral useState — a reload would reset it to idle and
+// tempt a re-tap that silently issues a NEW code, invalidating the one the
+// receiver is already typing. We stamp a per-booking localStorage record when
+// the code is sent; a remount restores 'sent' from it, and re-issuing a code
+// requires the explicit "Resend delivery code" action.
+type AwaitingRecord = { receiver_email: string | null; sent_at: number }
+
+function awaitingKey(bookingId: string): string {
+  return `pod-awaiting:${bookingId}`
+}
+
+function readAwaiting(bookingId: string): AwaitingRecord | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = window.localStorage.getItem(awaitingKey(bookingId))
+    return raw ? (JSON.parse(raw) as AwaitingRecord) : null
+  } catch {
+    return null
+  }
+}
+
+function writeAwaiting(bookingId: string, rec: AwaitingRecord): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(awaitingKey(bookingId), JSON.stringify(rec))
+  } catch {
+    // storage may be unavailable (private mode / quota) — non-fatal
+  }
+}
+
+function clearAwaiting(bookingId: string): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.removeItem(awaitingKey(bookingId))
+  } catch {
+    // non-fatal
+  }
+}
 
 function ActiveTripSection({
   booking,
@@ -688,12 +767,13 @@ function ActiveTripSection({
   booking: Booking
   onRefresh: () => void
 }) {
-  const [completing, setCompleting] = useState(false)
-  const [showDeliverConfirm, setShowDeliverConfirm] = useState(false)
+  const [deliverPhase, setDeliverPhase] = useState<DeliverPhase>('idle')
+  const [podContext, setPodContext] = useState<PodContext | null>(null)
+  const [loadingContext, setLoadingContext] = useState(false)
+  const [sending, setSending] = useState(false)
   const [gpsActive, setGpsActive] = useState(false)
   const [gpsError, setGpsError] = useState<string | null>(null)
   const [elapsed, setElapsed] = useState('')
-  const watchRef = useRef<number | null>(null)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // Keep the screen awake for the whole in-transit trip so the OS doesn't
@@ -701,7 +781,9 @@ function ActiveTripSection({
   // in_transit, so the lock is scoped to the active trip.
   useScreenWakeLock(booking.status === 'in_transit')
 
-  // Start GPS tracking on mount — best-effort, never blocks trip flow
+  // Start GPS tracking on mount — best-effort, never blocks trip flow.
+  // When the receiver verifies and the trip flips to `completed`, this
+  // section unmounts and the watch is cleared here automatically.
   useEffect(() => {
     if (!navigator.geolocation) {
       setGpsError('Location tracking will be active on mobile devices')
@@ -744,7 +826,6 @@ function ActiveTripSection({
       },
       { enableHighAccuracy: false, maximumAge: 30_000, timeout: 15_000 },
     )
-    watchRef.current = watchId
 
     return () => {
       clearTimeout(timeoutId)
@@ -768,22 +849,91 @@ function ActiveTripSection({
     }
   }, [booking.in_transit_at])
 
-  async function handleComplete() {
-    setCompleting(true)
-    try {
-      if (watchRef.current !== null) {
-        navigator.geolocation.clearWatch(watchRef.current)
+  // Restore the awaiting state on mount so a reload/remount doesn't reset to
+  // idle (see AwaitingRecord). Done in an effect (not useState init) to stay
+  // SSR/hydration-safe.
+  useEffect(() => {
+    const rec = readAwaiting(booking.id)
+    if (rec) {
+      setPodContext({ booking_id: booking.id, status: 'in_transit', receiver_email: rec.receiver_email })
+      setDeliverPhase('sent')
+    }
+  }, [booking.id])
+
+  // POD completion is out-of-band: once the delivery code is sent, the driver
+  // never completes the trip directly — the receiver's verify drives
+  // booking-service in_transit → completed. Poll the booking until it flips,
+  // clear the persisted awaiting record, then refresh (this section unmounts
+  // and the completed branch renders).
+  useEffect(() => {
+    if (deliverPhase !== 'sent') return
+    const interval = setInterval(async () => {
+      try {
+        const b = await getBooking(booking.id)
+        if (b.status !== 'in_transit') {
+          clearInterval(interval)
+          clearAwaiting(booking.id)
+          toast.success('Delivery confirmed by receiver')
+          onRefresh()
+        }
+      } catch {
+        // silent — keep polling
       }
-      await completeTrip(booking.id)
-      toast.success('Trip completed!')
-      onRefresh()
+    }, 10_000)
+    return () => clearInterval(interval)
+  }, [deliverPhase, booking.id, onRefresh])
+
+  // Step 1: fetch POD context (receiver_email the OTP will go to).
+  async function handleFetchContext() {
+    setLoadingContext(true)
+    try {
+      const ctx = await getPodContext(booking.id)
+      setPodContext(ctx)
+      setDeliverPhase('confirm')
     } catch (err) {
       if (err instanceof ApiError) toast.error(err.message)
     } finally {
-      setCompleting(false)
-      setShowDeliverConfirm(false)
+      setLoadingContext(false)
     }
   }
+
+  // Step 2: send the delivery code, persist the awaiting state, then move to
+  // the awaiting-confirmation screen.
+  async function handleSendOtp() {
+    setSending(true)
+    try {
+      await requestPodOtp(booking.id)
+      writeAwaiting(booking.id, { receiver_email: podContext?.receiver_email ?? null, sent_at: Date.now() })
+      setDeliverPhase('sent')
+    } catch (err) {
+      if (err instanceof ApiError) toast.error(err.message)
+    } finally {
+      setSending(false)
+    }
+  }
+
+  // Explicit resend — the ONLY way a new code is issued while awaiting. Re-issues
+  // a fresh code (invalidating the previous one) and refreshes the sent-at stamp.
+  async function handleResend() {
+    setSending(true)
+    try {
+      await requestPodOtp(booking.id)
+      writeAwaiting(booking.id, { receiver_email: podContext?.receiver_email ?? null, sent_at: Date.now() })
+      toast.success('Delivery code re-sent')
+    } catch (err) {
+      if (err instanceof ApiError) toast.error(err.message)
+    } finally {
+      setSending(false)
+    }
+  }
+
+  // Back out of awaiting WITHOUT completing — returns to idle 'Mark as Delivered'.
+  function handleCancelAwaiting() {
+    clearAwaiting(booking.id)
+    setDeliverPhase('idle')
+  }
+
+  const receiverEmail = podContext?.receiver_email ?? null
 
   return (
     <div className="space-y-4">
@@ -813,36 +963,82 @@ function ActiveTripSection({
           <p className="font-medium text-gray-900">{booking.destination_address}</p>
         </div>
 
-        {!showDeliverConfirm ? (
+        {/* Proof-of-delivery: receiver-OTP gate. The trip completes only
+            when the receiver verifies the emailed code — never here. */}
+        {deliverPhase === 'idle' && (
           <button
-            onClick={() => setShowDeliverConfirm(true)}
-            className="w-full h-12 rounded-xl bg-purple-600 text-white font-semibold text-base active:scale-[0.98] transition-transform"
+            onClick={handleFetchContext}
+            disabled={loadingContext}
+            className="w-full h-12 rounded-xl bg-purple-600 text-white font-semibold text-base active:scale-[0.98] transition-transform disabled:opacity-40 flex items-center justify-center gap-2"
           >
-            Mark as Delivered
+            {loadingContext ? <Spinner className="h-4 w-4 border-white border-t-transparent" /> : 'Mark as Delivered'}
           </button>
-        ) : (
-          <div className="space-y-2">
-            <p className="text-sm text-purple-800 font-medium text-center">
-              Confirm the cargo has been delivered?
-            </p>
+        )}
+
+        {deliverPhase === 'confirm' && (
+          <div className="space-y-3">
+            <div className="bg-white rounded-xl p-3 text-sm">
+              <p className="text-xs text-gray-400 uppercase tracking-wide mb-1">
+                Delivery code will be sent to
+              </p>
+              {receiverEmail ? (
+                <p className="font-medium text-gray-900 break-all">{receiverEmail}</p>
+              ) : (
+                <p className="font-medium text-red-600">
+                  No receiver email is set for this booking — the shipper must add one before delivery can be confirmed.
+                </p>
+              )}
+            </div>
             <div className="flex gap-2">
               <button
-                onClick={() => setShowDeliverConfirm(false)}
+                onClick={() => setDeliverPhase('idle')}
                 className="flex-1 h-11 rounded-xl border border-gray-300 text-gray-600 font-medium text-sm"
               >
                 Cancel
               </button>
               <button
-                onClick={handleComplete}
-                disabled={completing}
+                onClick={handleSendOtp}
+                disabled={sending || !receiverEmail}
                 className="flex-1 h-11 rounded-xl bg-purple-600 text-white font-semibold text-sm disabled:opacity-40 flex items-center justify-center gap-2"
               >
-                {completing ? <Spinner className="h-4 w-4 border-white border-t-transparent" /> : 'Yes, Delivered'}
+                {sending ? <Spinner className="h-4 w-4 border-white border-t-transparent" /> : 'Send delivery code'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {deliverPhase === 'sent' && (
+          <div className="bg-white rounded-xl p-4 space-y-3">
+            <div className="flex items-center justify-center gap-2">
+              <Spinner className="h-4 w-4 border-purple-600 border-t-transparent" />
+              <p className="text-sm font-semibold text-purple-800">Awaiting receiver confirmation</p>
+            </div>
+            <p className="text-sm text-gray-600 text-center">
+              Delivery code sent to{' '}
+              <span className="font-medium text-gray-900 break-all">{receiverEmail ?? 'the receiver'}</span>.
+              The trip is marked delivered once they enter the code.
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={handleCancelAwaiting}
+                disabled={sending}
+                className="flex-1 h-11 rounded-xl border border-gray-300 text-gray-600 font-medium text-sm disabled:opacity-40"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleResend}
+                disabled={sending}
+                className="flex-1 h-11 rounded-xl bg-purple-600 text-white font-semibold text-sm disabled:opacity-40 flex items-center justify-center gap-2"
+              >
+                {sending ? <Spinner className="h-4 w-4 border-white border-t-transparent" /> : 'Resend delivery code'}
               </button>
             </div>
           </div>
         )}
       </div>
+
+      <NavigateButton booking={booking} />
     </div>
   )
 }

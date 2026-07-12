@@ -47,7 +47,9 @@ export async function requestOtp(
   pipeline.del(podAttemptsKey(args.bookingId)) // fresh code → reset attempt budget
   await pipeline.exec()
 
-  await deps.email.send(buildOtpEmail(ctx.receiver_email, otp, Math.round(OTP_TTL_SECONDS / 60)))
+  await deps.email.send(
+    buildOtpEmail(ctx.receiver_email, otp, Math.round(OTP_TTL_SECONDS / 60), args.bookingId),
+  )
 
   return {
     booking_id: args.bookingId,

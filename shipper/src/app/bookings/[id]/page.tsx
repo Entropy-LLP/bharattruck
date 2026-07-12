@@ -11,9 +11,10 @@ import {
   counterQuote,
   cancelBooking,
   getTrack,
-  markAsPaid,
+  settlePayment,
+  getPaymentStatus,
 } from '@/lib/api'
-import type { TrackData, TrackEta, TrackLocation } from '@/lib/api'
+import type { TrackData, TrackEta, TrackLocation, PaymentStatus, PaymentMode } from '@/lib/api'
 import { bookingStatusConfig, quoteStatusConfig } from '@/lib/status'
 import type { Booking, Quote } from '@/lib/types'
 import Navbar from '@/components/Navbar'
@@ -219,26 +220,9 @@ export default function BookingDetailPage({
           <TripTrackingSection booking={booking} />
         )}
 
-        {/* Payment Section */}
-        {booking.status === 'completed' && (
+        {/* Payment Section — settle (completed) or the real recorded settlement (paid) */}
+        {(booking.status === 'completed' || booking.status === 'paid') && (
           <PaymentSection booking={booking} onPaid={fetchData} />
-        )}
-
-        {/* Payment Complete */}
-        {booking.status === 'paid' && (
-          <div className="bg-emerald-50 rounded-xl border border-emerald-200 p-5 flex items-center gap-4">
-            <div className="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center shrink-0">
-              <svg className="w-5 h-5 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-              </svg>
-            </div>
-            <div>
-              <p className="font-semibold text-emerald-800">Payment Complete</p>
-              <p className="text-sm text-emerald-600">
-                Marked as paid on {new Date(booking.updated_at).toLocaleString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
-              </p>
-            </div>
-          </div>
         )}
 
         {/* Quotes Panel */}
@@ -597,97 +581,197 @@ function TrackCaption({
   )
 }
 
-// --- Payment Section (for completed bookings) ---
+// --- Payment Section (settlement for completed / recorded state for paid) ---
+// Cash-recorded settlement (NO escrow/Razorpay). `completed` shows the
+// record-settlement control; on submit it settles then reads back the real
+// payment status and flips the booking to `paid` via onPaid(). `paid` reads
+// the recorded settlement and renders mode + reference + payout state.
+
+const PAYMENT_MODES: { value: PaymentMode; label: string; hint: string }[] = [
+  { value: 'cash', label: 'Cash', hint: 'Paid in cash' },
+  { value: 'upi', label: 'UPI', hint: 'UPI transfer' },
+  { value: 'direct', label: 'Direct', hint: 'Bank / other' },
+]
 
 function PaymentSection({ booking, onPaid }: { booking: Booking; onPaid: () => void }) {
-  const [marking, setMarking] = useState(false)
-  const [showConfirm, setShowConfirm] = useState(false)
+  if (booking.status === 'paid') {
+    return <SettledPaymentPanel booking={booking} />
+  }
+  return <RecordSettlementPanel booking={booking} onPaid={onPaid} />
+}
 
-  async function handleMarkPaid() {
-    setMarking(true)
+function RecordSettlementPanel({ booking, onPaid }: { booking: Booking; onPaid: () => void }) {
+  const prefill = booking.final_price ?? booking.quoted_price
+  const [mode, setMode] = useState<PaymentMode>('cash')
+  const [amount, setAmount] = useState(String(prefill))
+  const [reference, setReference] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  async function handleSettle() {
+    const num = parseFloat(amount)
+    if (!num || num <= 0) {
+      toast.error('Enter a valid settlement amount')
+      return
+    }
+    setSubmitting(true)
     try {
-      await markAsPaid(booking.id)
-      toast.success('Payment marked as complete')
+      await settlePayment(booking.id, {
+        amount: num,
+        mode,
+        reference: reference.trim() || undefined,
+      })
+      // onPaid() flips the booking to `paid`, which re-renders SettledPaymentPanel;
+      // that panel fetches the recorded status itself, so no read-back here.
+      toast.success('Settlement recorded')
       onPaid()
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : 'Failed to mark as paid')
+      toast.error(err instanceof Error ? err.message : 'Failed to record settlement')
     } finally {
-      setMarking(false)
-      setShowConfirm(false)
+      setSubmitting(false)
     }
   }
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
-      <h2 className="font-semibold text-gray-900">Payment</h2>
+      <h2 className="font-semibold text-gray-900">Record settlement</h2>
       <p className="text-sm text-gray-500">
-        Cargo has been delivered. Choose how to settle payment of{' '}
+        Cargo has been delivered. Record how payment of{' '}
         <span className="font-semibold text-gray-900">
-          {'\u20B9'}{(booking.final_price ?? booking.quoted_price).toLocaleString('en-IN')}
-        </span>
+          {'\u20B9'}{prefill.toLocaleString('en-IN')}
+        </span>{' '}
+        was settled.
       </p>
 
-      <div className="grid sm:grid-cols-2 gap-3">
-        {/* RazorPay placeholder */}
-        <div className="relative border border-gray-200 rounded-lg p-4 opacity-60 cursor-not-allowed">
-          <span className="absolute top-2 right-2 text-[10px] font-semibold uppercase tracking-wide bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">
-            Coming Soon
-          </span>
-          <div className="flex items-center gap-3 mb-2">
-            <div className="w-8 h-8 rounded bg-blue-50 flex items-center justify-center">
-              <svg className="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
-              </svg>
-            </div>
-            <div>
-              <p className="text-sm font-medium text-gray-900">Pay on Platform</p>
-              <p className="text-xs text-gray-400">UPI, Card, Net Banking via RazorPay</p>
-            </div>
+      {/* Mode selector */}
+      <div>
+        <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">
+          Payment method
+        </label>
+        <div className="grid grid-cols-3 gap-2">
+          {PAYMENT_MODES.map((m) => (
+            <button
+              key={m.value}
+              type="button"
+              onClick={() => setMode(m.value)}
+              className={`rounded-lg border p-3 text-left transition-colors ${
+                mode === m.value
+                  ? 'border-emerald-400 bg-emerald-50 ring-1 ring-emerald-300'
+                  : 'border-gray-200 hover:bg-gray-50'
+              }`}
+            >
+              <p className="text-sm font-medium text-gray-900">{m.label}</p>
+              <p className="text-xs text-gray-400">{m.hint}</p>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Amount */}
+      <div>
+        <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">
+          Amount (&#8377;)
+        </label>
+        <input
+          type="number"
+          value={amount}
+          onChange={(e) => setAmount(e.target.value)}
+          min="1"
+          step="1"
+          className="w-full h-11 rounded-lg border border-gray-300 px-3 text-base font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+        />
+      </div>
+
+      {/* Reference (optional) */}
+      <div>
+        <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">
+          Reference <span className="normal-case font-normal text-gray-400">(optional)</span>
+        </label>
+        <input
+          type="text"
+          value={reference}
+          onChange={(e) => setReference(e.target.value)}
+          placeholder="UPI txn ID / receipt no."
+          maxLength={200}
+          className="w-full h-11 rounded-lg border border-gray-300 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+        />
+      </div>
+
+      <button
+        onClick={handleSettle}
+        disabled={submitting}
+        className="w-full h-12 rounded-xl bg-emerald-600 text-white font-semibold text-base hover:bg-emerald-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+      >
+        {submitting && <Spinner className="h-4 w-4 border-white border-t-transparent" />}
+        Record settlement
+      </button>
+    </div>
+  )
+}
+
+function SettledPaymentPanel({ booking }: { booking: Booking }) {
+  const [status, setStatus] = useState<PaymentStatus | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    getPaymentStatus(booking.id)
+      .then((s) => {
+        if (!cancelled) setStatus(s)
+      })
+      .catch(() => {
+        if (!cancelled) setError(true)
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [booking.id])
+
+  const payment = status?.payment ?? null
+  const modeLabel = payment
+    ? (PAYMENT_MODES.find((m) => m.value === payment.mode)?.label ?? payment.mode)
+    : null
+
+  return (
+    <div className="bg-emerald-50 rounded-xl border border-emerald-200 p-5 space-y-4">
+      <div className="flex items-center gap-4">
+        <div className="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center shrink-0">
+          <svg className="w-5 h-5 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+          </svg>
+        </div>
+        <div>
+          <p className="font-semibold text-emerald-800">Payment settled</p>
+          <p className="text-sm text-emerald-600">
+            {'\u20B9'}{(payment?.amount ?? booking.final_price ?? booking.quoted_price).toLocaleString('en-IN')} recorded
+          </p>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="flex items-center gap-2 text-sm text-emerald-700">
+          <Spinner className="h-4 w-4 border-emerald-600 border-t-transparent" />
+          Loading settlement details…
+        </div>
+      ) : error ? (
+        <p className="text-sm text-emerald-700">
+          Payment is recorded. Settlement details are momentarily unavailable.
+        </p>
+      ) : (
+        <div className="grid grid-cols-2 gap-3 text-sm bg-white rounded-lg border border-emerald-100 p-4">
+          <div>
+            <p className="text-xs text-gray-400">Method</p>
+            <p className="text-gray-800 font-medium">{modeLabel ?? '\u2014'}</p>
+          </div>
+          <div>
+            <p className="text-xs text-gray-400">Reference</p>
+            <p className="text-gray-800 font-medium break-all">{payment?.reference || '\u2014'}</p>
           </div>
         </div>
-
-        {/* Mark as Paid */}
-        {!showConfirm ? (
-          <button
-            onClick={() => setShowConfirm(true)}
-            className="border-2 border-emerald-200 rounded-lg p-4 text-left hover:bg-emerald-50 transition-colors"
-          >
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded bg-emerald-50 flex items-center justify-center">
-                <svg className="w-4 h-4 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                </svg>
-              </div>
-              <div>
-                <p className="text-sm font-medium text-gray-900">Mark as Paid</p>
-                <p className="text-xs text-gray-400">Payment settled offline or via other method</p>
-              </div>
-            </div>
-          </button>
-        ) : (
-          <div className="border-2 border-emerald-300 bg-emerald-50 rounded-lg p-4 space-y-3">
-            <p className="text-sm text-emerald-800 font-medium">
-              Confirm payment of {'\u20B9'}{(booking.final_price ?? booking.quoted_price).toLocaleString('en-IN')} has been made?
-            </p>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setShowConfirm(false)}
-                className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-lg hover:bg-white transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleMarkPaid}
-                disabled={marking}
-                className="flex-1 px-3 py-2 text-sm bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
-              >
-                {marking && <Spinner className="h-4 w-4 border-white border-t-transparent" />}
-                Confirm Paid
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
+      )}
     </div>
   )
 }

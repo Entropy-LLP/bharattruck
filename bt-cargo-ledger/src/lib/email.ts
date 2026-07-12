@@ -56,17 +56,41 @@ export function defaultEmailSender(): EmailSender {
   return apiKey ? new ResendEmailSender(apiKey, from) : new ConsoleEmailSender()
 }
 
-/** Build the delivery-confirmation email body for a POD OTP. */
-export function buildOtpEmail(to: string, otp: string, ttlMinutes: number): EmailMessage {
+/** Build the delivery-confirmation email body for a POD OTP.
+ *  The receiver confirms delivery THEMSELVES on the public receiver page
+ *  (`RECEIVER_APP_BASE_URL/pod/:bookingId`) — not by handing the code to the
+ *  driver. When RECEIVER_APP_BASE_URL is set we include a direct link to that
+ *  page plus the code; if it is unset we gracefully fall back to code-only
+ *  copy (no crash) so the flow still works in environments without the base URL. */
+export function buildOtpEmail(
+  to: string,
+  otp: string,
+  ttlMinutes: number,
+  bookingId: string,
+): EmailMessage {
   const subject = 'Your BharatTruck delivery confirmation code'
-  const text =
-    `Your BharatTruck delivery confirmation code is ${otp}.\n` +
-    `Share it with the driver to confirm you received the shipment.\n` +
-    `It expires in ${ttlMinutes} minutes. If you did not expect this, ignore this email.`
-  const html =
-    `<p>Your BharatTruck delivery confirmation code is <strong style="font-size:20px">${otp}</strong>.</p>` +
-    `<p>Share it with the driver to confirm you received the shipment. ` +
-    `It expires in ${ttlMinutes} minutes.</p>` +
-    `<p>If you did not expect this, please ignore this email.</p>`
+  const base = process.env.RECEIVER_APP_BASE_URL?.replace(/\/+$/, '')
+  const link = base ? `${base}/pod/${bookingId}` : null
+
+  const text = link
+    ? `Open this link and enter your delivery code to confirm you received the shipment:\n` +
+      `${link}\n\n` +
+      `Your delivery code is ${otp}.\n` +
+      `It expires in ${ttlMinutes} minutes. If you did not expect this, ignore this email.`
+    : `Your BharatTruck delivery confirmation code is ${otp}.\n` +
+      `Enter this code to confirm you received the shipment.\n` +
+      `It expires in ${ttlMinutes} minutes. If you did not expect this, ignore this email.`
+
+  const html = link
+    ? `<p>Open this link and enter your delivery code to confirm you received the shipment:</p>` +
+      `<p><a href="${link}">${link}</a></p>` +
+      `<p>Your delivery code is <strong style="font-size:20px">${otp}</strong>. ` +
+      `It expires in ${ttlMinutes} minutes.</p>` +
+      `<p>If you did not expect this, please ignore this email.</p>`
+    : `<p>Your BharatTruck delivery confirmation code is <strong style="font-size:20px">${otp}</strong>.</p>` +
+      `<p>Enter this code to confirm you received the shipment. ` +
+      `It expires in ${ttlMinutes} minutes.</p>` +
+      `<p>If you did not expect this, please ignore this email.</p>`
+
   return { to, subject, html, text }
 }
