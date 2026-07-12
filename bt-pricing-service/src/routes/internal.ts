@@ -37,9 +37,11 @@ export async function internalPricingRoutes(app: FastifyInstance) {
     }
   })
 
-  // POST /internal/quote/:id/consume — atomically stamp consumed_by_booking_id.
-  // The conditional UPDATE in the store (WHERE consumed_by_booking_id IS NULL AND
-  // expires_at > now()) is the DB-enforced replay + expiry guard.
+  // POST /internal/quote/:id/consume — atomically stamp consumed_at +
+  // consumed_by_booking_id together. The conditional UPDATE in the store
+  // (WHERE consumed_at IS NULL AND expires_at > now()) is the DB-enforced replay
+  // + expiry guard; consumed_at (not the FK) is the guard because it is immutable
+  // and survives a compensating booking-delete.
   app.post('/quote/:id/consume', async (req, reply) => {
     const params = IdParam.safeParse(req.params)
     if (!params.success) {

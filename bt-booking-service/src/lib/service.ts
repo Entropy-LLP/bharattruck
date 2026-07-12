@@ -35,10 +35,20 @@ import { defaultPricingClient, type PricingClient } from './pricing-client.js'
 // 6 dp, well inside this epsilon.
 const COORD_EPSILON = 1e-5
 
+// Weight match tolerance. price_quotes.weight_kg is numeric(12,2), so the quote's
+// weight comes back rounded to 2 dp; comparing the raw client weight with a strict
+// !== would spuriously reject a >2-decimal input. Match to the stored precision.
+const WEIGHT_EPSILON = 0.01
+
+// Minimal structural logger (same shape used by payment-emit) so the route can
+// pass req.log without service.ts depending on Fastify.
+type Logger = { warn(obj: unknown, msg: string): void }
+
 export async function createBooking(
   body: CreateBookingBody,
   actor: AuthenticatedUser,
   pricing: PricingClient = defaultPricingClient(),
+  log?: Logger,
 ): Promise<DbBooking> {
   if (actor.role !== 'shipper') {
     throw new BookingError('Only shippers can create bookings', 'FORBIDDEN', 403)
@@ -59,14 +69,22 @@ export async function createBooking(
   }
 
   // 3. BIND the booking to the priced route + cargo. Any mismatch → 4xx; the
-  //    locked price is only valid for the exact trip it was quoted for.
+  //    locked price is only valid for the exact trip it was quoted for. route +
+  //    weight + load_type + vehicle_type are ALL bound, so the priced trip and
+  //    the booked trip are the same one. vehicle_type is load-bearing here: the
+  //    rate card scales ~2.9x across classes, so without this bind a shipper
+  //    could price a mini_truck and book a trailer on the same lock.
+  //    (Weight-vs-vehicle-capacity validation — rejecting a class too small for
+  //    the weight — is a deliberate follow-up in the pricing constant-harvest PR,
+  //    which owns the capacity constants; it is intentionally NOT done here.)
   if (
     Math.abs(body.source_lat - quote.source_lat) > COORD_EPSILON ||
     Math.abs(body.source_lng - quote.source_lng) > COORD_EPSILON ||
     Math.abs(body.dest_lat   - quote.dest_lat)   > COORD_EPSILON ||
     Math.abs(body.dest_lng   - quote.dest_lng)   > COORD_EPSILON ||
-    body.weight_kg !== quote.weight_kg ||
-    body.load_type !== quote.load_type
+    Math.abs(body.weight_kg  - quote.weight_kg)  > WEIGHT_EPSILON ||
+    body.load_type    !== quote.load_type ||
+    body.vehicle_type !== quote.vehicle_type
   ) {
     throw new BookingError(
       'Booking route or cargo does not match the locked quote — request a new quote',
@@ -80,14 +98,32 @@ export async function createBooking(
 
   // 5. Atomically consume the quote (DB-enforced replay/expiry guard). On any
   //    failure — including a concurrent double-submit that loses the race and
-  //    gets a 409 — compensate by deleting the just-created pending booking so
-  //    it never becomes visible to anyone, then re-throw the 4xx. The delete
-  //    nulls consumed_by_booking_id but NOT consumed_at, so the quote stays
-  //    consumed (no replay).
+  //    gets a 409 — compensate by removing the just-created, not-yet-accepted
+  //    booking so it never becomes visible to anyone, then re-throw the 4xx.
+  //    The delete nulls consumed_by_booking_id but NOT consumed_at, so a
+  //    consumed quote stays consumed (no replay).
+  //
+  //    A failing compensation is logged (never silently swallowed) so an orphan
+  //    is observable and reconcilable by ops.
+  //
+  //    Residual narrow race (known, accepted, NON-financial): a transport-only
+  //    consume failure — the quote WAS consumed server-side but the reply was
+  //    lost — racing a concurrent driver-accept leaves an 'accepted' booking the
+  //    guarded delete can no longer remove. Price integrity still holds: the
+  //    booking carries the correct server-locked quoted_price and the quote is
+  //    correctly consumed (no replay); only the shipper's client sees a spurious
+  //    error. We do NOT redesign the state machine to close this here.
   try {
     await pricing.consumeQuote(body.quote_id, booking.id)
   } catch (err) {
-    await repo.deleteBooking(booking.id).catch(() => {})
+    try {
+      await repo.deleteBooking(booking.id)
+    } catch (cleanupErr) {
+      log?.warn(
+        { err: cleanupErr, booking_id: booking.id, quote_id: body.quote_id },
+        'quote-lock compensation failed — booking may be orphaned (reconcile in ops)',
+      )
+    }
     throw err
   }
 

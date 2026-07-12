@@ -63,17 +63,22 @@ export async function createBooking(
 // deleteBooking
 // Compensation for the quote-lock saga: if consuming the price-lock
 // fails AFTER the booking row was inserted, roll the just-created
-// pending booking back so it never becomes visible to anyone. Guarded
-// on status='pending' — a brand-new booking has no payments/payouts/
-// location_history FKs yet, so this delete is safe.
+// booking back so it never becomes visible to anyone. Guarded on the
+// PRE-ACCEPTED statuses (a fresh booking is 'pending'; an auction one may
+// have moved to 'negotiating') — broadening past 'pending' shrinks the
+// insert→consume interleaving window. Any pre-accepted booking has no
+// payments/payouts/location_history FKs yet, so this delete is safe; once a
+// driver has accepted, the guard intentionally no longer matches.
 // -----------------------------------------------------------
+
+const PRE_ACCEPTED_STATUSES: BookingStatus[] = ['pending', 'negotiating']
 
 export async function deleteBooking(bookingId: string): Promise<void> {
   const { error } = await supabase
     .from('bookings')
     .delete()
     .eq('id', bookingId)
-    .eq('status', 'pending')
+    .in('status', PRE_ACCEPTED_STATUSES)
 
   if (error) throw new Error(`DB delete failed: ${error.message}`)
 }

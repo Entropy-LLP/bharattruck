@@ -123,6 +123,8 @@ export default function NewBookingPage() {
       dest_lng: parseFloat(destLng),
       load_type: loadType,
       weight_kg: weight,
+      // Same vehicle_type that was priced, so the booking binds to the locked quote.
+      vehicle_type: vehicleType,
       quote_id: quote.quote_id,
       pickup_date: form.get('pickup_date') as string,
       pickup_time_slot: (form.get('pickup_time_slot') as string) || undefined,

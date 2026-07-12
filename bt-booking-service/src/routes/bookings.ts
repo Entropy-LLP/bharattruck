@@ -40,7 +40,9 @@ export async function bookingRoutes(app: FastifyInstance) {
       })
     }
     try {
-      const booking = await svc.createBooking(parsed.data, req.user)
+      // pricing client left to its default; req.log lets the saga's compensation
+      // path surface an orphaned booking if the compensating delete ever fails.
+      const booking = await svc.createBooking(parsed.data, req.user, undefined, req.log)
       return reply.status(201).send({ success: true, data: booking })
     } catch (err) {
       return handleError(reply, err)

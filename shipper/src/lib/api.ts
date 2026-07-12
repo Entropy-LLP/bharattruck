@@ -233,6 +233,9 @@ export interface CreateBookingPayload {
   dest_lng: number
   load_type: string
   weight_kg: number
+  // Same truck class that was priced; the server binds it to the locked quote
+  // (mismatch → 4xx). Must be the exact vehicle_type sent to POST /pricing/quote.
+  vehicle_type: PriceQuoteVehicleType
   // The price-lock handle from POST /pricing/quote — NOT a raw price. The server
   // resolves quoted_price from the locked price_quotes row (price SHOWN == charged).
   quote_id: string
