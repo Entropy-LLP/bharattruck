@@ -101,7 +101,7 @@ deploy_source bt-gateway bt-gateway
 if [ "${SKIP_APPS:-0}" = "1" ]; then
   echo "SKIP_APPS=1 — skipping app deploys"
 else
-  echo "NOTE: driver/shipper map correctness depends on the Dockerfile Maps browser key + Map ID being correct (DEPLOY-PREP)."
+  echo "Assuming driver/shipper Dockerfiles already have the correct Maps browser key + Map ID baked (founder step, DEPLOY-PREP)."
   deploy_source bt-shipper shipper
   deploy_source bt-driver  driver
   deploy_source bt-ops-web bt-ops-web
