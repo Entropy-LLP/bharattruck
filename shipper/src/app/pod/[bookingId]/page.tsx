@@ -69,13 +69,21 @@ export default function ReceiverPodPage({
         return
       }
 
-      // Re-opening the email link after a successful confirm must NOT look like
-      // a failure. A verified code is cleared server-side (OTP_EXPIRED on
-      // re-submit) and the trip is already `completed` (INVALID_TRANSITION if a
-      // code somehow survives) — both mean the delivery is already done, so
-      // show a friendly acknowledgement rather than a raw error.
-      if (json?.code === 'OTP_EXPIRED' || json?.code === 'INVALID_TRANSITION') {
+      // The trip has already moved past in_transit — someone already confirmed
+      // this delivery — so acknowledge it rather than show a raw error. This is
+      // the ONLY signal we can trust as genuinely-confirmed.
+      if (json?.code === 'INVALID_TRANSITION') {
         setPhase('already_confirmed')
+        return
+      }
+
+      // OTP_EXPIRED is AMBIGUOUS: the code may have been used already OR simply
+      // timed out (10-min TTL) / never requested. We must NOT claim success — a
+      // receiver entering a correct code a little too late would otherwise be
+      // told "already confirmed" and close the page, stranding an unconfirmed
+      // trip. Point them at getting a fresh code from the driver.
+      if (json?.code === 'OTP_EXPIRED') {
+        setError('This code has expired or was already used. If your delivery isn’t confirmed yet, ask the driver to send a new code.')
         return
       }
 
