@@ -35,10 +35,13 @@ import { defaultPricingClient, type PricingClient } from './pricing-client.js'
 // 6 dp, well inside this epsilon.
 const COORD_EPSILON = 1e-5
 
-// Weight match tolerance. price_quotes.weight_kg is numeric(12,2), so the quote's
-// weight comes back rounded to 2 dp; comparing the raw client weight with a strict
-// !== would spuriously reject a >2-decimal input. Match to the stored precision.
-const WEIGHT_EPSILON = 0.01
+// Weight is compared at the stored precision (price_quotes.weight_kg is
+// numeric(12,2)): round both sides to 2 dp (integer hundredths) and match
+// EXACTLY. This leaves no tolerance WINDOW that could be used to nudge the
+// weight across a surcharge-tier boundary, while still tolerating the DB's 2-dp
+// quantisation of the quote-time weight (a strict !== on the raw float would
+// spuriously reject a >2-decimal input).
+const weightHundredths = (kg: number): number => Math.round(kg * 100)
 
 // Minimal structural logger (same shape used by payment-emit) so the route can
 // pass req.log without service.ts depending on Fastify.
@@ -77,12 +80,21 @@ export async function createBooking(
   //    (Weight-vs-vehicle-capacity validation — rejecting a class too small for
   //    the weight — is a deliberate follow-up in the pricing constant-harvest PR,
   //    which owns the capacity constants; it is intentionally NOT done here.)
+  // Fail CLOSED on any non-finite numeric before the abs comparisons
+  // (defense-in-depth: the only caller validates the body with Zod, but a NaN
+  // would make `NaN > EPS === false` fail OPEN — the opposite of the string
+  // checks, which fail closed on undefined).
+  const nums = [
+    body.source_lat, body.source_lng, body.dest_lat, body.dest_lng, body.weight_kg,
+    quote.source_lat, quote.source_lng, quote.dest_lat, quote.dest_lng, quote.weight_kg,
+  ]
   if (
+    nums.some((n) => !Number.isFinite(n)) ||
     Math.abs(body.source_lat - quote.source_lat) > COORD_EPSILON ||
     Math.abs(body.source_lng - quote.source_lng) > COORD_EPSILON ||
     Math.abs(body.dest_lat   - quote.dest_lat)   > COORD_EPSILON ||
     Math.abs(body.dest_lng   - quote.dest_lng)   > COORD_EPSILON ||
-    Math.abs(body.weight_kg  - quote.weight_kg)  > WEIGHT_EPSILON ||
+    weightHundredths(body.weight_kg) !== weightHundredths(quote.weight_kg) ||
     body.load_type    !== quote.load_type ||
     body.vehicle_type !== quote.vehicle_type
   ) {
