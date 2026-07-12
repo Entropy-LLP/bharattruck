@@ -16,7 +16,7 @@ import { useState, use } from 'react'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
 
-type Phase = 'entry' | 'confirmed'
+type Phase = 'entry' | 'confirmed' | 'already_confirmed'
 
 // BharatTruck wordmark for the public receiver page — the consignee has no
 // app context, so brand it clearly so the email link looks trustworthy.
@@ -69,6 +69,16 @@ export default function ReceiverPodPage({
         return
       }
 
+      // Re-opening the email link after a successful confirm must NOT look like
+      // a failure. A verified code is cleared server-side (OTP_EXPIRED on
+      // re-submit) and the trip is already `completed` (INVALID_TRANSITION if a
+      // code somehow survives) — both mean the delivery is already done, so
+      // show a friendly acknowledgement rather than a raw error.
+      if (json?.code === 'OTP_EXPIRED' || json?.code === 'INVALID_TRANSITION') {
+        setPhase('already_confirmed')
+        return
+      }
+
       // The verify-otp envelope carries only `error` + `code` (no numeric
       // attempts-remaining counter). Surface the server message verbatim.
       setError(json?.error || 'Could not verify the code — please try again')
@@ -79,7 +89,12 @@ export default function ReceiverPodPage({
     }
   }
 
-  if (phase === 'confirmed') {
+  if (phase === 'confirmed' || phase === 'already_confirmed') {
+    const heading = phase === 'confirmed' ? 'Delivery confirmed' : 'Already confirmed'
+    const body =
+      phase === 'confirmed'
+        ? 'Thank you. The delivery has been recorded — you can close this page.'
+        : 'This delivery has already been confirmed — thank you. You can close this page.'
     return (
       <main className="min-h-dvh flex items-center justify-center bg-gray-50 px-4">
         <div className="w-full max-w-sm bg-white rounded-2xl border border-gray-200 shadow-sm p-8 text-center">
@@ -89,10 +104,8 @@ export default function ReceiverPodPage({
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
             </svg>
           </div>
-          <h1 className="text-xl font-bold text-emerald-800 mb-1">Delivery confirmed</h1>
-          <p className="text-sm text-gray-500">
-            Thank you. The delivery has been recorded — you can close this page.
-          </p>
+          <h1 className="text-xl font-bold text-emerald-800 mb-1">{heading}</h1>
+          <p className="text-sm text-gray-500">{body}</p>
         </div>
       </main>
     )

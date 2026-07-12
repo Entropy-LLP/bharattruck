@@ -613,7 +613,7 @@ function NavigateButton({ booking }: { booking: Booking }) {
   const destination = toPickup
     ? { lat: booking.source_lat, lng: booking.source_lng }
     : { lat: booking.dest_lat, lng: booking.dest_lng }
-  const label = toPickup ? 'Navigate to pickup' : 'Navigate to drop'
+  const label = toPickup ? 'Navigate to pickup' : 'Navigate to delivery'
 
   function handleNavigate() {
     const url = buildNavDeepLink({ destination })

@@ -754,7 +754,7 @@ function SettledPaymentPanel({ booking }: { booking: Booking }) {
       {loading ? (
         <div className="flex items-center gap-2 text-sm text-emerald-700">
           <Spinner className="h-4 w-4 border-emerald-600 border-t-transparent" />
-          Loading settlement details\u2026
+          Loading settlement details…
         </div>
       ) : error ? (
         <p className="text-sm text-emerald-700">

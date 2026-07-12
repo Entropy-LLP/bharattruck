@@ -31,6 +31,7 @@ export default function NewBookingPage() {
       pickup_date: form.get('pickup_date') as string,
       pickup_time_slot: (form.get('pickup_time_slot') as string) || undefined,
       special_instructions: (form.get('special_instructions') as string) || undefined,
+      receiver_email: form.get('receiver_email') as string,
       booking_type: bookingType,
       target_driver_id: bookingType === 'direct'
         ? (form.get('target_driver_id') as string) || undefined
@@ -97,6 +98,11 @@ export default function NewBookingPage() {
                 <label htmlFor="dest_lng" className={labelClass}>Longitude</label>
                 <input id="dest_lng" name="dest_lng" type="number" step="any" required className={inputClass} placeholder="77.5946" />
               </div>
+            </div>
+            <div>
+              <label htmlFor="receiver_email" className={labelClass}>Receiver&apos;s email (for delivery confirmation)</label>
+              <input id="receiver_email" name="receiver_email" type="email" required className={inputClass} placeholder="e.g. consignee@example.com" />
+              <p className="mt-1 text-xs text-gray-500">The person receiving the goods enters a code emailed here to confirm delivery.</p>
             </div>
           </fieldset>
 

@@ -45,6 +45,7 @@ export async function createBooking(
       pickup_date:          body.pickup_date,
       pickup_time_slot:     body.pickup_time_slot ?? null,
       special_instructions: body.special_instructions ?? null,
+      receiver_email:       body.receiver_email,
       booking_type:         body.booking_type ?? 'direct',
       target_driver_id:     body.target_driver_id ?? null,
       auction_deadline:     body.auction_deadline ?? null,

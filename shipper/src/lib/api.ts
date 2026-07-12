@@ -288,6 +288,9 @@ export interface CreateBookingPayload {
   pickup_date: string
   pickup_time_slot?: string
   special_instructions?: string
+  // Consignee inbox the delivery-confirmation code is emailed to. Required —
+  // a booking without it can never be confirmed as delivered by the receiver.
+  receiver_email: string
   booking_type: 'direct' | 'auction'
   target_driver_id?: string
   auction_deadline?: string
