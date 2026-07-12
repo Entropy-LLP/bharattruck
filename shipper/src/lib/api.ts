@@ -175,8 +175,59 @@ export function getBooking(id: string): Promise<Booking> {
   return request<Booking>(`/bookings/${id}`)
 }
 
-export function markAsPaid(bookingId: string): Promise<Booking> {
-  return request<Booking>(`/bookings/${bookingId}/pay`, { method: 'PATCH' })
+// ── Payments (cash-recorded settlement — NO escrow/Razorpay) ──
+// Real bt-payment-service wiring, reached through the gateway at
+// `/api/payments/*`. JWT-gated (shipper|admin) + booking-ownership.
+// Snake_case JSON, {success,data} envelope. Mirrors payment-service.ts.
+
+export type PaymentMode = 'cash' | 'upi' | 'direct'
+
+export interface PaymentRecord {
+  booking_id: string
+  amount: number
+  mode: PaymentMode
+  reference: string | null
+  recorded_by: string
+  status: 'recorded'
+}
+
+export interface PayoutRecord {
+  booking_id: string
+  driver_id: string | null
+  amount: number
+  mode: PaymentMode | null
+  status: 'pending' | 'recorded'
+  recorded_by: string | null
+}
+
+export interface PaymentStatus {
+  booking_id: string
+  payment: PaymentRecord | null
+  payout: PayoutRecord | null
+}
+
+export interface SettleResult extends PaymentStatus {
+  status: string
+  already_settled: boolean
+}
+
+export function settlePayment(
+  bookingId: string,
+  body: { amount: number; mode: PaymentMode; reference?: string },
+): Promise<SettleResult> {
+  return request<SettleResult>('/payments/settle', {
+    method: 'POST',
+    body: JSON.stringify({
+      booking_id: bookingId,
+      amount: body.amount,
+      mode: body.mode,
+      reference: body.reference,
+    }),
+  })
+}
+
+export function getPaymentStatus(bookingId: string): Promise<PaymentStatus> {
+  return request<PaymentStatus>(`/payments/status/${bookingId}`)
 }
 
 // ── Quotes ────────────────────────────────────────────────────

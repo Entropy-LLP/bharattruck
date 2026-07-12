@@ -13,8 +13,8 @@ const app = Fastify({
 
 async function bootstrap() {
   await app.register(cors, { origin: true })
-  await app.register(shipmentRoutes, { prefix: '/shipments' })
-  await app.register(podRoutes, { prefix: '/pod' })
+  await app.register(shipmentRoutes, { prefix: '/cargo/shipments' })
+  await app.register(podRoutes, { prefix: '/cargo/pod' })
   app.get('/health', () => ({
     status: 'ok',
     service: 'bt-cargo-ledger',
