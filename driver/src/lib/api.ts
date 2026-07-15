@@ -498,3 +498,42 @@ export function registerProfile(body: {
 export function authLogout() {
   return authRequest<{ message: string }>('/auth/logout', { method: 'POST' })
 }
+
+// ── Tracking API ──────────────────────────────────────────────
+
+export interface TrackingPump {
+  name: string
+  address: string
+  distance_meters?: number
+  lat: number
+  lng: number
+}
+
+export interface TrackingFuelEstimate {
+  distance_km: number
+  mileage_kmpl: number
+  fuel_litres: number
+  fuel_cost_inr: number
+  diesel_price_inr: number
+}
+
+export interface TrackingAlert {
+  id: string
+  type: 'off_route' | 'idle' | 'near_drop'
+  message: string
+  severity: 'info' | 'warning' | 'critical'
+  created_at: string
+}
+
+export function getTrackingPumps(bookingId: string): Promise<{ pumps: TrackingPump[] }> {
+  return request<{ pumps: TrackingPump[] }>(`/tracking/pumps/${bookingId}`)
+}
+
+export function getTrackingFuel(bookingId: string): Promise<TrackingFuelEstimate> {
+  return request<TrackingFuelEstimate>(`/tracking/fuel/${bookingId}`)
+}
+
+export function getTrackingAlerts(bookingId: string): Promise<{ alerts: TrackingAlert[] }> {
+  return request<{ alerts: TrackingAlert[] }>(`/tracking/alerts/${bookingId}`)
+}
+
