@@ -233,38 +233,9 @@ export function startTrip(bookingId: string): Promise<Booking> {
   })
 }
 
-// ── Proof-of-Delivery (receiver-OTP) ─────────────────────────
-// The driver never completes a trip directly — completion is driven
-// out-of-band by the receiver verifying an emailed OTP (which fires
-// booking-service's internal complete-pod). The driver only fetches
-// POD context and asks the receiver OTP to be sent.
-//   getPodContext → booking-svc GET /bookings/:id/pod-context
-//                   (driver-only, requires status === 'in_transit')
-//   requestPodOtp → bt-cargo-ledger POST /cargo/pod/request-otp
-//                   (driver JWT forwarded to booking-svc for authz)
-
-export interface PodContext {
-  booking_id: string
-  status: string
-  receiver_email: string | null
-}
-
-export interface RequestOtpResult {
-  booking_id: string
-  /** MASKED receiver email (e.g. j****@x.com) — display the full
-   *  address from getPodContext instead. */
-  sent_to: string
-  expires_in_seconds: number
-}
-
-export function getPodContext(bookingId: string): Promise<PodContext> {
-  return request<PodContext>(`/bookings/${bookingId}/pod-context`)
-}
-
-export function requestPodOtp(bookingId: string): Promise<RequestOtpResult> {
-  return request<RequestOtpResult>('/cargo/pod/request-otp', {
-    method: 'POST',
-    body: JSON.stringify({ booking_id: bookingId }),
+export function completeTrip(bookingId: string): Promise<Booking> {
+  return request<Booking>(`/bookings/${bookingId}/complete`, {
+    method: 'PATCH',
   })
 }
 
@@ -527,3 +498,42 @@ export function registerProfile(body: {
 export function authLogout() {
   return authRequest<{ message: string }>('/auth/logout', { method: 'POST' })
 }
+
+// ── Tracking API ──────────────────────────────────────────────
+
+export interface TrackingPump {
+  name: string
+  address: string
+  distance_meters?: number
+  lat: number
+  lng: number
+}
+
+export interface TrackingFuelEstimate {
+  distance_km: number
+  mileage_kmpl: number
+  fuel_litres: number
+  fuel_cost_inr: number
+  diesel_price_inr: number
+}
+
+export interface TrackingAlert {
+  id: string
+  type: 'off_route' | 'idle' | 'near_drop'
+  message: string
+  severity: 'info' | 'warning' | 'critical'
+  created_at: string
+}
+
+export function getTrackingPumps(bookingId: string): Promise<{ pumps: TrackingPump[] }> {
+  return request<{ pumps: TrackingPump[] }>(`/tracking/pumps/${bookingId}`)
+}
+
+export function getTrackingFuel(bookingId: string): Promise<TrackingFuelEstimate> {
+  return request<TrackingFuelEstimate>(`/tracking/fuel/${bookingId}`)
+}
+
+export function getTrackingAlerts(bookingId: string): Promise<{ alerts: TrackingAlert[] }> {
+  return request<{ alerts: TrackingAlert[] }>(`/tracking/alerts/${bookingId}`)
+}
+

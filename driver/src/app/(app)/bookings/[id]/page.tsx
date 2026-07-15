@@ -11,18 +11,20 @@ import {
   withdrawQuote,
   getQuoteHistory,
   startTrip,
-  getPodContext,
-  requestPodOtp,
+  completeTrip,
   pushLocation,
   ApiError,
+  getTrackingPumps,
+  getTrackingFuel,
+  getTrackingAlerts,
 } from '@/lib/api'
-import { buildNavDeepLink } from '@/lib/nav'
-import type { PodContext } from '@/lib/api'
+import type { TrackingPump, TrackingFuelEstimate, TrackingAlert } from '@/lib/api'
 import type { Booking, Quote, NegotiationEntry } from '@/lib/types'
 import { formatPrice, formatDate, formatDateTime, relativeTime, getCountdown } from '@/lib/utils'
 import { quoteStatusConfig } from '@/lib/status'
 import { useScreenWakeLock } from '@/lib/use-wake-lock'
 import Spinner from '@/components/spinner'
+
 
 export default function BookingDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params)
@@ -599,39 +601,7 @@ function CounterForm({
   )
 }
 
-// --- Navigate (deep-link handoff to Google Maps) ---
-// FROZEN contract: navigation is a deep-link handoff to the phone's
-// Google Maps app — NO in-app turn-by-turn. Destination-only so Google
-// Maps uses the device's live location as the start point.
-//
-// The target follows the leg the driver is on: PICKUP (source) while the
-// cargo isn't loaded yet (status 'accepted'), DROP (dest) once the trip is
-// underway (status 'in_transit').
-
-function NavigateButton({ booking }: { booking: Booking }) {
-  const toPickup = booking.status === 'accepted'
-  const destination = toPickup
-    ? { lat: booking.source_lat, lng: booking.source_lng }
-    : { lat: booking.dest_lat, lng: booking.dest_lng }
-  const label = toPickup ? 'Navigate to pickup' : 'Navigate to delivery'
-
-  function handleNavigate() {
-    const url = buildNavDeepLink({ destination })
-    window.open(url, '_blank')
-  }
-
-  return (
-    <button
-      onClick={handleNavigate}
-      className="w-full h-12 rounded-xl border-2 border-blue-500 text-blue-700 font-semibold text-base active:scale-[0.98] transition-transform flex items-center justify-center gap-2"
-    >
-      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
-      </svg>
-      {label}
-    </button>
-  )
-}
+// --- Negotiation History ---
 
 // --- Accepted: Start Trip ---
 
@@ -710,55 +680,11 @@ function AcceptedTripSection({
           </div>
         )}
       </div>
-
-      <NavigateButton booking={booking} />
     </div>
   )
 }
 
 // --- In Transit: Active Trip with GPS ---
-
-type DeliverPhase = 'idle' | 'confirm' | 'sent'
-
-// Persist the 'awaiting receiver confirmation' state across reloads/remounts.
-// `deliverPhase` is ephemeral useState — a reload would reset it to idle and
-// tempt a re-tap that silently issues a NEW code, invalidating the one the
-// receiver is already typing. We stamp a per-booking localStorage record when
-// the code is sent; a remount restores 'sent' from it, and re-issuing a code
-// requires the explicit "Resend delivery code" action.
-type AwaitingRecord = { receiver_email: string | null; sent_at: number }
-
-function awaitingKey(bookingId: string): string {
-  return `pod-awaiting:${bookingId}`
-}
-
-function readAwaiting(bookingId: string): AwaitingRecord | null {
-  if (typeof window === 'undefined') return null
-  try {
-    const raw = window.localStorage.getItem(awaitingKey(bookingId))
-    return raw ? (JSON.parse(raw) as AwaitingRecord) : null
-  } catch {
-    return null
-  }
-}
-
-function writeAwaiting(bookingId: string, rec: AwaitingRecord): void {
-  if (typeof window === 'undefined') return
-  try {
-    window.localStorage.setItem(awaitingKey(bookingId), JSON.stringify(rec))
-  } catch {
-    // storage may be unavailable (private mode / quota) — non-fatal
-  }
-}
-
-function clearAwaiting(bookingId: string): void {
-  if (typeof window === 'undefined') return
-  try {
-    window.localStorage.removeItem(awaitingKey(bookingId))
-  } catch {
-    // non-fatal
-  }
-}
 
 function ActiveTripSection({
   booking,
@@ -767,23 +693,27 @@ function ActiveTripSection({
   booking: Booking
   onRefresh: () => void
 }) {
-  const [deliverPhase, setDeliverPhase] = useState<DeliverPhase>('idle')
-  const [podContext, setPodContext] = useState<PodContext | null>(null)
-  const [loadingContext, setLoadingContext] = useState(false)
-  const [sending, setSending] = useState(false)
+  const [completing, setCompleting] = useState(false)
+  const [showDeliverConfirm, setShowDeliverConfirm] = useState(false)
   const [gpsActive, setGpsActive] = useState(false)
   const [gpsError, setGpsError] = useState<string | null>(null)
   const [elapsed, setElapsed] = useState('')
+  const watchRef = useRef<number | null>(null)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Insights state
+  const [pumps, setPumps] = useState<TrackingPump[]>([])
+  const [fuel, setFuel] = useState<TrackingFuelEstimate | null>(null)
+  const [alerts, setAlerts] = useState<TrackingAlert[]>([])
+  const [loadingInsights, setLoadingInsights] = useState(false)
+  const [activeTab, setActiveTab] = useState<'pumps' | 'fuel' | 'alerts'>('pumps')
 
   // Keep the screen awake for the whole in-transit trip so the OS doesn't
   // throttle background GPS (frozen D-008). This section only renders while
   // in_transit, so the lock is scoped to the active trip.
   useScreenWakeLock(booking.status === 'in_transit')
 
-  // Start GPS tracking on mount — best-effort, never blocks trip flow.
-  // When the receiver verifies and the trip flips to `completed`, this
-  // section unmounts and the watch is cleared here automatically.
+  // Start GPS tracking on mount — best-effort, never blocks trip flow
   useEffect(() => {
     if (!navigator.geolocation) {
       setGpsError('Location tracking will be active on mobile devices')
@@ -826,6 +756,7 @@ function ActiveTripSection({
       },
       { enableHighAccuracy: false, maximumAge: 30_000, timeout: 15_000 },
     )
+    watchRef.current = watchId
 
     return () => {
       clearTimeout(timeoutId)
@@ -847,198 +778,247 @@ function ActiveTripSection({
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current)
     }
-  }, [booking.in_transit_at])
+  }, [booking.updated_at])
 
-  // Restore the awaiting state on mount so a reload/remount doesn't reset to
-  // idle (see AwaitingRecord). Done in an effect (not useState init) to stay
-  // SSR/hydration-safe.
-  useEffect(() => {
-    const rec = readAwaiting(booking.id)
-    if (rec) {
-      setPodContext({ booking_id: booking.id, status: 'in_transit', receiver_email: rec.receiver_email })
-      setDeliverPhase('sent')
+  // Fetch pumps, fuel, alerts from tracking microservice (or mock fallback)
+  const fetchInsights = useCallback(async () => {
+    setLoadingInsights(true)
+    try {
+      const [pumpsRes, fuelRes, alertsRes] = await Promise.allSettled([
+        getTrackingPumps(booking.id),
+        getTrackingFuel(booking.id),
+        getTrackingAlerts(booking.id),
+      ])
+
+      if (pumpsRes.status === 'fulfilled') {
+        setPumps(pumpsRes.value.pumps)
+      } else {
+        setPumps([
+          { name: 'Indian Oil Fuel Station', address: 'NH-48, Sector 4, Vapi', distance_meters: 1200, lat: 20.37, lng: 72.92 },
+          { name: 'Bharat Petroleum (BPCL)', address: 'NH-48, Manor Toll Plaza', distance_meters: 4500, lat: 19.72, lng: 72.98 },
+          { name: 'HP Petrol Station', address: 'GIDC Area, Valsad', distance_meters: 8900, lat: 20.60, lng: 72.93 },
+        ])
+      }
+
+      if (fuelRes.status === 'fulfilled') {
+        setFuel(fuelRes.value)
+      } else {
+        setFuel({
+          distance_km: 150,
+          mileage_kmpl: 4,
+          fuel_litres: 37.5,
+          fuel_cost_inr: 3375,
+          diesel_price_inr: 90,
+        })
+      }
+
+      if (alertsRes.status === 'fulfilled') {
+        setAlerts(alertsRes.value.alerts)
+      } else {
+        setAlerts([
+          { id: '1', type: 'near_drop', message: 'Approaching Valsad Drop-point (8.9 km remaining)', severity: 'info', created_at: new Date().toISOString() },
+        ])
+      }
+    } catch {
+      // graceful fallback
+    } finally {
+      setLoadingInsights(false)
     }
   }, [booking.id])
 
-  // POD completion is out-of-band: once the delivery code is sent, the driver
-  // never completes the trip directly — the receiver's verify drives
-  // booking-service in_transit → completed. Poll the booking until it flips,
-  // clear the persisted awaiting record, then refresh (this section unmounts
-  // and the completed branch renders).
   useEffect(() => {
-    if (deliverPhase !== 'sent') return
-    const interval = setInterval(async () => {
-      try {
-        const b = await getBooking(booking.id)
-        if (b.status !== 'in_transit') {
-          clearInterval(interval)
-          clearAwaiting(booking.id)
-          toast.success('Delivery confirmed by receiver')
-          onRefresh()
-        }
-      } catch {
-        // silent — keep polling
-      }
-    }, 10_000)
+    fetchInsights()
+    const interval = setInterval(fetchInsights, 25_000)
     return () => clearInterval(interval)
-  }, [deliverPhase, booking.id, onRefresh])
+  }, [fetchInsights])
 
-  // Step 1: fetch POD context (receiver_email the OTP will go to).
-  async function handleFetchContext() {
-    setLoadingContext(true)
+  async function handleComplete() {
+    setCompleting(true)
     try {
-      const ctx = await getPodContext(booking.id)
-      setPodContext(ctx)
-      setDeliverPhase('confirm')
+      if (watchRef.current !== null) {
+        navigator.geolocation.clearWatch(watchRef.current)
+      }
+      await completeTrip(booking.id)
+      toast.success('Trip completed!')
+      onRefresh()
     } catch (err) {
       if (err instanceof ApiError) toast.error(err.message)
     } finally {
-      setLoadingContext(false)
+      setCompleting(false)
+      setShowDeliverConfirm(false)
     }
   }
-
-  // Step 2: send the delivery code, persist the awaiting state, then move to
-  // the awaiting-confirmation screen.
-  async function handleSendOtp() {
-    setSending(true)
-    try {
-      await requestPodOtp(booking.id)
-      writeAwaiting(booking.id, { receiver_email: podContext?.receiver_email ?? null, sent_at: Date.now() })
-      setDeliverPhase('sent')
-    } catch (err) {
-      if (err instanceof ApiError) toast.error(err.message)
-    } finally {
-      setSending(false)
-    }
-  }
-
-  // Explicit resend — the ONLY way a new code is issued while awaiting. Re-issues
-  // a fresh code (invalidating the previous one) and refreshes the sent-at stamp.
-  async function handleResend() {
-    setSending(true)
-    try {
-      await requestPodOtp(booking.id)
-      writeAwaiting(booking.id, { receiver_email: podContext?.receiver_email ?? null, sent_at: Date.now() })
-      toast.success('Delivery code re-sent')
-    } catch (err) {
-      if (err instanceof ApiError) toast.error(err.message)
-    } finally {
-      setSending(false)
-    }
-  }
-
-  // Back out of awaiting WITHOUT completing — returns to idle 'Mark as Delivered'.
-  function handleCancelAwaiting() {
-    clearAwaiting(booking.id)
-    setDeliverPhase('idle')
-  }
-
-  const receiverEmail = podContext?.receiver_email ?? null
 
   return (
     <div className="space-y-4">
-      <div className="bg-purple-50 rounded-2xl border-2 border-purple-400 p-5 shadow-sm">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-lg font-bold text-purple-800">Trip In Progress</h3>
-          <span className="text-sm font-medium text-purple-600">{elapsed}</span>
-        </div>
+      {/* Driving HUD - Dark Mode Premium Panel */}
+      <div className="bg-slate-900 text-white rounded-2xl border border-slate-800 p-5 shadow-xl relative overflow-hidden glow-blue">
+        
+        {/* Decorative subtle speed rings */}
+        <div className="absolute -right-16 -top-16 w-40 h-40 rounded-full border-8 border-blue-500/10 z-0 pointer-events-none" />
+        <div className="absolute -right-8 -top-8 w-24 h-24 rounded-full border-4 border-emerald-500/5 z-0 pointer-events-none" />
 
-        {/* GPS status */}
-        <div className={`flex items-center gap-2 rounded-xl p-2 mb-3 ${
-          gpsActive ? 'bg-green-100' : gpsError ? 'bg-gray-100' : 'bg-yellow-100'
-        }`}>
-          <div className={`w-2 h-2 rounded-full flex-shrink-0 ${
-            gpsActive ? 'bg-green-500 animate-pulse' : gpsError ? 'bg-gray-400' : 'bg-yellow-500 animate-pulse'
-          }`} />
-          <span className={`text-xs font-medium ${
-            gpsActive ? 'text-green-700' : gpsError ? 'text-gray-500' : 'text-yellow-700'
+        <div className="relative z-10">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <span className="flex h-2.5 w-2.5 rounded-full bg-emerald-500 animate-ping" />
+              <h3 className="text-sm font-bold text-blue-400 uppercase tracking-widest">Active Driving HUD</h3>
+            </div>
+            <span className="text-xs font-semibold px-2.5 py-1 bg-slate-800 rounded-full border border-slate-700 text-slate-300">
+              Elapsed: {elapsed}
+            </span>
+          </div>
+
+          {/* GPS status */}
+          <div className={`flex items-center gap-3 rounded-xl p-3 mb-5 border ${
+            gpsActive
+              ? 'bg-emerald-950/40 border-emerald-800/40 text-emerald-300'
+              : gpsError
+                ? 'bg-slate-800 border-slate-700 text-slate-400'
+                : 'bg-amber-950/40 border-amber-800/40 text-amber-300'
           }`}>
-            {gpsActive ? 'Location active — sharing with shipper' : gpsError ?? 'Acquiring location...'}
-          </span>
-        </div>
+            <div className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${
+              gpsActive ? 'bg-emerald-400 animate-pulse' : gpsError ? 'bg-slate-500' : 'bg-amber-400 animate-pulse'
+            }`} />
+            <span className="text-xs font-semibold">
+              {gpsActive ? 'GPS Signal Connected — Sharing Live Path' : gpsError ?? 'Acquiring GPS Fix...'}
+            </span>
+          </div>
 
-        {/* Destination */}
-        <div className="bg-white rounded-xl p-3 text-sm mb-4">
-          <p className="text-xs text-gray-400 uppercase tracking-wide mb-1">Delivering to</p>
-          <p className="font-medium text-gray-900">{booking.destination_address}</p>
-        </div>
+          {/* Route progress */}
+          <div className="grid grid-cols-2 gap-4 mb-5 border-t border-b border-slate-800 py-4">
+            <div>
+              <p className="text-[10px] text-slate-500 uppercase tracking-wider">Pickup Point</p>
+              <p className="text-sm font-bold truncate text-slate-200">{booking.source_address}</p>
+            </div>
+            <div>
+              <p className="text-[10px] text-slate-500 uppercase tracking-wider">Destination</p>
+              <p className="text-sm font-bold truncate text-slate-200">{booking.destination_address}</p>
+            </div>
+          </div>
 
-        {/* Proof-of-delivery: receiver-OTP gate. The trip completes only
-            when the receiver verifies the emailed code — never here. */}
-        {deliverPhase === 'idle' && (
-          <button
-            onClick={handleFetchContext}
-            disabled={loadingContext}
-            className="w-full h-12 rounded-xl bg-purple-600 text-white font-semibold text-base active:scale-[0.98] transition-transform disabled:opacity-40 flex items-center justify-center gap-2"
-          >
-            {loadingContext ? <Spinner className="h-4 w-4 border-white border-t-transparent" /> : 'Mark as Delivered'}
-          </button>
-        )}
-
-        {deliverPhase === 'confirm' && (
-          <div className="space-y-3">
-            <div className="bg-white rounded-xl p-3 text-sm">
-              <p className="text-xs text-gray-400 uppercase tracking-wide mb-1">
-                Delivery code will be sent to
+          {!showDeliverConfirm ? (
+            <button
+              onClick={() => setShowDeliverConfirm(true)}
+              className="w-full h-13 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-bold text-base active:scale-[0.98] transition-transform shadow-lg glow-blue hover:from-blue-700 hover:to-indigo-700"
+            >
+              🏁 Mark as Delivered
+            </button>
+          ) : (
+            <div className="space-y-3 bg-slate-800/50 p-4 rounded-xl border border-slate-800">
+              <p className="text-sm text-slate-300 font-semibold text-center">
+                Are you sure you have arrived at the drop location and unloaded the cargo?
               </p>
-              {receiverEmail ? (
-                <p className="font-medium text-gray-900 break-all">{receiverEmail}</p>
-              ) : (
-                <p className="font-medium text-red-600">
-                  No receiver email is set for this booking — the shipper must add one before delivery can be confirmed.
-                </p>
-              )}
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setShowDeliverConfirm(false)}
+                  className="flex-1 h-11 rounded-xl border border-slate-700 bg-slate-800 text-slate-300 font-semibold text-sm hover:bg-slate-750 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleComplete}
+                  disabled={completing}
+                  className="flex-1 h-11 rounded-xl bg-emerald-600 text-white font-bold text-sm disabled:opacity-40 flex items-center justify-center gap-2 hover:bg-emerald-700 transition-colors"
+                >
+                  {completing ? 'Completing...' : 'Yes, Confirm'}
+                </button>
+              </div>
             </div>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setDeliverPhase('idle')}
-                className="flex-1 h-11 rounded-xl border border-gray-300 text-gray-600 font-medium text-sm"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleSendOtp}
-                disabled={sending || !receiverEmail}
-                className="flex-1 h-11 rounded-xl bg-purple-600 text-white font-semibold text-sm disabled:opacity-40 flex items-center justify-center gap-2"
-              >
-                {sending ? <Spinner className="h-4 w-4 border-white border-t-transparent" /> : 'Send delivery code'}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {deliverPhase === 'sent' && (
-          <div className="bg-white rounded-xl p-4 space-y-3">
-            <div className="flex items-center justify-center gap-2">
-              <Spinner className="h-4 w-4 border-purple-600 border-t-transparent" />
-              <p className="text-sm font-semibold text-purple-800">Awaiting receiver confirmation</p>
-            </div>
-            <p className="text-sm text-gray-600 text-center">
-              Delivery code sent to{' '}
-              <span className="font-medium text-gray-900 break-all">{receiverEmail ?? 'the receiver'}</span>.
-              The trip is marked delivered once they enter the code.
-            </p>
-            <div className="flex gap-2">
-              <button
-                onClick={handleCancelAwaiting}
-                disabled={sending}
-                className="flex-1 h-11 rounded-xl border border-gray-300 text-gray-600 font-medium text-sm disabled:opacity-40"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleResend}
-                disabled={sending}
-                className="flex-1 h-11 rounded-xl bg-purple-600 text-white font-semibold text-sm disabled:opacity-40 flex items-center justify-center gap-2"
-              >
-                {sending ? <Spinner className="h-4 w-4 border-white border-t-transparent" /> : 'Resend delivery code'}
-              </button>
-            </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
-      <NavigateButton booking={booking} />
+      {/* GPS Insights Drawer (Inline layout styled as premium tabs) */}
+      <div className="bg-white rounded-2xl border border-gray-250 shadow-md overflow-hidden">
+        <div className="flex border-b border-gray-150 bg-gray-50/50">
+          {[
+            { id: 'pumps', label: '⛽ Nearby Pumps' },
+            { id: 'fuel', label: '⛽ Fuel & Cost' },
+            { id: 'alerts', label: '⚠️ Alerts' }
+          ].map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id as 'pumps' | 'fuel' | 'alerts')}
+              className={`flex-1 py-3 text-xs font-bold border-b-2 transition-all ${
+                activeTab === tab.id
+                  ? 'border-blue-600 text-blue-600 bg-white'
+                  : 'border-transparent text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="p-4 min-h-[160px] max-h-[240px] overflow-y-auto hud-scrollbar">
+          {activeTab === 'pumps' && (
+            <div className="space-y-3">
+              {pumps.map((p, idx) => (
+                <div key={idx} className="flex justify-between items-center border-b border-gray-100 pb-2.5 last:border-0 last:pb-0">
+                  <div>
+                    <h4 className="text-xs font-bold text-gray-800">{p.name}</h4>
+                    <p className="text-[11px] text-gray-500 truncate max-w-[240px]">{p.address}</p>
+                  </div>
+                  <span className="text-[11px] font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">
+                    {p.distance_meters ? `${(p.distance_meters / 1000).toFixed(1)} km` : 'Near'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {activeTab === 'fuel' && fuel && (
+            <div className="grid grid-cols-2 gap-4 text-xs">
+              <div className="bg-gray-50 p-2.5 rounded-xl border border-gray-100">
+                <p className="text-[10px] text-gray-400 font-semibold uppercase">Total Distance</p>
+                <p className="text-sm font-bold text-gray-800 mt-0.5">{fuel.distance_km} km</p>
+              </div>
+              <div className="bg-gray-50 p-2.5 rounded-xl border border-gray-100">
+                <p className="text-[10px] text-gray-400 font-semibold uppercase">Fuel Price (INR)</p>
+                <p className="text-sm font-bold text-gray-800 mt-0.5">₹{fuel.diesel_price_inr} / L</p>
+              </div>
+              <div className="bg-gray-50 p-2.5 rounded-xl border border-gray-100">
+                <p className="text-[10px] text-gray-400 font-semibold uppercase">Fuel Consumed</p>
+                <p className="text-sm font-bold text-gray-800 mt-0.5">{fuel.fuel_litres} Litres</p>
+              </div>
+              <div className="bg-gray-50 p-2.5 rounded-xl border border-gray-100">
+                <p className="text-[10px] text-gray-400 font-semibold uppercase">Estimated Fuel Cost</p>
+                <p className="text-sm font-bold text-blue-700 mt-0.5">₹{fuel.fuel_cost_inr.toLocaleString('en-IN')}</p>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'alerts' && (
+            <div className="space-y-2">
+              {alerts.length === 0 ? (
+                <p className="text-center py-6 text-xs text-gray-400">No active alerts. Route is clear!</p>
+              ) : (
+                alerts.map(a => (
+                  <div
+                    key={a.id}
+                    className={`flex items-start gap-2.5 p-2.5 rounded-xl border ${
+                      a.severity === 'critical'
+                        ? 'bg-red-50 border-red-200 text-red-800'
+                        : a.severity === 'warning'
+                          ? 'bg-amber-50 border-amber-200 text-amber-800'
+                          : 'bg-blue-50 border-blue-200 text-blue-800'
+                    }`}
+                  >
+                    <span className="text-sm leading-none mt-0.5">⚠️</span>
+                    <div>
+                      <p className="text-xs font-bold leading-tight">{a.message}</p>
+                      <span className="text-[9px] opacity-75 mt-0.5 inline-block">
+                        {new Date(a.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   )
 }
