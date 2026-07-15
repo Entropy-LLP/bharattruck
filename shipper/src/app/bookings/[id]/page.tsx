@@ -11,10 +11,9 @@ import {
   counterQuote,
   cancelBooking,
   getTrack,
-  settlePayment,
-  getPaymentStatus,
+  markAsPaid,
 } from '@/lib/api'
-import type { TrackData, TrackEta, TrackLocation, PaymentStatus, PaymentMode } from '@/lib/api'
+import type { TrackData, TrackEta, TrackLocation } from '@/lib/api'
 import { bookingStatusConfig, quoteStatusConfig } from '@/lib/status'
 import type { Booking, Quote } from '@/lib/types'
 import Navbar from '@/components/Navbar'
@@ -220,99 +219,141 @@ export default function BookingDetailPage({
           <TripTrackingSection booking={booking} />
         )}
 
-        {/* Payment Section — settle (completed) or the real recorded settlement (paid) */}
-        {(booking.status === 'completed' || booking.status === 'paid') && (
+        {/* Payment Section */}
+        {booking.status === 'completed' && (
           <PaymentSection booking={booking} onPaid={fetchData} />
         )}
 
+        {/* Payment Complete */}
+        {booking.status === 'paid' && (
+          <div className="bg-emerald-50 rounded-xl border border-emerald-200 p-5 flex items-center gap-4">
+            <div className="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center shrink-0">
+              <svg className="w-5 h-5 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+              </svg>
+            </div>
+            <div>
+              <p className="font-semibold text-emerald-800">Payment Complete</p>
+              <p className="text-sm text-emerald-600">
+                Marked as paid on {new Date(booking.updated_at).toLocaleString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Quotes Panel */}
-        <div className="bg-white rounded-xl border border-gray-200">
+        <div className="bg-white rounded-2xl border border-gray-200 premium-shadow">
           <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
-            <h2 className="font-semibold text-gray-900">
-              Quotes ({quotes.length})
-            </h2>
+            <div>
+              <h2 className="font-bold text-gray-900 text-base">Active Driver Bids</h2>
+              <p className="text-xs text-gray-400 mt-0.5">Bids submitted by fleet operators</p>
+            </div>
             {booking.status === 'pending' && (
-              <span className="text-xs text-gray-400">Auto-refreshing every 15s</span>
+              <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full animate-pulse">
+                Auto-Refreshing
+              </span>
             )}
           </div>
 
           {quotes.length === 0 ? (
-            <div className="text-center py-10 text-gray-400 text-sm">
-              No quotes yet. Waiting for drivers to respond...
+            <div className="text-center py-12 text-gray-400 text-sm">
+              <span className="text-2xl block mb-2">📥</span>
+              No bids received yet. Waiting for responses...
             </div>
           ) : (
-            <div className="divide-y divide-gray-100">
+            <div className="grid gap-4 p-5 sm:grid-cols-2">
               {quotes.map((quote) => {
                 const qs = quoteStatusConfig[quote.status]
                 const canAct = quote.status === 'submitted' || quote.status === 'countered'
                 const isExpanded = expandedQuote === quote.id
+                
+                // Margin helper logic
+                const diffPercent = ((quote.amount - booking.quoted_price) / booking.quoted_price) * 100
+                const isOverBudget = diffPercent > 10
+                const isGoodDeal = diffPercent <= 0
 
                 return (
-                  <div key={quote.id} className="px-5 py-4">
-                    <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-                      <div className="flex-1 grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
-                        <div>
-                          <p className="text-xs text-gray-400">Driver</p>
-                          <p className="font-mono text-gray-700" title={quote.driver_id}>
-                            {quote.driver_id.slice(0, 8)}...
-                          </p>
+                  <div key={quote.id} className={`bg-white rounded-2xl border p-4 shadow-sm flex flex-col justify-between transition-all ${
+                    quote.status === 'accepted'
+                      ? 'border-green-500 bg-green-50/10'
+                      : isGoodDeal && canAct
+                        ? 'border-emerald-200 bg-emerald-50/5'
+                        : 'border-gray-200 hover:border-blue-200'
+                  }`}>
+                    <div>
+                      <div className="flex items-center justify-between mb-3 border-b border-gray-50 pb-2.5">
+                        <div className="flex items-center gap-2">
+                          <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-xs font-bold text-slate-700">
+                            🚚
+                          </div>
+                          <div>
+                            <p className="text-xs font-bold text-gray-800">Operator {quote.driver_id.slice(0, 8)}</p>
+                            <p className="text-[9px] text-gray-400 font-semibold uppercase">Active Bidder</p>
+                          </div>
                         </div>
-                        <div>
-                          <p className="text-xs text-gray-400">Amount</p>
-                          <p className="font-semibold text-gray-900">
-                            {'\u20B9'}{quote.amount.toLocaleString('en-IN')}
-                          </p>
-                        </div>
-                        <div>
-                          <p className="text-xs text-gray-400">Status</p>
-                          <span className={`inline-block text-xs font-medium px-2 py-0.5 rounded-full ${qs.color}`}>
-                            {quote.status === 'accepted' ? 'Awarded \u2713' : qs.label}
-                          </span>
-                        </div>
-                        <div>
-                          <p className="text-xs text-gray-400">Submitted</p>
-                          <p className="text-gray-700">
-                            {new Date(quote.submitted_at).toLocaleDateString('en-IN', {
-                              day: 'numeric',
-                              month: 'short',
-                              hour: '2-digit',
-                              minute: '2-digit',
-                            })}
-                          </p>
-                        </div>
+                        <span className={`text-[9px] font-bold px-2 py-0.5 rounded-lg ${qs.color}`}>
+                          {quote.status === 'accepted' ? 'Awarded ✓' : qs.label}
+                        </span>
                       </div>
 
+                      <div className="space-y-2 mb-4">
+                        <div className="flex justify-between items-baseline">
+                          <span className="text-xs text-gray-400">Bid Amount:</span>
+                          <span className="text-base font-extrabold text-gray-900">₹{quote.amount.toLocaleString('en-IN')}</span>
+                        </div>
+                        
+                        {/* Margin status chip */}
+                        {canAct && (
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs text-gray-400">Budget Match:</span>
+                            <span className={`text-[9px] font-bold px-2.5 py-0.5 rounded-md ${
+                              isGoodDeal
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : isOverBudget
+                                  ? 'bg-red-50 text-red-700'
+                                  : 'bg-amber-100 text-amber-800'
+                            }`}>
+                              {isGoodDeal ? 'Good Deal' : isOverBudget ? `High (+${Math.round(diffPercent)}%)` : `Optimal (+${Math.round(diffPercent)}%)`}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="border-t border-gray-100 pt-3 flex flex-col gap-2">
                       {canAct && (
-                        <div className="flex gap-2 shrink-0">
+                        <div className="flex gap-2">
                           <button
                             onClick={() => handleAccept(quote.id)}
-                            className="text-xs px-3 py-1.5 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+                            className="flex-1 text-xs py-2.5 bg-green-600 text-white font-bold rounded-xl hover:bg-green-700 active:scale-95 transition-all shadow-sm flex items-center justify-center gap-1"
                           >
                             Accept
                           </button>
                           <button
                             onClick={() => setCounterQuoteId(quote.id)}
-                            className="text-xs px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                            className="flex-1 text-xs py-2.5 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 active:scale-95 transition-all shadow-sm flex items-center justify-center gap-1"
                           >
                             Counter
                           </button>
-                          <button
-                            onClick={() => handleReject(quote.id)}
-                            className="text-xs px-3 py-1.5 border border-red-300 text-red-600 rounded-lg hover:bg-red-50 transition-colors"
-                          >
-                            Reject
-                          </button>
                         </div>
                       )}
-                    </div>
+                      
+                      {canAct && (
+                        <button
+                          onClick={() => handleReject(quote.id)}
+                          className="text-xs py-2 border border-red-200 text-red-650 rounded-xl hover:bg-red-50 transition-colors text-center font-bold"
+                        >
+                          Reject Quote
+                        </button>
+                      )}
 
-                    {/* Negotiation toggle */}
-                    <button
-                      onClick={() => setExpandedQuote(isExpanded ? null : quote.id)}
-                      className="text-xs text-blue-600 hover:text-blue-700 mt-2"
-                    >
-                      {isExpanded ? 'Hide' : 'View'} negotiation history
-                    </button>
+                      <button
+                        onClick={() => setExpandedQuote(isExpanded ? null : quote.id)}
+                        className="text-[10px] text-blue-600 hover:text-blue-700 font-bold text-center mt-1"
+                      >
+                        {isExpanded ? 'Hide' : 'View'} Negotiation Log
+                      </button>
+                    </div>
 
                     {isExpanded && (
                       <div className="mt-3 border-t border-gray-100 pt-3">
@@ -494,13 +535,47 @@ function ShipperTrackPanel({
 
   return (
     <div className="space-y-2">
-      <LiveTrackMap
-        origin={origin}
-        dest={dest}
-        encodedPolyline={track?.route.polyline}
-        bounds={track?.route.bounds}
-        driver={driverPt}
-      />
+      <div className="relative overflow-hidden rounded-2xl">
+        <LiveTrackMap
+          origin={origin}
+          dest={dest}
+          encodedPolyline={track?.route.polyline}
+          bounds={track?.route.bounds}
+          driver={driverPt}
+        />
+        
+        {/* Floating dispatch overlay */}
+        {location && !delivered && (
+          <div className="absolute top-4 left-4 z-10 glass-panel p-4 rounded-xl shadow-lg border border-white/20 max-w-[280px]">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse inline-block" />
+              <h4 className="text-xs font-bold text-gray-900">Active Location Feed</h4>
+            </div>
+            <div className="space-y-1.5 text-xs text-gray-700">
+              {location.speed_kmh !== undefined && location.speed_kmh !== null && (
+                <div className="flex justify-between gap-4">
+                  <span className="text-gray-400">Current Speed:</span>
+                  <span className="font-bold text-gray-900">{Math.round(location.speed_kmh)} km/h</span>
+                </div>
+              )}
+              {track?.eta && (
+                <>
+                  <div className="flex justify-between gap-4">
+                    <span className="text-gray-400">ETA:</span>
+                    <span className="font-bold text-blue-700">{track.eta.eta_text}</span>
+                  </div>
+                  {track.route?.distance_m && (
+                    <div className="flex justify-between gap-4">
+                      <span className="text-gray-400">Distance:</span>
+                      <span className="font-bold text-gray-900">{(track.route.distance_m / 1000).toFixed(1)} km</span>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
       <TrackCaption
         status={booking.status}
         delivered={delivered}
@@ -581,197 +656,97 @@ function TrackCaption({
   )
 }
 
-// --- Payment Section (settlement for completed / recorded state for paid) ---
-// Cash-recorded settlement (NO escrow/Razorpay). `completed` shows the
-// record-settlement control; on submit it settles then reads back the real
-// payment status and flips the booking to `paid` via onPaid(). `paid` reads
-// the recorded settlement and renders mode + reference + payout state.
-
-const PAYMENT_MODES: { value: PaymentMode; label: string; hint: string }[] = [
-  { value: 'cash', label: 'Cash', hint: 'Paid in cash' },
-  { value: 'upi', label: 'UPI', hint: 'UPI transfer' },
-  { value: 'direct', label: 'Direct', hint: 'Bank / other' },
-]
+// --- Payment Section (for completed bookings) ---
 
 function PaymentSection({ booking, onPaid }: { booking: Booking; onPaid: () => void }) {
-  if (booking.status === 'paid') {
-    return <SettledPaymentPanel booking={booking} />
-  }
-  return <RecordSettlementPanel booking={booking} onPaid={onPaid} />
-}
+  const [marking, setMarking] = useState(false)
+  const [showConfirm, setShowConfirm] = useState(false)
 
-function RecordSettlementPanel({ booking, onPaid }: { booking: Booking; onPaid: () => void }) {
-  const prefill = booking.final_price ?? booking.quoted_price
-  const [mode, setMode] = useState<PaymentMode>('cash')
-  const [amount, setAmount] = useState(String(prefill))
-  const [reference, setReference] = useState('')
-  const [submitting, setSubmitting] = useState(false)
-
-  async function handleSettle() {
-    const num = parseFloat(amount)
-    if (!num || num <= 0) {
-      toast.error('Enter a valid settlement amount')
-      return
-    }
-    setSubmitting(true)
+  async function handleMarkPaid() {
+    setMarking(true)
     try {
-      await settlePayment(booking.id, {
-        amount: num,
-        mode,
-        reference: reference.trim() || undefined,
-      })
-      // onPaid() flips the booking to `paid`, which re-renders SettledPaymentPanel;
-      // that panel fetches the recorded status itself, so no read-back here.
-      toast.success('Settlement recorded')
+      await markAsPaid(booking.id)
+      toast.success('Payment marked as complete')
       onPaid()
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : 'Failed to record settlement')
+      toast.error(err instanceof Error ? err.message : 'Failed to mark as paid')
     } finally {
-      setSubmitting(false)
+      setMarking(false)
+      setShowConfirm(false)
     }
   }
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
-      <h2 className="font-semibold text-gray-900">Record settlement</h2>
+      <h2 className="font-semibold text-gray-900">Payment</h2>
       <p className="text-sm text-gray-500">
-        Cargo has been delivered. Record how payment of{' '}
+        Cargo has been delivered. Choose how to settle payment of{' '}
         <span className="font-semibold text-gray-900">
-          {'\u20B9'}{prefill.toLocaleString('en-IN')}
-        </span>{' '}
-        was settled.
+          {'\u20B9'}{(booking.final_price ?? booking.quoted_price).toLocaleString('en-IN')}
+        </span>
       </p>
 
-      {/* Mode selector */}
-      <div>
-        <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">
-          Payment method
-        </label>
-        <div className="grid grid-cols-3 gap-2">
-          {PAYMENT_MODES.map((m) => (
-            <button
-              key={m.value}
-              type="button"
-              onClick={() => setMode(m.value)}
-              className={`rounded-lg border p-3 text-left transition-colors ${
-                mode === m.value
-                  ? 'border-emerald-400 bg-emerald-50 ring-1 ring-emerald-300'
-                  : 'border-gray-200 hover:bg-gray-50'
-              }`}
-            >
-              <p className="text-sm font-medium text-gray-900">{m.label}</p>
-              <p className="text-xs text-gray-400">{m.hint}</p>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Amount */}
-      <div>
-        <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">
-          Amount (&#8377;)
-        </label>
-        <input
-          type="number"
-          value={amount}
-          onChange={(e) => setAmount(e.target.value)}
-          min="1"
-          step="1"
-          className="w-full h-11 rounded-lg border border-gray-300 px-3 text-base font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
-        />
-      </div>
-
-      {/* Reference (optional) */}
-      <div>
-        <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">
-          Reference <span className="normal-case font-normal text-gray-400">(optional)</span>
-        </label>
-        <input
-          type="text"
-          value={reference}
-          onChange={(e) => setReference(e.target.value)}
-          placeholder="UPI txn ID / receipt no."
-          maxLength={200}
-          className="w-full h-11 rounded-lg border border-gray-300 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
-        />
-      </div>
-
-      <button
-        onClick={handleSettle}
-        disabled={submitting}
-        className="w-full h-12 rounded-xl bg-emerald-600 text-white font-semibold text-base hover:bg-emerald-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
-      >
-        {submitting && <Spinner className="h-4 w-4 border-white border-t-transparent" />}
-        Record settlement
-      </button>
-    </div>
-  )
-}
-
-function SettledPaymentPanel({ booking }: { booking: Booking }) {
-  const [status, setStatus] = useState<PaymentStatus | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(false)
-
-  useEffect(() => {
-    let cancelled = false
-    getPaymentStatus(booking.id)
-      .then((s) => {
-        if (!cancelled) setStatus(s)
-      })
-      .catch(() => {
-        if (!cancelled) setError(true)
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [booking.id])
-
-  const payment = status?.payment ?? null
-  const modeLabel = payment
-    ? (PAYMENT_MODES.find((m) => m.value === payment.mode)?.label ?? payment.mode)
-    : null
-
-  return (
-    <div className="bg-emerald-50 rounded-xl border border-emerald-200 p-5 space-y-4">
-      <div className="flex items-center gap-4">
-        <div className="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center shrink-0">
-          <svg className="w-5 h-5 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-          </svg>
-        </div>
-        <div>
-          <p className="font-semibold text-emerald-800">Payment settled</p>
-          <p className="text-sm text-emerald-600">
-            {'\u20B9'}{(payment?.amount ?? booking.final_price ?? booking.quoted_price).toLocaleString('en-IN')} recorded
-          </p>
-        </div>
-      </div>
-
-      {loading ? (
-        <div className="flex items-center gap-2 text-sm text-emerald-700">
-          <Spinner className="h-4 w-4 border-emerald-600 border-t-transparent" />
-          Loading settlement details…
-        </div>
-      ) : error ? (
-        <p className="text-sm text-emerald-700">
-          Payment is recorded. Settlement details are momentarily unavailable.
-        </p>
-      ) : (
-        <div className="grid grid-cols-2 gap-3 text-sm bg-white rounded-lg border border-emerald-100 p-4">
-          <div>
-            <p className="text-xs text-gray-400">Method</p>
-            <p className="text-gray-800 font-medium">{modeLabel ?? '\u2014'}</p>
-          </div>
-          <div>
-            <p className="text-xs text-gray-400">Reference</p>
-            <p className="text-gray-800 font-medium break-all">{payment?.reference || '\u2014'}</p>
+      <div className="grid sm:grid-cols-2 gap-3">
+        {/* RazorPay placeholder */}
+        <div className="relative border border-gray-200 rounded-lg p-4 opacity-60 cursor-not-allowed">
+          <span className="absolute top-2 right-2 text-[10px] font-semibold uppercase tracking-wide bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">
+            Coming Soon
+          </span>
+          <div className="flex items-center gap-3 mb-2">
+            <div className="w-8 h-8 rounded bg-blue-50 flex items-center justify-center">
+              <svg className="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
+              </svg>
+            </div>
+            <div>
+              <p className="text-sm font-medium text-gray-900">Pay on Platform</p>
+              <p className="text-xs text-gray-400">UPI, Card, Net Banking via RazorPay</p>
+            </div>
           </div>
         </div>
-      )}
+
+        {/* Mark as Paid */}
+        {!showConfirm ? (
+          <button
+            onClick={() => setShowConfirm(true)}
+            className="border-2 border-emerald-200 rounded-lg p-4 text-left hover:bg-emerald-50 transition-colors"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded bg-emerald-50 flex items-center justify-center">
+                <svg className="w-4 h-4 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+              </div>
+              <div>
+                <p className="text-sm font-medium text-gray-900">Mark as Paid</p>
+                <p className="text-xs text-gray-400">Payment settled offline or via other method</p>
+              </div>
+            </div>
+          </button>
+        ) : (
+          <div className="border-2 border-emerald-300 bg-emerald-50 rounded-lg p-4 space-y-3">
+            <p className="text-sm text-emerald-800 font-medium">
+              Confirm payment of {'\u20B9'}{(booking.final_price ?? booking.quoted_price).toLocaleString('en-IN')} has been made?
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setShowConfirm(false)}
+                className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-lg hover:bg-white transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleMarkPaid}
+                disabled={marking}
+                className="flex-1 px-3 py-2 text-sm bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {marking && <Spinner className="h-4 w-4 border-white border-t-transparent" />}
+                Confirm Paid
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
