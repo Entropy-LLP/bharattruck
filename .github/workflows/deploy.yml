@@ -1,0 +1,217 @@
+name: deploy
+
+# =============================================================================
+#  Continuous Deploy — monorepo → GCP Cloud Run (asia-south1)
+# =============================================================================
+# Fires on push to `main`. Path-filtered so ONLY changed services/apps rebuild+deploy
+# (mirrors ci.yml's dorny/paths-filter style). Two deploy paths:
+#
+#   • Backend services (bt-gateway + the 6 bt-*-service dirs)
+#       `gcloud run deploy <svc> --source <dir>` — Cloud Build builds the dir's Dockerfile.
+#       NO env vars are set here: a source/image deploy PRESERVES existing Cloud Run env,
+#       runtime service account, port and scaling. When a service gains a NEW env var, set it
+#       ONCE, manually:  gcloud run services update <svc> --update-env-vars KEY=VALUE
+#       (never add --set-env-vars to this per-commit CD — it would wipe unlisted vars).
+#
+#   • Apps (driver → bt-driver, shipper → bt-shipper, bt-ops-web → bt-ops-web)
+#       Next.js NEXT_PUBLIC_* are inlined into the client bundle at BUILD time, so they must be
+#       passed as `docker build --build-arg` (not runtime env). We build in the runner, push to
+#       Artifact Registry, then `gcloud run deploy --image`. Build args come from GitHub repo
+#       VARIABLES/SECRETS (never hardcoded / committed).
+#
+# Every revision is SHA-tagged via --revision-suffix "<shortSha>-<runNumber>-<runAttempt>" and
+# carries a commit-sha label, so each live revision is traceable back to the exact git commit.
+#
+# ---- GitHub repo config this workflow EXPECTS (Settings → Secrets and variables → Actions) ----
+#   Variables:
+#     NEXT_PUBLIC_API_URL                 e.g. https://bt-gateway-itcdoenefa-el.a.run.app
+#     NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID      vector Map ID for styled maps (driver/shipper only)
+#   Secrets:
+#     NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY HTTP-referrer-restricted Maps JS browser key (driver/shipper)
+#   (NEXT_PUBLIC_API_URL is public; it is a Variable, not a Secret. The browser key is a Secret so it
+#    is masked in logs — it is still public once inlined, but referrer-restricted at the Google end.)
+#
+# ---- FOUNDER PREREQUISITE — IAM on the deployer SA (bt-cicd-deployer@<project>.iam.gserviceaccount.com) ----
+#   • WIF binding: roles/iam.workloadIdentityUser for the github-pool principalSet on this SA
+#     (lets this repo impersonate the SA via OIDC — no JSON key).
+#   • roles/run.admin                 — create/deploy Cloud Run revisions.
+#   • roles/iam.serviceAccountUser    — act AS the Cloud Run runtime service account.
+#   • roles/cloudbuild.builds.editor  — run the `--source` Cloud Build builds (backend services).
+#   • roles/artifactregistry.writer   — push images (apps) + store Cloud Build output; the
+#                                       `cloud-run-source-deploy` repo must exist (auto-created on the
+#                                       first manual `--source` deploy, or pre-create it).
+#   See .github/workflows/README.md for the exact gcloud grant commands.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1) Detect which deploy targets changed, split into backend services vs apps.
+  # ---------------------------------------------------------------------------
+  detect:
+    name: detect changed deploy targets
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.split.outputs.services }}
+      apps: ${{ steps.split.outputs.apps }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          # A change to this workflow file redeploys everything (safety — same convention as ci.yml).
+          filters: |
+            bt-gateway: ['bt-gateway/**', '.github/workflows/deploy.yml']
+            bt-auth-service: ['bt-auth-service/**', '.github/workflows/deploy.yml']
+            bt-booking-service: ['bt-booking-service/**', '.github/workflows/deploy.yml']
+            bt-pricing-service: ['bt-pricing-service/**', '.github/workflows/deploy.yml']
+            bt-payment-service: ['bt-payment-service/**', '.github/workflows/deploy.yml']
+            bt-cargo-ledger: ['bt-cargo-ledger/**', '.github/workflows/deploy.yml']
+            bt-tracking-service: ['bt-tracking-service/**', '.github/workflows/deploy.yml']
+            driver: ['driver/**', '.github/workflows/deploy.yml']
+            shipper: ['shipper/**', '.github/workflows/deploy.yml']
+            bt-ops-web: ['bt-ops-web/**', '.github/workflows/deploy.yml']
+      - id: split
+        name: partition changed dirs → backend services (dir==svc) vs apps (dir→svc, maps flag)
+        run: |
+          set -euo pipefail
+          CHANGES='${{ steps.filter.outputs.changes }}'
+          # Backend services: the dir name IS the Cloud Run service name; deployed via `--source`.
+          SERVICES=$(printf '%s' "$CHANGES" | jq -c '
+            [ .[] | select(. == "driver" or . == "shipper" or . == "bt-ops-web" | not) ]')
+          # Apps: dir → Cloud Run service name (driver→bt-driver, shipper→bt-shipper, ops-web unchanged).
+          # maps=true only for the apps that render a Google Map (driver/shipper) → they get the Maps
+          # build args; bt-ops-web (maps=false) gets NEXT_PUBLIC_API_URL only.
+          APPS=$(printf '%s' "$CHANGES" | jq -c '
+            [ .[]
+              | select(. == "driver" or . == "shipper" or . == "bt-ops-web")
+              | { dir: .,
+                  service: (if . == "driver" then "bt-driver"
+                            elif . == "shipper" then "bt-shipper"
+                            else "bt-ops-web" end),
+                  maps: (if . == "bt-ops-web" then "false" else "true" end) } ]')
+          echo "services=$SERVICES" >> "$GITHUB_OUTPUT"
+          echo "apps=$APPS" >> "$GITHUB_OUTPUT"
+          echo "changed services: $SERVICES"
+          echo "changed apps:     $APPS"
+
+  # ---------------------------------------------------------------------------
+  # 2) Backend services — build+deploy from source (Cloud Build). Env preserved.
+  # ---------------------------------------------------------------------------
+  deploy-services:
+    name: deploy service ${{ matrix.svc }}
+    needs: detect
+    if: needs.detect.outputs.services != '[]' && needs.detect.outputs.services != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        svc: ${{ fromJSON(needs.detect.outputs.services) }}
+    # Serialize deploys of the SAME service; different services still deploy in parallel.
+    concurrency:
+      group: deploy-${{ matrix.svc }}
+      cancel-in-progress: false
+    env:
+      REGION: asia-south1
+      PROJECT: project-aa0faf06-c115-438a-a36
+    steps:
+      - uses: actions/checkout@v4
+      # Keyless auth to GCP via Workload Identity Federation (NO JSON key).
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: project-aa0faf06-c115-438a-a36
+          workload_identity_provider: projects/752385541585/locations/global/workloadIdentityPools/github-pool/providers/github
+          service_account: bt-cicd-deployer@project-aa0faf06-c115-438a-a36.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Deploy ${{ matrix.svc }} from source (SHA-tagged revision)
+        run: |
+          set -euo pipefail
+          # SHA-tagged, collision-safe revision name (unique per run + re-run attempt).
+          REV="${GITHUB_SHA::7}-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
+          # `--source <dir>` builds the dir's Dockerfile via Cloud Build and deploys the result.
+          # NO --set-env-vars here: a source deploy PRESERVES existing env / runtime SA / port /
+          # scaling. New env vars are a one-time manual `gcloud run services update ... --update-env-vars`.
+          gcloud run deploy "${{ matrix.svc }}" \
+            --source "${{ matrix.svc }}" \
+            --region "$REGION" \
+            --project "$PROJECT" \
+            --revision-suffix "$REV" \
+            --labels "commit-sha=${GITHUB_SHA},managed-by=github-actions" \
+            --quiet
+
+  # ---------------------------------------------------------------------------
+  # 3) Apps — build image with NEXT_PUBLIC_* baked from repo vars/secrets, push, deploy.
+  # ---------------------------------------------------------------------------
+  deploy-apps:
+    name: deploy app ${{ matrix.service }}
+    needs: detect
+    if: needs.detect.outputs.apps != '[]' && needs.detect.outputs.apps != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.detect.outputs.apps) }}
+    concurrency:
+      group: deploy-${{ matrix.service }}
+      cancel-in-progress: false
+    env:
+      REGION: asia-south1
+      PROJECT: project-aa0faf06-c115-438a-a36
+    steps:
+      - uses: actions/checkout@v4
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: project-aa0faf06-c115-438a-a36
+          workload_identity_provider: projects/752385541585/locations/global/workloadIdentityPools/github-pool/providers/github
+          service_account: bt-cicd-deployer@project-aa0faf06-c115-438a-a36.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Configure Docker auth for Artifact Registry
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+      - name: Build image (NEXT_PUBLIC_* baked in via --build-arg from repo vars/secrets)
+        env:
+          NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
+          NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID: ${{ vars.NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID }}
+          NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY: ${{ secrets.NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY }}
+        run: |
+          set -euo pipefail
+          IMG="${REGION}-docker.pkg.dev/${PROJECT}/bt/${{ matrix.service }}:${GITHUB_SHA}"
+          echo "IMG=$IMG" >> "$GITHUB_ENV"
+          # NEXT_PUBLIC_* are inlined into the client bundle at build → --build-arg, not runtime env.
+          # Omit an empty API_URL so the Dockerfile's sane default is used instead of an empty override.
+          ARGS=()
+          [ -n "${NEXT_PUBLIC_API_URL}" ] && ARGS+=(--build-arg "NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}")
+          if [ "${{ matrix.maps }}" = "true" ]; then
+            ARGS+=(--build-arg "NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY=${NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY}")
+            ARGS+=(--build-arg "NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID=${NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID}")
+          fi
+          docker build "${ARGS[@]}" -t "$IMG" "${{ matrix.dir }}"
+      - name: Push image
+        run: docker push "$IMG"
+      - name: Deploy ${{ matrix.service }} to Cloud Run (SHA-tagged revision)
+        run: |
+          set -euo pipefail
+          REV="${GITHUB_SHA::7}-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
+          # --image deploy preserves existing Cloud Run runtime config (SA, port, scaling). The app's
+          # public config is already baked into the image, so no runtime env is needed.
+          gcloud run deploy "${{ matrix.service }}" \
+            --image "$IMG" \
+            --region "$REGION" \
+            --project "$PROJECT" \
+            --revision-suffix "$REV" \
+            --labels "commit-sha=${GITHUB_SHA},managed-by=github-actions" \
+            --quiet
