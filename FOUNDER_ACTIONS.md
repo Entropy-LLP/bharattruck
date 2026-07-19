@@ -10,13 +10,20 @@
 
 `main` (`a24401f`) is verified and ready. Two steps:
 
+> **Maps values confirmed 2026-07-18** (fresh from the GCP console): browser key
+> `AIzaSyA-rqgoNd0bmfouXworTp4EuMspH4bNxuY` = console key **`bt-browser-maps-js`**; Map ID
+> **corrected to `f2e0c2b5b35f303a174c310f`** (was `…607b2ec5`; keep the old one as a fallback if a
+> deploy shows the base map but no markers). Cleaner alternative to the perl-edit below: on
+> `feat/cicd-deploy` the app Dockerfiles take these as `--build-arg`s, so you can
+> `docker build --build-arg NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY=… --build-arg NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID=… -t <AR image> shipper` (and `driver`), push, and `gcloud run deploy --image` — no key committed to any file.
+
 **1. Bake the correct Maps values into the app builds** (agents are guard-blocked from writing the key):
 ```bash
 cd /Users/adityaroshanjoshi/Desktop/VS_Code/StartUps/WIP
 git checkout main && git pull origin main
 for f in shipper/Dockerfile driver/Dockerfile; do
   perl -0pi -e 's/NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY=\S+/NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY=AIzaSyA-rqgoNd0bmfouXworTp4EuMspH4bNxuY/' "$f"
-  grep -q NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID "$f" || perl -0pi -e 's/(NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY=\S+\n)/${1}ENV NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID=f2e0c2b5b35f303a607b2ec5\n/' "$f"
+  grep -q NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID "$f" || perl -0pi -e 's/(NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY=\S+\n)/${1}ENV NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID=f2e0c2b5b35f303a174c310f\n/' "$f"
 done
 grep -n GOOGLE_MAPS shipper/Dockerfile driver/Dockerfile   # verify BOTH show the new key + Map ID
 ```
@@ -36,6 +43,16 @@ app URL. Then open the shipper + driver URLs and test with `demo-shipper@bharatt
 
 ---
 
+## 🔴 SECURITY — rotate the leaked Maps SERVER key (soon)
+
+The app Dockerfiles on `main` currently bake `AIzaSy…MChzYw` — that's the **server** Maps key (Routes/
+Places), accidentally committed as the "browser" key. It's in **git history** and would ship in the
+client JS bundle. Rotate it: in Cloud Console → Google Maps Platform → Keys, **regenerate the
+`bt-tracking-server` key**, update `GOOGLE_MAPS_SERVER_KEY` on `bt-tracking-service`, and confirm the
+key is API-restricted (Routes + Places New) so the exposed value is dead. (The `feat/cicd-deploy` branch
+removes the committed value going forward — the browser key that ships is the correct referrer-
+restricted one.)
+
 ## 🟠 Phase A — CI/CD IAM (so GitHub Actions can deploy; ~30 min)
 
 Grant the CI/CD service account the missing roles + the Workload-Identity binding:
@@ -44,9 +61,11 @@ PROJECT=project-aa0faf06-c115-438a-a36
 PROJECT_NUM=752385541585
 SA=bt-cicd-deployer@$PROJECT.iam.gserviceaccount.com
 
-# missing roles (Cloud Run deploy needs actAs on the runtime SA; --source needs Cloud Build)
-gcloud projects add-iam-policy-binding $PROJECT --member="serviceAccount:$SA" --role="roles/iam.serviceAccountUser"
-gcloud projects add-iam-policy-binding $PROJECT --member="serviceAccount:$SA" --role="roles/cloudbuild.builds.editor"
+# CD workflow is READY on branch feat/cicd-deploy (fee1677) — review passed. Merge it after Phase A.
+# Roles the CI/CD SA needs (it already has run.admin + artifactregistry.writer; add the missing ones):
+gcloud projects add-iam-policy-binding $PROJECT --member="serviceAccount:$SA" --role="roles/iam.serviceAccountUser"      # act AS the runtime SA
+gcloud projects add-iam-policy-binding $PROJECT --member="serviceAccount:$SA" --role="roles/cloudbuild.builds.editor"    # --source builds
+# (confirm it also has: roles/run.admin, roles/artifactregistry.writer)
 
 # WIF: let GitHub Actions for Entropy-LLP/bharattruck impersonate the SA.
 # First find your pool/provider:
@@ -61,7 +80,7 @@ gcloud iam service-accounts add-iam-policy-binding $SA --project=$PROJECT \
 **GitHub repo variables/secrets for the new CD workflow** (`feat/cicd-deploy`, being authored — exact
 list will be in that branch's report; set them under repo Settings → Secrets and variables → Actions):
 - Variable `NEXT_PUBLIC_API_URL` = `https://bt-gateway-itcdoenefa-el.a.run.app`
-- Variable `NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID` = `f2e0c2b5b35f303a607b2ec5`
+- Variable `NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID` = `f2e0c2b5b35f303a174c310f`
 - Secret `NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY` = `AIzaSyA-rqgoNd0bmfouXworTp4EuMspH4bNxuY`
 - (WIF) Variable `GCP_WORKLOAD_IDENTITY_PROVIDER` = the full provider resource name + `GCP_SERVICE_ACCOUNT` = the SA email.
 

@@ -78,6 +78,20 @@ Before touching **any** tracking/maps code:
 
 ---
 
+## UI / Claude Browser verification — READ FIRST
+
+Before doing any UI/QA pass on `shipper/`, `driver/`, or `bt-ops-web` in Claude Browser (or any
+browser-automation tool): read **`docs/CLAUDE_BROWSER_HARNESS.md`** first, and
+**`docs/CLAUDE_BROWSER_CREDS.md`** for the live URLs + demo logins it points to. They exist so you
+don't re-pay the token cost of rediscovering how to test this app — login flow quirks, known-broken
+features, which backend 503s explain which UI symptoms, and Claude-Browser-tool-specific gotchas
+are all already recorded there. **Both docs are living documents — if you learn something new
+while testing, you are expected to update them before your session ends** (see
+`CLAUDE_BROWSER_HARNESS.md` §0/§7 for the exact rule). Default to testing against the **live Cloud
+Run deployment**, not local dev — the whole stack is already up.
+
+---
+
 ## Global conventions
 - **Monorepo:** all code lives in this one repo; cross-service changes go in a single PR. Never push to the retired `Entropy-LLP/*` standalones or `deltaos1997/*` mirrors.
 - **Trunk-based:** short-lived `feat/*` branches, PR + green CI before merge to `main`; keep `main` demoable; no stubs/TODOs left in `main`.

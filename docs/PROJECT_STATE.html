@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LogisticOS / BharatTruck — Project State</title>
+<style>
+  :root{
+    --bg:#0b0f14; --panel:#131a23; --panel2:#1a232e; --line:#243040;
+    --ink:#e7eef5; --muted:#8b9bad; --faint:#63748a;
+    --green:#34d399; --amber:#fbbf24; --red:#f87171; --blue:#60a5fa;
+    --violet:#a78bfa; --cyan:#22d3ee; --accent:#f97316;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:radial-gradient(1200px 700px at 80% -10%, #16202c 0%, var(--bg) 55%);
+    color:var(--ink);
+    font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+    padding:40px 22px 80px;
+  }
+  .wrap{max-width:1180px;margin:0 auto}
+  .muted{color:var(--muted)}
+  .faint{color:var(--faint)}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.86em;background:#0d1420;border:1px solid var(--line);padding:1px 5px;border-radius:5px;color:#cbd5e1}
+  h1,h2,h3{margin:0;letter-spacing:-.01em}
+
+  /* Header */
+  header{margin-bottom:34px}
+  .eyebrow{font-size:12px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--accent)}
+  header h1{font-size:34px;font-weight:800;margin:8px 0 6px}
+  header p{margin:0;color:var(--muted);max-width:760px}
+  .north{display:flex;flex-wrap:wrap;gap:10px;margin-top:18px}
+  .chip{background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:7px 14px;font-size:13px;display:flex;gap:8px;align-items:center}
+  .chip b{color:var(--ink)}
+  .dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+  .dot.g{background:var(--green)} .dot.a{background:var(--amber)} .dot.r{background:var(--red)} .dot.b{background:var(--blue)}
+
+  /* KPI row */
+  .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:26px 0 34px}
+  .kpi{background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--line);border-radius:14px;padding:18px}
+  .kpi .n{font-size:30px;font-weight:800;line-height:1}
+  .kpi .l{font-size:12.5px;color:var(--muted);margin-top:8px}
+  .kpi .s{font-size:11.5px;color:var(--faint);margin-top:3px}
+
+  section{margin:38px 0}
+  .sec-h{display:flex;align-items:baseline;gap:12px;margin-bottom:16px;border-bottom:1px solid var(--line);padding-bottom:10px}
+  .sec-h h2{font-size:19px;font-weight:700}
+  .sec-h span{font-size:13px;color:var(--faint)}
+
+  /* Slice pipeline */
+  .pipe{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}
+  .stage{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;position:relative;overflow:hidden}
+  .stage::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--green)}
+  .stage.blocked::before{background:var(--amber)}
+  .stage .k{font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--faint)}
+  .stage .t{font-size:14px;font-weight:700;margin:5px 0 8px}
+  .stage .d{font-size:12px;color:var(--muted);line-height:1.45}
+  .stage .tag{display:inline-block;margin-top:10px;font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:6px}
+  .tag.done{background:rgba(52,211,153,.14);color:var(--green)}
+  .tag.wait{background:rgba(251,191,36,.14);color:var(--amber)}
+
+  /* Service grid */
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+  .card h3{font-size:14.5px;font-weight:700;display:flex;align-items:center;gap:8px}
+  .card .role{font-size:12px;color:var(--muted);margin:8px 0 10px;min-height:34px}
+  .stat{font-size:12px;font-weight:700}
+  .stat.g{color:var(--green)} .stat.a{color:var(--amber)} .stat.r{color:var(--red)}
+  .card .note{font-size:11.5px;color:var(--faint);margin-top:6px;border-top:1px dashed var(--line);padding-top:8px}
+
+  /* Timeline */
+  .tl{position:relative;margin-left:8px;padding-left:26px;border-left:2px solid var(--line)}
+  .ev{position:relative;margin-bottom:18px}
+  .ev::before{content:"";position:absolute;left:-33px;top:4px;width:12px;height:12px;border-radius:50%;background:var(--panel);border:2px solid var(--blue)}
+  .ev.be::before{border-color:var(--cyan)}
+  .ev.fe::before{border-color:var(--violet)}
+  .ev.cto::before{border-color:var(--accent)}
+  .ev.warn::before{border-color:var(--amber)}
+  .ev .who{font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase}
+  .who.be{color:var(--cyan)} .who.fe{color:var(--violet)} .who.cto{color:var(--accent)} .who.warn{color:var(--amber)}
+  .ev .h{font-size:14px;font-weight:700;margin:2px 0 3px}
+  .ev .b{font-size:12.5px;color:var(--muted)}
+  .ev .commit{font-size:11px;color:var(--faint)}
+
+  /* Table */
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint);font-weight:700}
+  td.mono{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:#cbd5e1;white-space:nowrap}
+  .ok{color:var(--green)} .warnc{color:var(--amber)}
+
+  /* two-col */
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  ul.clean{margin:0;padding-left:18px}
+  ul.clean li{margin:6px 0;font-size:13px;color:var(--muted)}
+  ul.clean li b{color:var(--ink)}
+
+  footer{margin-top:50px;padding-top:18px;border-top:1px solid var(--line);font-size:12px;color:var(--faint)}
+
+  @media(max-width:900px){
+    .kpis{grid-template-columns:repeat(2,1fr)}
+    .pipe{grid-template-columns:repeat(2,1fr)}
+    .grid{grid-template-columns:1fr}
+    .cols{grid-template-columns:1fr}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="eyebrow">LogisticOS · BharatTruck monorepo</div>
+    <h1>Project State &amp; Recent Agent Work</h1>
+    <p>India interstate/intrastate freight-booking marketplace on the LogisticOS microservices platform. Snapshot generated <b>2026-07-09</b> from the CTO scorecard, git history, and the migrations tree.</p>
+    <div class="north">
+      <span class="chip"><span class="dot b"></span>North Star: <b>Completed Paid Trips</b></span>
+      <span class="chip"><span class="dot a"></span>MVP deadline: <b>31 Aug 2026</b></span>
+      <span class="chip"><span class="dot g"></span>The bar: <b>1 shipper → 1 driver → 1 tracked, proven, paid trip</b></span>
+      <span class="chip">Branch: <b>main</b></span>
+    </div>
+  </header>
+
+  <!-- KPI -->
+  <div class="kpis">
+    <div class="kpi">
+      <div class="n" style="color:var(--green)">100%</div>
+      <div class="l">Vertical slice code-complete</div>
+      <div class="s">S1 → S5, CTO-verified on main</div>
+    </div>
+    <div class="kpi">
+      <div class="n">7 <span class="faint" style="font-size:16px">merged</span></div>
+      <div class="l">Slice tasks landed</div>
+      <div class="s">4×backend · 3×frontend</div>
+    </div>
+    <div class="kpi">
+      <div class="n">4</div>
+      <div class="l">DB migrations shipped</div>
+      <div class="s">009 · 010 · 011 · 012</div>
+    </div>
+    <div class="kpi">
+      <div class="n" style="color:var(--amber)">2</div>
+      <div class="l">Blockers to a live demo</div>
+      <div class="s">Maps Phase-0 keys · T-BE-7</div>
+    </div>
+  </div>
+
+  <!-- The one-liner -->
+  <section>
+    <div class="sec-h"><h2>Where the project stands</h2><span>the honest state</span></div>
+    <div class="card" style="background:linear-gradient(180deg,#14202b,#111922)">
+      <p style="margin:0;font-size:15px;line-height:1.6">
+        The North-Star thread — <b>post → award → run → prove → pay</b> — that previously <b class="warnc">dead-ended at <code>accepted</code></b> now has a
+        <b class="ok">continuous, CTO-verified code path all the way to <code>paid</code></b>. The <b>entire vertical slice is code-complete on <code>main</code></b>
+        (lifecycle → tracking → POD → payment → pricing → ops overrides). What remains before a real <em>demoable</em> Completed Paid Trip is
+        <b class="warnc">infrastructure provisioning</b>, not application code: the Maps &amp; Tracking <b>Phase-0 gate</b> (GCP keys/quotas) so the truck actually
+        moves on a real map, plus finishing the shared-libs packaging fix (<code>T-BE-7</code>).
+      </p>
+    </div>
+  </section>
+
+  <!-- Slice pipeline -->
+  <section>
+    <div class="sec-h"><h2>The vertical slice — post → paid</h2><span>each stage = a demoable step, not "200 OK"</span></div>
+    <div class="pipe">
+      <div class="stage">
+        <div class="k">S1 · LIFECYCLE</div>
+        <div class="t">Trip closure</div>
+        <div class="d"><code>accepted → in_transit → completed</code> + <code>location_history</code> breadcrumb write.</div>
+        <div class="tag done">✓ T-BE-1 merged</div>
+      </div>
+      <div class="stage blocked">
+        <div class="k">S2 · TRACKING</div>
+        <div class="t">Live map rendered</div>
+        <div class="d">Shipper live-tracking via <code>/track</code> aggregate; <code>&lt;LiveTrackMap/&gt;</code> panel (shadcn).</div>
+        <div class="tag wait">◑ code done · visual Maps-gated</div>
+      </div>
+      <div class="stage">
+        <div class="k">S3 · POD</div>
+        <div class="t">Proof of delivery</div>
+        <div class="d">Receiver-email OTP closes the trip. Salted+peppered SHA-256, timing-safe compare.</div>
+        <div class="tag done">✓ T-BE-2 merged</div>
+      </div>
+      <div class="stage">
+        <div class="k">S4 · PAYMENT</div>
+        <div class="t">Cash-recorded → paid</div>
+        <div class="d">Settlement marks trip <code>paid</code> + records driver payout via idempotent outbox saga.</div>
+        <div class="tag done">✓ T-BE-4 merged</div>
+      </div>
+      <div class="stage">
+        <div class="k">+ PRICING</div>
+        <div class="t">CTO cost anchor</div>
+        <div class="d">Deterministic cost-breakdown + JWT auth boundary. Assumptions flagged for founder Q9.</div>
+        <div class="tag done">✓ T-BE-5 merged</div>
+      </div>
+      <div class="stage">
+        <div class="k">S5 · OPS</div>
+        <div class="t">Ops console + overrides</div>
+        <div class="d">Real auth/RBAC, live-trip board on real data, force-complete + reassign + audit.</div>
+        <div class="tag done">✓ BE-6 · FE-3 · FE-4</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Recent agent work timeline -->
+  <section>
+    <div class="sec-h"><h2>What the agents did — recent work</h2><span>a 3-node autonomous team: <span style="color:var(--cyan)">backend</span> · <span style="color:var(--violet)">frontend</span> · <span style="color:var(--accent)">cto</span>, coordinating over claude-ipc</span></div>
+    <div class="tl">
+
+      <div class="ev warn">
+        <div class="who warn">CTO · stage-gate · 2026-07-09</div>
+        <div class="h">T-BE-7 (shared-libs Option C) → CHANGES_REQUESTED</div>
+        <div class="b">Refactor design sound (BookingError subclasses shared AppError, re-exports preserve import names). But the "fresh checkout" test was a <b>false positive</b> — leftover <code>node_modules</code> hid the failure. A true clean <code>npm ci</code> fails <code>tsc: command not found</code> → would turn main CI red. Caught before merge. Fix = commit <code>shared/dist</code>, drop <code>prepare</code>.</div>
+      </div>
+
+      <div class="ev fe">
+        <div class="who fe">FRONTEND · 2026-07-09 · <span class="commit">a09cc37</span></div>
+        <div class="h">T-FE-4 — ops override buttons → verified + merged</div>
+        <div class="b">Force-complete + reassign buttons on the live-trip board are <b>real gateway calls</b> matching T-BE-6's routes exactly; 403/404/409 surfaced; no fakes. <b>Completed the entire frontend slice</b> → whole vertical slice now code-complete on main.</div>
+      </div>
+
+      <div class="ev fe">
+        <div class="who fe">FRONTEND · 2026-07-09 · <span class="commit">1130fd5</span></div>
+        <div class="h">T-FE-3 — ops console (real auth/RBAC + live board) → merged</div>
+        <div class="b"><code>bt-ops-web</code> build green; <code>/ops/trips</code> is real (gateway client, 15s location poll, no mock); real JWT/RBAC + OpsGuard + cancel override; shadcn; junk deps removed. Rebased + <code>/portal</code> fleet mock fully stripped before merge.</div>
+      </div>
+
+      <div class="ev be">
+        <div class="who be">BACKEND · 2026-07-09 · <span class="commit">43b8010 / bfdc8bd</span></div>
+        <div class="h">T-BE-6 — ops override endpoints + audit → merged</div>
+        <div class="b">Force-complete / reassign with ops/admin guards, audit rows, ops-source allowlist that does <b>not</b> fork the state machine. build + 16/16 e2e, no regressions. Migration 012 (<code>ops_overrides</code> + <code>admin</code> role) authored. <b>Backend slice spine complete.</b></div>
+      </div>
+
+      <div class="ev warn">
+        <div class="who warn">INCIDENT · 2026-07-09</div>
+        <div class="h">Broker outage + recovery</div>
+        <div class="b">claude-ipc broker + both engineer sessions went down for a multi-day gap. CTO re-registered &amp; heartbeated; both engineers revived and re-sent reports. Backend's T-BE-6 was complete-but-uncommitted in its worktree — CTO verified it in place, backend then committed it. <b>No main work lost.</b></div>
+      </div>
+
+      <div class="ev be">
+        <div class="who be">BACKEND · 2026-07-05 · <span class="commit">be70d72</span></div>
+        <div class="h">T-BE-5 — pricing cost-breakdown + JWT → merged</div>
+        <div class="b">build 0 + 17/17; fuel math spot-checked; real JWT (401 on bad/no token). Flagged <b>every</b> vehicle-class + constant assumption for founder decision rather than silently picking. Closed a pricing DoD gap.</div>
+      </div>
+
+      <div class="ev be">
+        <div class="who be">BACKEND · 2026-07-05 · <span class="commit">b508ef1</span></div>
+        <div class="h">T-BE-4 — cash-recorded settlement → paid + payout + outbox saga → merged</div>
+        <div class="b">3 services build 0; payment 17/17 + paid 9/9 cross-service; no regressions. <code>settle()</code> idempotent, hard-fails on money. <b>Removed fabricated Razorpay escrow stubs</b> + dropped the dep — enacts the escrow-OUT decision. Migration 011 authored.</div>
+      </div>
+
+      <div class="ev fe">
+        <div class="who fe">FRONTEND · 2026-07-05 · <span class="commit">ceada44 / 52f45f5</span></div>
+        <div class="h">shadcn/ui foundation + T-FE-2 tracking panel → merged</div>
+        <div class="b">Both apps compile clean; shadcn Card/Badge retrofit with localizable labels; verified <code>lib/utils.ts</code> kept <code>cn()</code> AND all 5 pre-existing helpers (no lost helper on init). Frozen Maps contract untouched.</div>
+      </div>
+
+      <div class="ev be">
+        <div class="who be">BACKEND · 2026-07-05 · <span class="commit">16de60a</span></div>
+        <div class="h">T-BE-2 — receiver-OTP POD closes the trip → merged</div>
+        <div class="b"><code>in_transit → completed</code> via receiver OTP; 27/27 incl cross-service. Also caught that the CTO's own "atomicity RPC" idea conflicted with locked decisions and proved the as-built already blocks double-complete. Migration 010 (<code>receiver_email</code> + <code>pod_receipts</code>).</div>
+      </div>
+
+      <div class="ev be">
+        <div class="who be">BACKEND · 2026-07-04 · <span class="commit">da61642</span></div>
+        <div class="h">T-BE-1 — trip lifecycle spine → merged</div>
+        <div class="b">First close of the dead-end: <code>accepted → in_transit → completed</code> + breadcrumb. build 0 + 18/18 (illegal→409 not 500, non-owner→403, breadcrumb throttle). Migration 009 (<code>location_history</code>) authored to the frozen plan schema.</div>
+      </div>
+
+      <div class="ev fe">
+        <div class="who fe">FRONTEND · 2026-07-04 · <span class="commit">a4a8665</span></div>
+        <div class="h">T-FE-1 — driver/ + shipper/ green next build → merged</div>
+        <div class="b">Both PWAs went from failing <code>next build</code> to <b>Compiled successfully</b>. Frozen Maps contract clean (locked env keys, @vis.gl lib, no legacy APIs, copy-not-shared). One self-reported push-before-audit breach, honestly flagged &amp; remediated.</div>
+      </div>
+
+      <div class="ev cto">
+        <div class="who cto">CTO · 2026-07-04 · <span class="commit">5ea8e15</span></div>
+        <div class="h">Infra + governance baseline</div>
+        <div class="b">CI, gateway <code>/api/tracking/*</code> routing (nginx -t validated), migration 009, <code>packages/shared</code> scaffold, ops-web build fix, per-node git worktrees established (<code>TEAM_GIT_WORKFLOW.md</code>). First real main integration milestone.</div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- Service status -->
+  <section>
+    <div class="sec-h"><h2>Service &amp; app status</h2><span>trust the code, not the READMEs</span></div>
+    <div class="grid">
+      <div class="card">
+        <h3><span class="dot a"></span>bt-auth-service</h3>
+        <div class="role">Authentication &amp; identity — custom HS256 JWT, truck-derived roles.</div>
+        <div class="stat a">🟡 Auth works · KYC 501-stubbed</div>
+        <div class="note">Phone OTP console-logs (no SMS provider wired).</div>
+      </div>
+      <div class="card">
+        <h3><span class="dot g"></span>bt-booking-service</h3>
+        <div class="role">Bookings + auction/negotiation + GPS ingest + lifecycle.</div>
+        <div class="stat g">🟢 Lifecycle closed (T-BE-1) + breadcrumb write</div>
+        <div class="note">Was the top blocker — now the spine of the slice.</div>
+      </div>
+      <div class="card">
+        <h3><span class="dot g"></span>bt-pricing-service</h3>
+        <div class="role">Freight quotes + CTO deterministic cost-breakdown anchor.</div>
+        <div class="stat g">🟢 Cost-breakdown + JWT (T-BE-5)</div>
+        <div class="note">RL/LinUCB engine OUT of MVP.</div>
+      </div>
+      <div class="card">
+        <h3><span class="dot g"></span>bt-payment-service</h3>
+        <div class="role">Payments — cash-recorded/direct settlement first.</div>
+        <div class="stat g">🟢 Settles → paid + payout (T-BE-4)</div>
+        <div class="note">Was ⛔ stub. Razorpay escrow stubs removed; dep dropped.</div>
+      </div>
+      <div class="card">
+        <h3><span class="dot g"></span>bt-cargo-ledger</h3>
+        <div class="role">Cargo / trip POD + ledger — receiver-OTP POD.</div>
+        <div class="stat g">🟢 POD real (T-BE-2, cross-service)</div>
+        <div class="note">On-chain hash-anchor OUT of MVP.</div>
+      </div>
+      <div class="card">
+        <h3><span class="dot a"></span>bt-tracking-service</h3>
+        <div class="role">Maps &amp; tracking proxy (port 3006), Redis-cached Google proxy.</div>
+        <div class="stat a">🟢 Built Ph.0–2 · visual Maps-gated</div>
+        <div class="note"><code>/route /eta /track /health</code>. Phase 3+ (<code>/history /pumps /fuel /alerts</code>) pending.</div>
+      </div>
+      <div class="card">
+        <h3><span class="dot g"></span>bt-ops-web</h3>
+        <div class="role">Internal ops console (Next 14 / React 18).</div>
+        <div class="stat g">🟢 Real auth/RBAC + live board + overrides</div>
+        <div class="note">Was ⛔ fake login + all-mock. Now real (T-FE-3, T-FE-4).</div>
+      </div>
+      <div class="card">
+        <h3><span class="dot g"></span>driver/ &amp; shipper/</h3>
+        <div class="role">Two Next 16 / React 19 PWAs (App Router, Tailwind 4).</div>
+        <div class="stat g">🟢 Both build green + shadcn + live tracking</div>
+        <div class="note">Were ⛔ failing <code>next build</code>. Fixed in T-FE-1 → T-FE-4.</div>
+      </div>
+      <div class="card">
+        <h3><span class="dot g"></span>bt-gateway</h3>
+        <div class="role">Nginx edge — maps app <code>/api/*</code> → service routes.</div>
+        <div class="stat g">🟢 Routes <code>/api/tracking/*</code> (nginx -t ok)</div>
+        <div class="note">Owned by CTO until an infra engineer joins.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Migrations + scorecard -->
+  <section>
+    <div class="cols">
+      <div>
+        <div class="sec-h"><h2>DB migrations shipped</h2><span>Supabase · no PostGIS</span></div>
+        <table>
+          <thead><tr><th>Migration</th><th>Adds</th><th>Task</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">0009</td><td>location_history breadcrumb table</td><td class="mono">T-BE-1</td></tr>
+            <tr><td class="mono">0010</td><td>receiver_email + pod_receipts</td><td class="mono">T-BE-2</td></tr>
+            <tr><td class="mono">0011</td><td>payments + payouts + <code>paid</code> status</td><td class="mono">T-BE-4</td></tr>
+            <tr><td class="mono">0012</td><td>ops_overrides audit + <code>admin</code> role</td><td class="mono">T-BE-6</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div>
+        <div class="sec-h"><h2>Engineer scorecard</h2><span>evidence-backed, by the CTO node</span></div>
+        <table>
+          <thead><tr><th>Node</th><th>Correctness</th><th>Honesty</th><th>Net</th></tr></thead>
+          <tbody>
+            <tr>
+              <td class="mono" style="color:var(--cyan)">backend</td>
+              <td class="ok">✅ reproduced</td>
+              <td class="ok">✅ honest caveats</td>
+              <td>🟢🟢 strong</td>
+            </tr>
+            <tr>
+              <td class="mono" style="color:var(--violet)">frontend</td>
+              <td class="ok">✅ real builds</td>
+              <td class="ok">✅✅ self-reported breach</td>
+              <td>🟢 strong · ⚠️ 1 process breach (remediated)</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="faint" style="font-size:12px;margin-top:12px">Both nodes consistently flag underspecified inputs for founder decisions rather than silently forking frozen contracts — the behavior the operating model rewards.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Whats left -->
+  <section>
+    <div class="sec-h"><h2>What's left before a live "Completed Paid Trip"</h2><span>infra &amp; polish, not slice code</span></div>
+    <div class="cols">
+      <div class="card">
+        <h3 style="color:var(--amber)">◑ Blockers to a live demo</h3>
+        <ul class="clean" style="margin-top:10px">
+          <li><b>Maps Phase-0 gate</b> — GCP project, enable 3 APIs, 2 restricted keys, per-API quota caps. Hard gate before the tracking <b>visual</b> can render a moving truck.</li>
+          <li><b>T-BE-7 shared-libs (Option C)</b> — commit <code>shared/dist</code>, drop <code>prepare</code>, re-verify a true fresh-checkout <code>npm ci</code>.</li>
+          <li><b>Provisioning</b> — real per-service env URLs + secrets (shared <code>JWT_SECRET</code>, Maps keys).</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3 style="color:var(--green)">✓ Done &amp; on main</h3>
+        <ul class="clean" style="margin-top:10px">
+          <li><b>Full slice code path</b> post → award → run → prove → pay, CTO-verified.</li>
+          <li><b>4 migrations</b> (009–012) in version control.</li>
+          <li><b>Both PWAs + ops console</b> build green, real data, no mocks/stubs on main.</li>
+          <li><b>Escrow/Razorpay stubs removed</b> — no stubs/TODOs left in main.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    Sources: <code>docs/CTO_SCORECARD.md</code>, <code>docs/AGENT_HANDOFF.md</code>, <code>ROADMAP.md</code>, git log, <code>supabase/migrations/</code>. ·
+    Trust order: frozen CONTRACT → code → per-folder ROADMAP → root docs. ·
+    Legend: 🟢 done · 🟡/◑ partial · ⛔ stub · ⚠️ watch.
+  </footer>
+
+</div>
+</body>
+</html>
