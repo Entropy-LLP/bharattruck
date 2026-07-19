@@ -225,7 +225,8 @@ export default function BookingDetailPage({
           <PaymentSection booking={booking} onPaid={fetchData} />
         )}
 
-        {/* Quotes Panel */}
+        {/* Quotes Panel — auction bookings only; a direct booking is a 1:1 contract, there is no bidding to show */}
+        {booking.booking_type === 'auction' && (
         <div className="bg-white rounded-xl border border-gray-200">
           <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
             <h2 className="font-semibold text-gray-900">
@@ -325,6 +326,7 @@ export default function BookingDetailPage({
             </div>
           )}
         </div>
+        )}
       </main>
 
       {/* Counter Modal */}
