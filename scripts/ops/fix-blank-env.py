@@ -1,20 +1,28 @@
 #!/usr/bin/env python3
-"""Repair blank Cloud Run env vars by copying shared secrets from bt-booking-service.
+"""Repair Cloud Run env by copying values from services that already have them.
 
-Background: an earlier env-copy used a shell-quoted `'$1'` reader; zsh took it
-literally, so every secret was written as an empty string. Cloud Run serialises
-those as a key with NO `value` field -- `{"name":"JWT_SECRET"}` -- which reads as
-"key is present" unless you check the value length. See issues #5 and #6.
+Two problems this fixes, in one pass per service:
 
-This script is immune to that class of bug: it never builds a shell string, it
-passes argv lists to subprocess directly, it refuses to run if any source value
-is empty, and it picks a delimiter that provably does not occur in any value
-(`@` is unsafe -- REDIS_URL is `rediss://default:PASSWORD@host`).
+1. Blank secrets. An earlier env-copy used a shell-quoted `'$1'` reader; zsh took
+   it literally, so every secret was written as an empty string. Cloud Run
+   serialises those as a key with NO `value` field -- `{"name":"JWT_SECRET"}` --
+   which reads as "key is present" unless you check the value length. That left
+   bt-payment-service and bt-cargo-ledger down. See issues #5, #6, #7.
+
+2. Missing SMTP config on bt-cargo-ledger. POD OTP mail moved from an
+   unprovisioned Resend key to SMTP (PR #8), reusing bt-auth-service's env
+   contract. Without these vars the sender silently falls back to console
+   logging, so OTPs land in Cloud Run stdout and never reach the receiver.
+
+Immune to the bug that caused (1): never builds a shell string, passes argv
+lists to subprocess directly, refuses to run if a source value is empty, and
+picks a delimiter provably absent from every value (`@` is unsafe -- REDIS_URL
+is `rediss://default:PASSWORD@host`).
 
 Usage:
-    python3 scripts/ops/fix-blank-env.py payment
+    python3 scripts/ops/fix-blank-env.py cargo-ledger --dry-run
     python3 scripts/ops/fix-blank-env.py cargo-ledger
-    python3 scripts/ops/fix-blank-env.py both --dry-run
+    python3 scripts/ops/fix-blank-env.py both
 
 Secrets are never printed; only key names and value lengths.
 """
@@ -24,20 +32,32 @@ import subprocess
 import sys
 
 REGION = "asia-south1"
-SRC = "bt-booking-service"
 
-# Only the keys each service actually reads from process.env and that are
-# currently blank. Verified against src/ on 2026-07-20.
+# Each target lists (source_service, keys) groups plus any literal values.
+# Verified against src/ on 2026-07-20 -- only keys the service actually reads.
 TARGETS = {
-    "payment": (
-        "bt-payment-service",
-        ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "JWT_SECRET", "INTERNAL_SERVICE_SECRET"],
-    ),
-    "cargo-ledger": (
-        "bt-cargo-ledger",
-        # REDIS_URL is the hard blocker: lib/redis.ts throws at module load.
-        ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "REDIS_URL", "INTERNAL_SERVICE_SECRET"],
-    ),
+    "payment": {
+        "service": "bt-payment-service",
+        "groups": [
+            ("bt-booking-service",
+             ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "JWT_SECRET", "INTERNAL_SERVICE_SECRET"]),
+        ],
+        "literals": {},
+    },
+    "cargo-ledger": {
+        "service": "bt-cargo-ledger",
+        "groups": [
+            # REDIS_URL is the hard blocker: lib/redis.ts throws at module load.
+            ("bt-booking-service",
+             ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "REDIS_URL", "INTERNAL_SERVICE_SECRET"]),
+            # Same mail transport bt-auth-service already uses in production.
+            ("bt-auth-service",
+             ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "SMTP_FROM"]),
+        ],
+        # Explicit: without this the sender stays in console-log mode even with
+        # credentials present (see defaultEmailSender in src/lib/email.ts).
+        "literals": {"EMAIL_DEV_MODE": "false"},
+    },
 }
 
 
@@ -62,34 +82,48 @@ def pick_delimiter(values):
     sys.exit("ABORT: no safe delimiter found; set these vars one at a time.")
 
 
-def fix(target, src_env, dry_run):
-    service, keys = TARGETS[target]
+def fix(target, dry_run):
+    cfg = TARGETS[target]
+    service = cfg["service"]
     print(f"\n=== {service} ===")
 
-    missing = [k for k in keys if not src_env.get(k)]
-    if missing:
-        print(f"  ABORT: {SRC} has no value for {missing} -- cannot copy.")
-        return 2
+    resolved = dict(cfg["literals"])
+    for src_service, keys in cfg["groups"]:
+        src_env = env_of(src_service)
+        missing = [k for k in keys if not src_env.get(k)]
+        if missing:
+            print(f"  ABORT: {src_service} has no value for {missing} -- cannot copy.")
+            return 2
+        for k in keys:
+            resolved[k] = src_env[k]
+        print(f"  from {src_service}: {', '.join(keys)}")
 
     dst_env = env_of(service)
-    for k in keys:
-        state = "blank" if not dst_env.get(k) else f"already len={len(dst_env[k])}"
-        print(f"  {k:28} {state:20} -> will set len={len(src_env[k])}")
+    print()
+    for k, v in resolved.items():
+        was = dst_env.get(k)
+        state = "blank" if not was else ("unchanged" if was == v else f"differs (len={len(was)})")
+        print(f"  {k:28} {state:22} -> len={len(v)}")
 
-    delim = pick_delimiter([src_env[k] for k in keys])
-    payload = f"^{delim}^" + delim.join(f"{k}={src_env[k]}" for k in keys)
-
-    if dry_run:
-        print(f"  DRY RUN -- delimiter {delim!r}, payload {len(payload)} bytes, not applied.")
+    if all(dst_env.get(k) == v for k, v in resolved.items()):
+        print("  Nothing to do -- already correct.")
         return 0
 
+    delim = pick_delimiter(list(resolved.values()))
+    payload = f"^{delim}^" + delim.join(f"{k}={v}" for k, v in resolved.items())
+
+    if dry_run:
+        print(f"\n  DRY RUN -- delimiter {delim!r}, payload {len(payload)} bytes, not applied.")
+        return 0
+
+    print(f"\n  Updating {service} ...")
     r = run(["gcloud", "run", "services", "update", service,
              "--region", REGION, "--update-env-vars", payload])
 
     def scrub(s):
-        for k in keys:
-            if src_env[k]:
-                s = s.replace(src_env[k], f"<{k}>")
+        for v in resolved.values():
+            if v and len(v) > 6:
+                s = s.replace(v, "<redacted>")
         return s
 
     print(scrub(r.stdout).strip())
@@ -104,16 +138,15 @@ def main():
     p.add_argument("--dry-run", action="store_true")
     a = p.parse_args()
 
-    src_env = env_of(SRC)
     targets = list(TARGETS) if a.target == "both" else [a.target]
     rc = 0
     for t in targets:
-        rc |= fix(t, src_env, a.dry_run)
+        rc |= fix(t, a.dry_run)
 
     if rc == 0 and not a.dry_run:
-        print("\nDone. Verify the new revision goes ready:")
+        print("\nDone. Verify each service goes ready:")
         for t in targets:
-            print(f"  gcloud run services describe {TARGETS[t][0]} --region {REGION} "
+            print(f"  gcloud run services describe {TARGETS[t]['service']} --region {REGION} "
                   "--format='value(status.conditions[0].status)'")
     return rc
 
