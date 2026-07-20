@@ -27,7 +27,7 @@ service. **This differs from the W1-8 ticket's list** (see §4 discrepancies):
 
 | Service | HARD-required at boot (throws → 503 if missing) | Also used |
 |---|---|---|
-| `bt-cargo-ledger` | `BOOKING_SERVICE_URL`, `INTERNAL_SERVICE_SECRET`, `REDIS_URL`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | POD email (optional): `RESEND_API_KEY`, `POD_OTP_PEPPER`, `POD_EMAIL_FROM`, `RECEIVER_APP_BASE_URL`; `BLOCKCHAIN_ENABLED=false` |
+| `bt-cargo-ledger` | `BOOKING_SERVICE_URL`, `INTERNAL_SERVICE_SECRET`, `REDIS_URL`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and — **not optional if POD must work** — the SMTP set shared with bt-auth-service: `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`, `EMAIL_DEV_MODE=false` | Genuinely optional: `POD_OTP_PEPPER`, `POD_EMAIL_FROM`, `RECEIVER_APP_BASE_URL`; `BLOCKCHAIN_ENABLED=false`. Without the SMTP set the sender silently falls back to console logging — OTPs land in Cloud Run stdout and never reach the receiver. |
 | `bt-payment-service` | `BOOKING_SERVICE_URL`, `INTERNAL_SERVICE_SECRET`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `JWT_SECRET` | — |
 | `bt-pricing-service` | `JWT_SECRET` (per-request in `plugins/auth.ts`; not a boot throw) | `DIESEL_PRICE_INR` (default 90) |
 

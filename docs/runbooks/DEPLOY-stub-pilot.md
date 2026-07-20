@@ -50,7 +50,7 @@ by service (NAMES only — values are shared secrets already on booking, or Phas
 | bt-booking-service | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `REDIS_URL`, `JWT_SECRET`, `INTERNAL_SERVICE_SECRET`, `PRICING_SERVICE_URL`, `PAYMENT_SERVICE_URL`, `CARGO_LEDGER_URL` |
 | bt-pricing-service | `JWT_SECRET` — **post-quote-lock-merge ALSO:** `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `INTERNAL_SERVICE_SECRET` (price_quotes persistence) |
 | bt-payment-service | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `JWT_SECRET`, `INTERNAL_SERVICE_SECRET`, `BOOKING_SERVICE_URL` |
-| bt-cargo-ledger | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `REDIS_URL`, `INTERNAL_SERVICE_SECRET`, `BOOKING_SERVICE_URL`, `BLOCKCHAIN_ENABLED=false` (POD email: `RESEND_API_KEY`, `POD_OTP_PEPPER`, `POD_EMAIL_FROM`, `RECEIVER_APP_BASE_URL`) |
+| bt-cargo-ledger | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `REDIS_URL`, `INTERNAL_SERVICE_SECRET`, `BOOKING_SERVICE_URL`, `BLOCKCHAIN_ENABLED=false` (POD email — **required for POD to work**, same SMTP contract as bt-auth-service: `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`, `EMAIL_DEV_MODE=false`; optional `POD_OTP_PEPPER`, `POD_EMAIL_FROM`, `RECEIVER_APP_BASE_URL`) |
 | bt-tracking-service | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `REDIS_URL`, `JWT_SECRET`, `GOOGLE_MAPS_SERVER_KEY`, `BOOKING_SERVICE_URL`, `DIESEL_PRICE_INR=90` |
 
 > Cross-service URLs: after the first deploy, read each with
