@@ -1,9 +1,18 @@
 // -----------------------------------------------------------
-// EmailSender — thin swappable interface (CTO decision: Resend as the
-// transactional provider). Prod uses ResendEmailSender; local dev uses
-// ConsoleEmailSender; tests inject a mock. Nothing else in the POD flow
-// knows which provider is active.
+// EmailSender — thin swappable interface. Prod uses SmtpEmailSender; local dev
+// uses ConsoleEmailSender; tests inject a mock. Nothing else in the POD flow
+// knows which transport is active.
+//
+// SMTP (nodemailer) is the platform-wide transactional channel — bt-auth-service
+// already sends every login OTP / verification / magic link through it, and this
+// service reuses the SAME `SMTP_*` env contract so there is one mail config to
+// operate rather than two. An earlier revision of this file used Resend and
+// described it as a settled decision; it was not — `docs/CTO_AUDIT_FINDINGS.md`
+// T-CTO-1 ("pick the email provider") is still open, and no Resend key was ever
+// provisioned, so POD mail silently degraded to console logging in production.
 // -----------------------------------------------------------
+
+import nodemailer, { type Transporter } from 'nodemailer'
 
 export type EmailMessage = {
   to: string
@@ -16,28 +25,35 @@ export interface EmailSender {
   send(msg: EmailMessage): Promise<void>
 }
 
-/** Production sender: Resend transactional email API. */
-export class ResendEmailSender implements EmailSender {
-  constructor(private readonly apiKey: string, private readonly from: string) {}
+/** Production sender: SMTP via nodemailer (same transport as bt-auth-service). */
+export class SmtpEmailSender implements EmailSender {
+  private readonly transport: Transporter
+
+  constructor(private readonly from: string, transport?: Transporter) {
+    // Built once per instance — the sender is constructed at route registration,
+    // so we do not open a fresh connection per email. `transport` is injectable
+    // so tests can assert on send() without reaching the network.
+    this.transport =
+      transport ??
+      nodemailer.createTransport({
+        host: process.env.SMTP_HOST ?? 'smtp.gmail.com',
+        port: Number(process.env.SMTP_PORT ?? 587),
+        secure: false,
+        auth: {
+          user: process.env.SMTP_USER,
+          pass: process.env.SMTP_PASS,
+        },
+      })
+  }
 
   async send(msg: EmailMessage): Promise<void> {
-    const res = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${this.apiKey}`,
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        from: this.from,
-        to: msg.to,
-        subject: msg.subject,
-        html: msg.html,
-        text: msg.text,
-      }),
+    await this.transport.sendMail({
+      from: this.from,
+      to: msg.to,
+      subject: msg.subject,
+      text: msg.text,
+      html: msg.html,
     })
-    if (!res.ok) {
-      throw new Error(`Resend send failed: ${res.status} ${await res.text().catch(() => '')}`)
-    }
   }
 }
 
@@ -49,11 +65,21 @@ export class ConsoleEmailSender implements EmailSender {
   }
 }
 
-/** Pick the sender from env: Resend when a key is present, else dev console. */
+/** Pick the sender from env: SMTP when credentials are present, else dev console.
+ *  Mirrors bt-auth-service's guard (`EMAIL_DEV_MODE` / `SMTP_USER`) so both
+ *  services fall silent in dev and go live in prod on exactly the same signal.
+ *
+ *  From-address precedence: `POD_EMAIL_FROM` (POD-specific override, for once a
+ *  verified sending domain exists) → `SMTP_FROM` → `SMTP_USER`. It deliberately
+ *  does NOT fall back to a hardcoded `@bharattruck.in` address: the live transport
+ *  is Gmail SMTP, which refuses to send as an unverified From, so that default
+ *  would fail at delivery time instead of surfacing here. */
 export function defaultEmailSender(): EmailSender {
-  const apiKey = process.env.RESEND_API_KEY
-  const from = process.env.POD_EMAIL_FROM ?? 'BharatTruck POD <pod@bharattruck.in>'
-  return apiKey ? new ResendEmailSender(apiKey, from) : new ConsoleEmailSender()
+  if (process.env.EMAIL_DEV_MODE === 'true' || !process.env.SMTP_USER) {
+    return new ConsoleEmailSender()
+  }
+  const from = process.env.POD_EMAIL_FROM ?? process.env.SMTP_FROM ?? process.env.SMTP_USER
+  return new SmtpEmailSender(from)
 }
 
 /** Build the delivery-confirmation email body for a POD OTP.

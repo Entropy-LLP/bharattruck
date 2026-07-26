@@ -1,6 +1,10 @@
 # CLAUDE.md
 
-> **New here? Read `docs/AGENT_HANDOFF.md` first** — the self-contained brief on background, current state, decisions, and the plan.
+> **New here? Read `docs/BIBLE.md` first** — the single self-contained source of truth for this repo's
+> docs: background, product spec, execution plan, the frozen Maps contract, team process, current
+> live state, the QA harness, and runbooks. It replaced 20 separate, drifting docs on 2026-07-20 (see
+> `docs/BIBLE.md §0.3` for why) — every filename this file used to point you at individually is now
+> a section of `docs/BIBLE.md` instead.
 
 ## Repo orientation
 
@@ -22,13 +26,16 @@ BharatTruck is an India interstate/intrastate freight-booking marketplace built 
 - `driver/` — driver app: navigation view + insights (pumps / fuel / alerts).
 - `shipper/` — shipper app: live-tracking map.
 
-**Authoritative specs:** `docs/BHARATTRUCK_MVP_PRD.md` (product), `docs/EXECUTION_ROADMAP.md` (how we build + committed cuts), and `ROADMAP.md` (umbrella index). These win over ad-hoc narrative.
+**Authoritative specs:** `docs/BIBLE.md §1` (product spec) and `docs/BIBLE.md §2` (how we build +
+committed cuts — including the still-open 2026-07-12 escrow/RL scope-reversal note). `ROADMAP.md` at
+the repo root is a pre-consolidation historical index only — it's been banner-marked superseded since
+2026-07-04 and predates the Bible too. These sections win over ad-hoc narrative.
 
 ---
 
 ## How we work (operating model)
 
-Locked 2026-07-04. Full detail in `docs/EXECUTION_ROADMAP.md`.
+Locked 2026-07-04. Full detail in `docs/BIBLE.md §2`.
 
 - **One target: a Completed Paid Trip.** Build **vertical slices** (one booking driven post → paid), not horizontal layers. **Definition of Done = demoable through the UI on the pilot corridor**, not "the endpoint returns 200".
 - **Walking skeleton first.** Keep the thinnest end-to-end thread runnable (apps build, gateway routes to every service, a booking flows shipper → gateway → booking-service → DB → back) before deepening any feature.
@@ -41,10 +48,12 @@ Locked 2026-07-04. Full detail in `docs/EXECUTION_ROADMAP.md`.
 ## Maps & Tracking work — READ FIRST
 
 Before touching **any** tracking/maps code:
-1. Read `docs/MAPS_TRACKING_CONTRACT.md` and `docs/MAPS_TRACKING_DECISIONS.md`.
-2. **The CONTRACT is frozen and wins over the PLAN** wherever they disagree.
-3. Never silently fork a decision. To change anything, **append a new `D-xxx` decision** — do not edit or contradict existing frozen ones.
-4. Follow `docs/MAPS_TRACKING_SESSIONS.md`: the build runs **one phase per Claude session**, phases 0–6, strictly sequential. Phase 0 is a hard gate (GMP/GCP project, enable the 3 APIs, create the 2 restricted keys, set per-API quota caps) that must complete **before any map code**.
+1. Read `docs/BIBLE.md §3.1` (the CONTRACT) and `§3.2` (the append-only DECISIONS log, D-001..D-013).
+2. **The CONTRACT (§3.1) is frozen and wins over the PLAN** (§3.4, `docs/MAPS_TRACKING_PLAN.md` — the
+   one source doc that stayed a separate file) wherever they disagree.
+3. Never silently fork a decision. To change anything, **append a new `D-xxx` decision** to `§3.2` —
+   do not edit or contradict existing frozen ones.
+4. Follow `docs/BIBLE.md §3.3`: the build runs **one phase per Claude session**, phases 0–6, strictly sequential. Phase 0 is a hard gate (GMP/GCP project, enable the 3 APIs, create the 2 restricted keys, set per-API quota caps) that must complete **before any map code**.
 
 ### Frozen facts (do not contradict)
 - **Provider:** Google Maps Platform. Use **only** Routes API + Places API (New) + Maps JavaScript API. Legacy Directions API and legacy Places API are **BLOCKED** for new GCP projects — never reference them.
@@ -81,14 +90,13 @@ Before touching **any** tracking/maps code:
 ## UI / Claude Browser verification — READ FIRST
 
 Before doing any UI/QA pass on `shipper/`, `driver/`, or `bt-ops-web` in Claude Browser (or any
-browser-automation tool): read **`docs/CLAUDE_BROWSER_HARNESS.md`** first, and
-**`docs/CLAUDE_BROWSER_CREDS.md`** for the live URLs + demo logins it points to. They exist so you
-don't re-pay the token cost of rediscovering how to test this app — login flow quirks, known-broken
-features, which backend 503s explain which UI symptoms, and Claude-Browser-tool-specific gotchas
-are all already recorded there. **Both docs are living documents — if you learn something new
-while testing, you are expected to update them before your session ends** (see
-`CLAUDE_BROWSER_HARNESS.md` §0/§7 for the exact rule). Default to testing against the **live Cloud
-Run deployment**, not local dev — the whole stack is already up.
+browser-automation tool): read **`docs/BIBLE.md §6`** first — URLs, demo logins, tool-specific
+gotchas, and known-broken features are all there. It exists so you don't re-pay the token cost of
+rediscovering how to test this app — login flow quirks, which backend 503s explain which UI symptoms,
+and Claude-Browser-tool-specific gotchas are all already recorded there. **§6 is a living section — if
+you learn something new while testing, you are expected to update it (or `§5.4` for a new/fixed bug)
+before your session ends** (see `docs/BIBLE.md §0.2` for the exact rule). Default to testing against
+the **live Cloud Run deployment**, not local dev — the whole stack is already up.
 
 ---
 
@@ -103,3 +111,6 @@ Run deployment**, not local dev — the whole stack is already up.
 - **Env-key names are locked** — use the exact names above; never invent variants.
 - New services follow the existing microservice recipe (folder layout, Fastify bootstrap, Dockerfile, GCP Cloud Run deploy) used by `bt-auth-service` / `bt-booking-service`.
 - Per-app CLAUDE.md files (`driver/CLAUDE.md`, `shipper/CLAUDE.md`) add app-specific rules on top of this one.
+- **Active `feat/*` branches get a task file** at `docs/tasks/<branch-name>.md` (see `docs/BIBLE.md §0.4`)
+  — created when the branch starts, deleted on merge. Replaces tracking active work in ad-hoc tables
+  inside a handoff doc.
