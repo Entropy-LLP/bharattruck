@@ -58,6 +58,25 @@ TARGETS = {
         # credentials present (see defaultEmailSender in src/lib/email.ts).
         "literals": {"EMAIL_DEV_MODE": "false"},
     },
+    # Verified against bt-fleet-service/src on 2026-07-26. All five are read lazily,
+    # which is why a blank one does NOT stop the container or fail /health -- the
+    # service boots green and every data route 500s. That is exactly the failure
+    # mode this script exists to repair.
+    #   JWT_SECRET             plugins/auth.ts   -> unset means EVERY request 401s
+    #   SUPABASE_URL/KEY       lib/supabase.ts   -> client built on first query
+    #   REDIS_URL              lib/redis.ts      -> only GET /fleet/live + roster writes
+    #   INTERNAL_SERVICE_SECRET plugins/internal-auth.ts -> /internal/* fails CLOSED (503)
+    # REDIS_URL must come from booking: bt-booking-service is the sole writer of
+    # loc:driver:{id}, and fleet only reads those keys.
+    "fleet": {
+        "service": "bt-fleet-service",
+        "groups": [
+            ("bt-booking-service",
+             ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "JWT_SECRET",
+              "INTERNAL_SERVICE_SECRET", "REDIS_URL"]),
+        ],
+        "literals": {},
+    },
 }
 
 

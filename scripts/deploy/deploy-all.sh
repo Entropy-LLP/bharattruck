@@ -59,6 +59,7 @@ deploy_source bt-pricing-service  bt-pricing-service
 deploy_source bt-payment-service  bt-payment-service
 deploy_source bt-cargo-ledger     bt-cargo-ledger
 deploy_source bt-tracking-service bt-tracking-service
+deploy_source bt-fleet-service    bt-fleet-service
 
 # ── 2. copy shared env from booking + wire cross-service URLs ──────────────────
 log "Reading shared env from healthy bt-booking-service (values not printed)"
@@ -94,7 +95,22 @@ else
   echo "WARN: GOOGLE_MAPS_SERVER_KEY not provided — tracking route/eta/pumps will fail until it is set (Phase-0 server key). Re-run with GOOGLE_MAPS_SERVER_KEY=... to wire it."
 fi
 
+# fleet: same four shared secrets as the others, plus REDIS_URL.
+# REDIS_URL must be the SAME instance bt-booking-service writes to — bt-fleet-service only READS
+# loc:driver:{id} (booking-service is the sole writer) and owns fleet:{id}:drivers. Point it at a
+# different Redis and GET /fleet/live returns an empty map with no error.
+set_env bt-fleet-service "SUPABASE_URL=$SUPABASE_URL@SUPABASE_SERVICE_ROLE_KEY=$SUPABASE_SERVICE_ROLE_KEY@JWT_SECRET=$JWT_SECRET@INTERNAL_SERVICE_SECRET=$INTERNAL_SERVICE_SECRET@REDIS_URL=$REDIS_URL"
+
+# payment calls POST /internal/trip-economics/:bookingId on fleet at completed->paid, so it needs
+# the URL. The shared INTERNAL_SERVICE_SECRET above is what authenticates that call.
+FLEET_URL="$(svc_url bt-fleet-service)"
+[ -n "$FLEET_URL" ] || die "bt-fleet-service has no URL yet"
+set_env bt-payment-service "FLEET_SERVICE_URL=$FLEET_URL"
+
 # ── 3. gateway ────────────────────────────────────────────────────────────────
+# The gateway template already has the /api/fleet/ location block; it is inert until
+# FLEET_SERVICE_URL is set, so this line is what actually turns the fleet API on.
+set_env bt-gateway "FLEET_SERVICE_URL=$FLEET_URL"
 deploy_source bt-gateway bt-gateway
 
 # ── 4. apps LAST (bake NEXT_PUBLIC_* incl Maps browser key + Map ID from their Dockerfiles) ──
@@ -104,18 +120,19 @@ else
   echo "Assuming driver/shipper Dockerfiles already have the correct Maps browser key + Map ID baked (founder step, DEPLOY-PREP)."
   deploy_source bt-shipper shipper
   deploy_source bt-driver  driver
+  deploy_source bt-fleet-console fleet
   deploy_source bt-ops-web bt-ops-web
 fi
 
 # ── 5. health ─────────────────────────────────────────────────────────────────
 log "Health checks"
 for s in bt-auth-service bt-booking-service bt-pricing-service bt-payment-service \
-         bt-cargo-ledger bt-tracking-service bt-gateway; do
+         bt-cargo-ledger bt-tracking-service bt-fleet-service bt-gateway; do
   u="$(svc_url "$s")"; code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 12 "$u/health" 2>/dev/null || echo 000)"
   printf '  %-22s /health %s  %s\n' "$s" "$code" "$u"
 done
 if [ "${SKIP_APPS:-0}" != "1" ]; then
-  for s in bt-shipper bt-driver bt-ops-web; do
+  for s in bt-shipper bt-driver bt-fleet-console bt-ops-web; do
     u="$(svc_url "$s")"; code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 12 "$u/" 2>/dev/null || echo 000)"
     printf '  %-22s /       %s  %s\n' "$s" "$code" "$u"
   done
