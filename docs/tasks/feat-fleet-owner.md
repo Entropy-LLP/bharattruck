@@ -192,11 +192,25 @@ One missed fleet branch leaks one fleet's assets to another. Centralize in `shar
 - [x] Live schema introspected; `scripts/db/verify-fleet-schema.mjs` written and proven
       against live (correctly reports the pre-migration state)
 - [x] Migrations `0014`–`0018` written
-- [ ] **BLOCKED: migrations not applied.** Cloud Run holds only the Supabase *service-role*
-      key, which speaks PostgREST — rows yes, **DDL no**. No DB password and no Supabase
-      access token exists in Cloud Run, the repo, or the local CLI config. Unblock with
-      **either** `supabase login` **or** `export SUPABASE_DB_PASSWORD=…`, then run
-      `scripts/db/apply-fleet-migrations.sh` (applies, then verifies).
+- [x] **Migrations `0014`–`0018` APPLIED to live `rxbdzbcndpzznvqcbimg` (2026-07-26).**
+      Unblocked via an authenticated Supabase management connection (DDL), not the
+      service-role/PostgREST key. Applied one file at a time, `0014` alone first so the
+      new enum label committed before `0015` ran. Post-state verified against live:
+
+      | Check | Result |
+      |---|---|
+      | `user_role` enum | `shipper,driver,admin,fleet_owner` |
+      | 10 new tables | all present |
+      | `vehicles.driver_id` / `quotes.driver_id` | both now nullable |
+      | new CHECK constraints | 3/3 (`vehicles_exactly_one_owner`, `quotes_exactly_one_bidder`, `payouts_payee_matches_type`) |
+      | `bookings` / `trip_expenses` new columns | 2/2 and 7/7 |
+      | seeded reference data | `vehicle_cost_norms` 9, `vehicle_service_cost_by_age` 50, global `fleet_cost_settings` 1 |
+      | existing data intact | users 37, drivers 18, bookings 52, quotes 29, negotiations 58, **0 orphaned quotes** |
+
+      **Live row counts differ sharply from the catalogue estimates** used when this file was
+      first written (drivers 7→18, bookings 10→52). `pg_class.reltuples` is stale on this
+      project; always `count(*)`. This is the founder's standing rule — trust live, not
+      the `.sql` files and not the stats.
 - [x] `bt-fleet-service` implemented (port 3007, 40/40 unit tests on the P&L engine)
 - [x] Cross-service wiring: auth, booking, payment, tracking, gateway, `packages/shared`
 - [x] Builds green — every touched package typechecks; `bt-fleet-service` verified from a
