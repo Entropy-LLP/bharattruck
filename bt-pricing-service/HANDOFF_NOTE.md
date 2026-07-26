@@ -11,12 +11,12 @@ work into the monorepo as TypeScript. Written by the tooling/infra pass, not to 
   `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `INTERNAL_SERVICE_SECRET`). Health passes because none
   of those are read at boot, but the real quote-lock path (the part that hits Supabase and checks the
   internal secret) will fail until they are populated. There is a one-shot command that copies them
-  from the healthy `bt-booking-service` in `docs/SESSION_HANDOFF_2026-07-19.md`, section 3. A GitHub
+  from the healthy `bt-booking-service` in `docs/BIBLE.md §7.2`. A GitHub
   issue is open for this so it does not get lost.
 
 ## What would help from you
 - Sanity check that the merged TypeScript cost-breakdown matches what your Python engine was doing.
-  The mapping and current status are in `docs/PRICING_PAYMENTS_STATUS.md`.
+  The mapping and current status are in `docs/BIBLE.md Appendix D`.
 - Your original Python engines are parked on the `feat/python-engines` branch, quarantined so they do
   not break the Node deploy. If any of that logic needs to come back, it has to be ported into this TS
   service, not merged as Python.

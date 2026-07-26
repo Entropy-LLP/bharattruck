@@ -6,11 +6,12 @@
 > Python pricing rewrite) as in-scope, and links to the **retired `deltaos1997/*` repos**. It is kept only
 > as a historical index of per-service ROADMAPs.
 >
-> **The authoritative plan is [docs/EXECUTION_ROADMAP.md](docs/EXECUTION_ROADMAP.md)** (how we work + committed cuts),
-> with [docs/BHARATTRUCK_MVP_PRD.md](docs/BHARATTRUCK_MVP_PRD.md) as the product spec and the frozen
-> [docs/MAPS_TRACKING_CONTRACT.md](docs/MAPS_TRACKING_CONTRACT.md) winning on tracking/maps. **Where any weekly
-> plan below conflicts with `EXECUTION_ROADMAP.md`, EXECUTION_ROADMAP wins.** The single source of truth is
-> this **monorepo** — the polyrepo-per-service framing below is obsolete.
+> **The authoritative plan is [docs/BIBLE.md §2](docs/BIBLE.md#2--execution-plan--committed-scope)** (how we
+> work + committed cuts), with [docs/BIBLE.md §1](docs/BIBLE.md#1--product-spec) as the product spec and the
+> frozen [docs/BIBLE.md §3.1](docs/BIBLE.md#3--maps--tracking) winning on tracking/maps. `docs/EXECUTION_ROADMAP.md`
+> and `docs/BHARATTRUCK_MVP_PRD.md` are now stub pointers to those sections (folded in 2026-07-20 — see
+> `docs/BIBLE.md §0.3`). **Where any weekly plan below conflicts with `docs/BIBLE.md §2`, the Bible wins.**
+> The single source of truth is this **monorepo** — the polyrepo-per-service framing below is obsolete.
 >
 > **MVP deadline:** 31 Aug 2026 (~8 weeks) · **North Star:** Completed Paid Trips · **Goal:** feasibility, not scale/legal.
 > **The bar:** one shipper → one driver → one tracked, proven, paid interstate trip.
@@ -21,7 +22,7 @@
 
 > The old `deltaos1997/*` / standalone repos are **retired — never push to them**. Everything below is a
 > directory in this monorepo. "Owns" columns mentioning escrow / milestone split / on-chain ledger / LinUCB
-> describe the **old** aspiration; those are **OUT of MVP** (see `docs/EXECUTION_ROADMAP.md §3`).
+> describe the **old** aspiration; those are **OUT of MVP** (see `docs/BIBLE.md §2.2`).
 
 | Directory | Owns | Overall status |
 |---|---|---|
@@ -56,11 +57,11 @@ _Legend: ✅ done · 🟡 partial · ⛔ stub/empty_
 
 ---
 
-## 8-week plan (OBSOLETE — replaced by `docs/EXECUTION_ROADMAP.md §5`)
+## 8-week plan (OBSOLETE — replaced by `docs/BIBLE.md §2.4`)
 
 > ⛔ The table below is the **pre-decision (2026-07-01)** sequencing and is **superseded**. It front-loads
 > cut scope (W5 Python/LinUCB pricing rewrite, W7 on-chain anchor + Razorpay escrow/milestone split) and
-> puts tracking at W6. **Use the re-baselined W0–W8 plan in [docs/EXECUTION_ROADMAP.md §5](docs/EXECUTION_ROADMAP.md)
+> puts tracking at W6. **Use the re-baselined W0–W8 plan in [docs/BIBLE.md §2.4](docs/BIBLE.md#24-weeks-0-8-re-baselined-2026-07-04)
 > instead** (W1 lifecycle spine → W2 tracking → W3 POD + cash payment → W4 ops → W5 real KYC → W6 Capacitor).
 > Kept only for historical reference.
 
@@ -79,4 +80,4 @@ _Legend: ✅ done · 🟡 partial · ⛔ stub/empty_
 
 ---
 
-_See [docs/BHARATTRUCK_MVP_PRD.md](docs/BHARATTRUCK_MVP_PRD.md) for full scope, the 3 user journeys, data-procurement list (Part 7), and open questions (Part 13). Last updated: 2026-07-01._
+_See [docs/BIBLE.md §1](docs/BIBLE.md#1--product-spec) for full scope, the 3 user journeys, data-procurement list, and open-questions status. Last updated: 2026-07-01._

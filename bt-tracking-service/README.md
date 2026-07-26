@@ -73,4 +73,7 @@ Maps & Tracking build (see `docs/MAPS_TRACKING_*` in the `LogisticOS` monorepo):
 - JSON is **snake_case**; endpoints use a `:bookingId` path param.
 - Navigation is a **deep-link handoff** to the phone's Google Maps app — no in-app turn-by-turn.
 - Only **Routes API + Places API (New) + Maps JS** — legacy Directions/Places are blocked for this GCP project.
-- The frozen interface contract is `docs/MAPS_TRACKING_CONTRACT.md`; decisions log is `docs/MAPS_TRACKING_DECISIONS.md` (append-only, currently at D-016).
+- The frozen interface contract is `docs/BIBLE.md §3.1`; decisions log is `docs/BIBLE.md §3.2` (append-only,
+  currently at D-013 — this file previously said "D-016," which doesn't match the log's actual git
+  history (a single commit, never amended past D-013); corrected 2026-07-20, re-verify if you know of a
+  newer decision that didn't make it into the log).

@@ -11,12 +11,12 @@ work into the monorepo. Written by the tooling/infra pass, not to step on your d
   `SUPABASE_SERVICE_ROLE_KEY`, `JWT_SECRET`, `INTERNAL_SERVICE_SECRET`, `BOOKING_SERVICE_URL`).
   Health passes, but the settle-to-paid path and the payout record both need Supabase and the
   internal secret, so settlement will fail live until the env is set. The fix command is in
-  `docs/SESSION_HANDOFF_2026-07-19.md`, section 3, and there is a GitHub issue tracking it.
+  `docs/BIBLE.md §7.2`, and there is a GitHub issue tracking it.
 
 ## What would help from you
 - Confirm the merged TypeScript settlement flow (cash-recorded settle marks the trip `paid` and
   records the driver payout through the idempotent outbox saga) matches your intent. Background is in
-  `docs/PRICING_PAYMENTS_STATUS.md`, and the payout atomicity approach is documented there too.
+  `docs/BIBLE.md Appendix D`, and the payout atomicity approach is documented there too.
 - Escrow was cut from the first pass, so the Razorpay stubs were removed and the dep dropped. Note
   that the founder later put escrow back in scope, so if we build it, it is a fresh addition here, not
   a revert.
