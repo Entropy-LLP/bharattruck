@@ -113,6 +113,6 @@ rollback runbook · move secrets → Secret Manager (off inline env).
 ## The "other coder" (pricing/payments)
 
 He owned pricing + payments (we reconfirmed/rebuilt them in TS). Per your instruction he must stay
-informed — I'll keep `docs/PRICING_PAYMENTS_STATUS.md` current and flag any change to those services so
+informed — I'll keep `docs/BIBLE.md Appendix D` current and flag any change to those services so
 he's never surprised. His Python engines stay quarantined on `feat/python-engines` (they'd break the
 Node deploy).

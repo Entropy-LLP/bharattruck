@@ -2,7 +2,7 @@
 
 **The libraries folder.** Cross-cutting code that is reused across services lives HERE and is imported —
 never copy-pasted per service. Mandated by the founder (2026-07-04): "components reused again and again,
-we use from there." Enforced by `docs/CTO_ENGINEERING_STANDARDS.md §1.11`.
+we use from there." Enforced by `docs/BIBLE.md §4.1` item 11.
 
 ## Why
 

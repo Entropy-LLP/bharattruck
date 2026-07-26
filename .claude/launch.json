@@ -1,0 +1,41 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "shipper-dev",
+      "runtimeExecutable": "/Users/adityaroshanjoshi/.nvm/versions/node/v20.20.0/bin/npm",
+      "runtimeArgs": ["run", "dev"],
+      "cwd": "shipper",
+      "port": 3000,
+      "autoPort": true,
+      "env": {
+        "NEXT_PUBLIC_API_URL": "https://bt-gateway-itcdoenefa-el.a.run.app",
+        "PATH": "/Users/adityaroshanjoshi/.nvm/versions/node/v20.20.0/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/adityaroshanjoshi/.nvm/versions/node/v16.20.2/bin:/Users/adityaroshanjoshi/.nvm/versions/node/v20.17.0/bin:/Users/adityaroshanjoshi/.nvm/versions/node/v20.20.0/bin:/Users/adityaroshanjoshi/.nvm/versions/node/v22.10.0/bin:/Users/adityaroshanjoshi/.nvm/versions/node/v22.21.1/bin:/Users/adityaroshanjoshi/.nvm/versions/node/v23.11.0/bin:/Users/adityaroshanjoshi/.nvm/versions/node/v23.11.1/bin:/usr/local/bin:/opt/homebrew/bin:/Users/adityaroshanjoshi/.cargo/bin:/Users/adityaroshanjoshi/go/bin:/Users/adityaroshanjoshi/.deno/bin:/Users/adityaroshanjoshi/Library/pnpm:/Users/adityaroshanjoshi/.local/bin:/Users/adityaroshanjoshi/.asdf/shims:/nix/var/nix/profiles/default/bin"
+      }
+    },
+    {
+      "name": "pr3-shipper-review",
+      "runtimeExecutable": "/Users/adityaroshanjoshi/.nvm/versions/node/v20.20.0/bin/npm",
+      "runtimeArgs": ["run", "dev"],
+      "cwd": ".review-worktrees/pr3/shipper",
+      "port": 3211,
+      "autoPort": true,
+      "env": {
+        "NEXT_PUBLIC_API_URL": "http://localhost:3211",
+        "PATH": "/Users/adityaroshanjoshi/.nvm/versions/node/v20.20.0/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin"
+      }
+    },
+    {
+      "name": "pr2-driver-review",
+      "runtimeExecutable": "/Users/adityaroshanjoshi/.nvm/versions/node/v20.20.0/bin/npm",
+      "runtimeArgs": ["run", "dev"],
+      "cwd": ".review-worktrees/pr2/driver",
+      "port": 3202,
+      "autoPort": true,
+      "env": {
+        "NEXT_PUBLIC_API_URL": "https://bt-gateway-itcdoenefa-el.a.run.app",
+        "PATH": "/Users/adityaroshanjoshi/.nvm/versions/node/v20.20.0/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin"
+      }
+    }
+  ]
+}
