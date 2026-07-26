@@ -45,11 +45,23 @@ http {
     ""        $request_id;
   }
 
-  # CORS: reflect only our own bt-* PWA origins on Cloud Run (shipper/driver/ops-web).
+  # CORS: reflect only our own bt-* front-end origins on Cloud Run.
   # Not a wildcard — any non-matching origin gets no ACAO header and is blocked.
+  #
+  # `fleet-console` is the fleet-owner console (Cloud Run service bt-fleet-console).
+  # It MUST be listed here or every call it makes is blocked by the browser, which
+  # presents as "Failed to fetch" with no server-side trace at all.
+  #
+  # NOTE this map is hardcoded and does NOT read ${CORS_ALLOWED_ORIGINS}, despite
+  # docker-entrypoint.sh substituting that variable and README.md documenting it as
+  # configurable. Adding an origin means editing this regex.
+  #
+  # localhost is deliberately absent, so a dev server pointed at the PROD gateway is
+  # CORS-blocked — true for driver and shipper today as well, not just this app. Local
+  # development needs a locally-run gateway or a proxy, not a hole in the prod allow-list.
   map $http_origin $cors_origin {
     default                                              "";
-    "~^https://bt-(shipper|driver|ops-web)-[^/]+\.run\.app$" $http_origin;
+    "~^https://bt-(shipper|driver|ops-web|fleet-console)-[^/]+\.run\.app$" $http_origin;
   }
 
   limit_req_zone $binary_remote_addr zone=otp_zone:10m rate=5r/m;
