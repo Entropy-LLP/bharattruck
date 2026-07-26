@@ -42,7 +42,7 @@ export async function quoteRoutes(app: FastifyInstance) {
       })
     }
     try {
-      const quote = await quoteSvc.submitQuote(bookingId, parsed.data, req.user)
+      const quote = await quoteSvc.submitQuote(bookingId, parsed.data, req.user, req.log)
       return reply.status(201).send({ success: true, data: quote })
     } catch (err) {
       return handleError(reply, err)
@@ -78,7 +78,7 @@ export async function quoteRoutes(app: FastifyInstance) {
       })
     }
     try {
-      const quote = await quoteSvc.counterQuote(bookingId, quoteId, parsed.data, req.user)
+      const quote = await quoteSvc.counterQuote(bookingId, quoteId, parsed.data, req.user, req.log)
       return reply.send({ success: true, data: quote })
     } catch (err) {
       return handleError(reply, err)

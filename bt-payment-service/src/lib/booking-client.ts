@@ -13,6 +13,10 @@ export type BookingView = {
   status: string
   shipper_id: string
   driver_id: string | null
+  // Set only when a FLEET won the auction (migration 016). Absent on every
+  // pre-fleet booking and on older booking-service builds, hence optional —
+  // a missing field must read as "solo driver", never as an error.
+  fleet_owner_id?: string | null
   quoted_price: number
   final_price: number | null
 }

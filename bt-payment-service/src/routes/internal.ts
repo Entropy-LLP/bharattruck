@@ -8,6 +8,8 @@ import { defaultBookingClient } from '../lib/booking-client.js'
 const TripCompletedBody = z.object({
   booking_id: z.string().uuid(),
   driver_id:  z.string().uuid().nullable().optional(),
+  // Present only for a fleet-won booking; the payee is the bidder (Q15).
+  fleet_owner_id: z.string().uuid().nullable().optional(),
   amount:     z.number().nonnegative(),
 })
 
@@ -42,7 +44,12 @@ export async function internalPaymentRoutes(app: FastifyInstance, opts: Internal
     }
     try {
       const data = await onTripCompleted(
-        { booking_id: body.data.booking_id, driver_id: body.data.driver_id ?? null, amount: body.data.amount },
+        {
+          booking_id:     body.data.booking_id,
+          driver_id:      body.data.driver_id ?? null,
+          fleet_owner_id: body.data.fleet_owner_id ?? null,
+          amount:         body.data.amount,
+        },
         deps,
       )
       return reply.send({ success: true, data })

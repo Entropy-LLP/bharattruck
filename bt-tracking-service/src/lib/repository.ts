@@ -13,6 +13,34 @@ export async function getBookingForTracking(id: string): Promise<TrackingBooking
   return data as TrackingBooking | null
 }
 
+// getBookingFleetColumns — fleet_owner_id / vehicle_id, fetched SEPARATELY and only
+// for a fleet_owner caller.
+//
+// These columns arrive in migration 0016. They are deliberately NOT in the select
+// above: that list is on the hot path of every tracking endpoint for shippers and
+// drivers, and PostgREST fails the entire query when it names a column the table
+// does not have (42703) — so widening it would take the live map, ETA and route
+// down for every solo driver and shipper the moment this image deploys, before
+// 0016 lands. Shipper/driver/admin therefore pay nothing for this feature.
+//
+// A missing column here means the fleet schema simply is not deployed yet, which
+// is indistinguishable from "this booking belongs to no fleet" — so we return
+// nulls and let the caller deny access, rather than 500.
+export async function getBookingFleetColumns(
+  id: string,
+): Promise<{ fleet_owner_id: string | null; vehicle_id: string | null }> {
+  const { data, error } = await supabase
+    .from('bookings')
+    .select('fleet_owner_id, vehicle_id')
+    .eq('id', id)
+    .maybeSingle()
+  if (error) return { fleet_owner_id: null, vehicle_id: null }
+  return {
+    fleet_owner_id: (data?.fleet_owner_id as string | null) ?? null,
+    vehicle_id: (data?.vehicle_id as string | null) ?? null,
+  }
+}
+
 // JWT carries users.id; authz for drivers needs drivers.id.
 export async function getDriverByUserId(userId: string): Promise<{ id: string } | null> {
   const { data, error } = await supabase

@@ -11,7 +11,8 @@
     ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
     "./errors": { "types": "./dist/errors.d.ts", "import": "./dist/errors.js" },
     "./auth": { "types": "./dist/auth.d.ts", "import": "./dist/auth.js" },
-    "./db": { "types": "./dist/db.d.ts", "import": "./dist/db.js" }
+    "./db": { "types": "./dist/db.d.ts", "import": "./dist/db.js" },
+    "./fleet": { "types": "./dist/fleet.d.ts", "import": "./dist/fleet.js" }
   },
   "scripts": {
     "build": "tsc",

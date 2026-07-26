@@ -71,6 +71,10 @@ export async function locationRoutes(app: FastifyInstance) {
 
     const driverId = driverRow.id
 
+    // The truck running this booking, when one is bound (fleet trips get it
+    // from the owner's assignment step). NULL for every solo booking.
+    let vehicleId: string | null = null
+
     if (booking_id) {
       const booking = await repo.getBookingById(booking_id)
       if (!booking) throw new BookingError(`Booking ${booking_id} not found`, 'NOT_FOUND', 404)
@@ -82,6 +86,7 @@ export async function locationRoutes(app: FastifyInstance) {
           409,
         )
       }
+      vehicleId = booking.vehicle_id ?? null
     }
 
     const now = new Date().toISOString()
@@ -121,6 +126,10 @@ export async function locationRoutes(app: FastifyInstance) {
           await repo.insertLocationBreadcrumb({
             booking_id,
             driver_id:   driverId,
+            // Asset attribution is additive: the key is present only when the
+            // booking actually names a truck, so a solo breadcrumb is written
+            // exactly as before.
+            ...(vehicleId ? { vehicle_id: vehicleId } : {}),
             lat,
             lng,
             heading:     heading ?? null,

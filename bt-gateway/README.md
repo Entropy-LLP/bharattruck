@@ -15,6 +15,7 @@ Nginx reverse proxy and API gateway for **BharatTruck** — routes all client tr
 | `/api/pricing/` | bt-pricing-service:3003 | Fare calculation |
 | `/api/payments/` | bt-payment-service:3004 | Razorpay escrow |
 | `/api/cargo/` | bt-cargo-ledger:3005 | Chain of custody |
+| `/api/fleet/` | bt-fleet-service:3007 | Fleet owners, trucks, driver roster, assignment, P&L |
 | `/ws/` | bt-booking-service:3002 | WebSocket (live tracking) |
 | `/health` | Gateway itself | Health check |
 
@@ -38,6 +39,7 @@ Nginx reverse proxy and API gateway for **BharatTruck** — routes all client tr
 | `PRICING_SERVICE_URL` | `http://bt-pricing-service:3003` | Pricing service URL |
 | `PAYMENT_SERVICE_URL` | `http://bt-payment-service:3004` | Payment service URL |
 | `CARGO_SERVICE_URL` | `http://bt-cargo-ledger:3005` | Cargo ledger URL |
+| `FLEET_SERVICE_URL` | `http://bt-fleet-service:3007` | Fleet service URL |
 | `CORS_ALLOWED_ORIGINS` | `*` | Allowed CORS origins |
 
 ## Running Locally

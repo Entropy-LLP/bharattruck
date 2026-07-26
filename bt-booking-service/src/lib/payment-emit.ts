@@ -24,10 +24,18 @@ export function emitTripCompleted(booking: DbBooking, log?: Logger): void {
 
   const amount = booking.final_price ?? booking.quoted_price
 
+  // fleet_owner_id rides along so payment-service can settle to WHOEVER BID
+  // (founder Q15): a fleet-won trip pays the fleet, not the driver at the
+  // wheel. NULL on every solo booking, where the payee is the driver as before.
   void fetch(`${base}/internal/trip-completed`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-internal-secret': secret },
-    body: JSON.stringify({ booking_id: booking.id, driver_id: booking.driver_id, amount }),
+    body: JSON.stringify({
+      booking_id:     booking.id,
+      driver_id:      booking.driver_id,
+      fleet_owner_id: booking.fleet_owner_id ?? null,
+      amount,
+    }),
   }).catch((err) => {
     log?.warn({ err, booking_id: booking.id }, 'trip_completed emit failed (payout saga self-heals via settle)')
   })

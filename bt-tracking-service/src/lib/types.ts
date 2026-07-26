@@ -1,7 +1,10 @@
 // -----------------------------------------------------------
 // Auth
 // -----------------------------------------------------------
-export type UserRole = 'shipper' | 'driver' | 'admin'
+// Re-exported, not redeclared: the role set is the live `public.user_role` enum and must
+// not drift per service. @bharattruck/shared is the one place it is written down.
+export type { UserRole } from '@bharattruck/shared/auth'
+import type { UserRole } from '@bharattruck/shared/auth'
 
 export type AuthenticatedUser = {
   userId: string // public.users.id (from JWT userId claim)
@@ -39,6 +42,10 @@ export type LiveLocation = {
 // TrackingBooking — the booking fields this service needs
 // (read from the bookings table owned by bt-booking-service).
 // -----------------------------------------------------------
+// This is the SHIPPER/DRIVER hot path — every tracking endpoint loads it before doing
+// anything else, so it must stay selectable on a pre-0016 database. The fleet columns
+// (fleet_owner_id / vehicle_id) are deliberately absent: they are fetched separately by
+// getBookingFleetColumns, only for a fleet_owner caller.
 export type TrackingBooking = {
   id: string
   shipper_id: string

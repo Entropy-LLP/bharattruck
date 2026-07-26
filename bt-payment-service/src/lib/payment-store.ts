@@ -19,9 +19,17 @@ export type PaymentRecord = {
   status: 'recorded'
 }
 
-export type PayoutRecord = {
+// The payout goes to WHOEVER MADE THE WINNING BID (founder Q15): a solo
+// driver, or the fleet owner who bid on their fleet's behalf. Migration 016
+// enforces the pairing with a CHECK (payee_type='driver' ⇒ driver_id NOT NULL,
+// 'fleet_owner' ⇒ fleet_owner_id NOT NULL), so the two fields are never set
+// independently — always build this via resolvePayee().
+export type PayoutPayee =
+  | { payee_type: 'driver'; driver_id: string; fleet_owner_id: null }
+  | { payee_type: 'fleet_owner'; driver_id: null; fleet_owner_id: string }
+
+export type PayoutRecord = PayoutPayee & {
   booking_id: string
-  driver_id: string | null
   amount: number
   mode: PaymentMode | null
   status: 'pending' | 'recorded'
@@ -36,6 +44,23 @@ export interface PaymentStore {
   upsertPayout(row: PayoutRecord): Promise<void>
   /** saga path — create a 'pending' payout only if none exists yet. */
   insertPendingPayoutIfAbsent(row: PayoutRecord): Promise<void>
+}
+
+// wirePayout — the row as it goes over the wire to PostgREST.
+//
+// A DRIVER payout writes the EXACT pre-fleet column set. `payee_type` and
+// `fleet_owner_id` arrive in migration 0016, and 0016 is NOT a prerequisite for a
+// solo-driver settlement — which is 100% of settlements today. PostgREST rejects
+// the entire write when the payload names a column the table does not have
+// (PGRST204 / 42703), so sending them unconditionally would break the only
+// settlement path that currently exists. `payouts.payee_type` defaults to
+// 'driver' once 0016 lands, so omitting it is correct on both schemas.
+//
+// A FLEET payout necessarily runs on a post-0016 database — a fleet booking
+// cannot exist without that migration — so it sends both columns.
+export function wirePayout(row: PayoutRecord): Record<string, unknown> {
+  const { payee_type, fleet_owner_id, ...base } = row
+  return payee_type === 'fleet_owner' ? { ...base, payee_type, fleet_owner_id } : base
 }
 
 export class SupabasePaymentStore implements PaymentStore {
@@ -57,12 +82,14 @@ export class SupabasePaymentStore implements PaymentStore {
   }
 
   async upsertPayout(row: PayoutRecord): Promise<void> {
-    const { error } = await getSupabase().from('payouts').upsert(row, { onConflict: 'booking_id' })
+    const { error } = await getSupabase().from('payouts').upsert(wirePayout(row), { onConflict: 'booking_id' })
     if (error) throw new Error(`payouts upsert failed: ${error.message}`)
   }
 
   async insertPendingPayoutIfAbsent(row: PayoutRecord): Promise<void> {
-    const { error } = await getSupabase().from('payouts').upsert(row, { onConflict: 'booking_id', ignoreDuplicates: true })
+    const { error } = await getSupabase()
+      .from('payouts')
+      .upsert(wirePayout(row), { onConflict: 'booking_id', ignoreDuplicates: true })
     if (error) throw new Error(`payouts pending-insert failed: ${error.message}`)
   }
 }

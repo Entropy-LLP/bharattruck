@@ -1,4 +1,4 @@
-export type UserRole = 'shipper' | 'driver' | 'admin';
+export type UserRole = 'shipper' | 'driver' | 'admin' | 'fleet_owner';
 export type AuthenticatedUser = {
     userId: string;
     role: UserRole;

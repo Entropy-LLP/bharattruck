@@ -1,6 +1,7 @@
 import type { BookingClient } from './booking-client.js'
-import type { PaymentStore, PaymentMode } from './payment-store.js'
+import type { PaymentStore, PaymentMode, PayoutPayee } from './payment-store.js'
 import { PaymentError } from './errors.js'
+import { emitTripEconomics } from './fleet-emit.js'
 import type { AuthenticatedUser } from '../plugins/auth.js'
 
 // -----------------------------------------------------------
@@ -23,6 +24,21 @@ export type SettleArgs = {
   amount: number
   mode: PaymentMode
   reference: string | null
+}
+
+// resolvePayee — the payout follows the BID, not the steering wheel (Q15).
+// A fleet-won booking still carries driver_id (the assigned driver of record
+// for tracking/POD), but that driver is the fleet's employee and is paid by
+// the fleet, so fleet_owner_id wins whenever it is set. Returns null when the
+// booking names no bidder at all; callers decide whether that is fatal.
+export function resolvePayee(booking: { driver_id: string | null; fleet_owner_id?: string | null }): PayoutPayee | null {
+  if (booking.fleet_owner_id) {
+    return { payee_type: 'fleet_owner', fleet_owner_id: booking.fleet_owner_id, driver_id: null }
+  }
+  if (booking.driver_id) {
+    return { payee_type: 'driver', driver_id: booking.driver_id, fleet_owner_id: null }
+  }
+  return null
 }
 
 export async function settle(args: SettleArgs, actor: AuthenticatedUser, bearer: string, deps: PaymentDeps) {
@@ -53,6 +69,31 @@ export async function settle(args: SettleArgs, actor: AuthenticatedUser, bearer:
   // Record the money (hard write — must persist). Skip if already recorded
   // (idempotent) and fall through to healing the paid-flip below.
   if (!existing) {
+    // Resolved BEFORE the payment insert: a booking with no payee cannot be
+    // paid out, and migration 016's CHECK would reject the payout row anyway —
+    // better to refuse up front than to record money we cannot disburse.
+    const payee = resolvePayee(booking)
+    if (!payee) {
+      throw new PaymentError('Booking has no payee (neither a driver nor a fleet owner)', 'INVALID_STATE', 409)
+    }
+
+    // ORDER MATTERS: payout FIRST, payment second.
+    //
+    // `existing` (the payments row) is what short-circuits this whole block on a
+    // retry. If the payment were written first and the payout write then failed,
+    // the retry would find `existing` non-null, skip the block entirely, flip the
+    // booking to 'paid' and return 200 — leaving the payee's payout row missing
+    // forever, recoverable only by hand. Writing the payout first inverts that:
+    // a failure here leaves NO payments row, so the retry re-runs both writes.
+    // upsertPayout is idempotent on booking_id, so the replay is safe.
+    await deps.store.upsertPayout({
+      booking_id: args.bookingId,
+      ...payee,
+      amount: args.amount, // pilot: no platform fee — payout = settled amount
+      mode: args.mode,
+      status: 'recorded',
+      recorded_by: actor.userId,
+    })
     await deps.store.insertPayment({
       booking_id: args.bookingId,
       amount: args.amount,
@@ -60,14 +101,6 @@ export async function settle(args: SettleArgs, actor: AuthenticatedUser, bearer:
       reference: args.reference,
       recorded_by: actor.userId,
       status: 'recorded',
-    })
-    await deps.store.upsertPayout({
-      booking_id: args.bookingId,
-      driver_id: booking.driver_id,
-      amount: args.amount, // pilot: no platform fee — driver payout = settled amount
-      mode: args.mode,
-      status: 'recorded',
-      recorded_by: actor.userId,
     })
   }
 
@@ -78,6 +111,11 @@ export async function settle(args: SettleArgs, actor: AuthenticatedUser, bearer:
   } catch (err) {
     if (!(err instanceof PaymentError && err.httpStatus === 409)) throw err
   }
+
+  // Revenue is now known, so fold the trip into the owner's per-asset P&L.
+  // Fleet-only: a solo-driver booking has no fleet assets to roll up, and this
+  // path must stay byte-identical to the pre-fleet behaviour for those.
+  if (booking.fleet_owner_id) emitTripEconomics(args.bookingId, deps.logger)
 
   const payment = existing ?? (await deps.store.getPayment(args.bookingId))
   const payout = await deps.store.getPayout(args.bookingId)
@@ -93,12 +131,20 @@ export async function settle(args: SettleArgs, actor: AuthenticatedUser, bearer:
 // -----------------------------------------------------------
 
 export async function onTripCompleted(
-  args: { booking_id: string; driver_id: string | null; amount: number },
+  args: { booking_id: string; driver_id: string | null; fleet_owner_id?: string | null; amount: number },
   deps: PaymentDeps,
 ) {
+  const payee = resolvePayee(args)
+  if (!payee) {
+    // Nothing to pre-create — settle() resolves the payee from the booking
+    // itself and self-heals, so a payee-less event costs nothing but a log line.
+    deps.logger?.warn({ booking_id: args.booking_id }, 'trip_completed carried no payee; skipping pending payout')
+    return { booking_id: args.booking_id, payout_pending: false }
+  }
+
   await deps.store.insertPendingPayoutIfAbsent({
     booking_id: args.booking_id,
-    driver_id: args.driver_id,
+    ...payee,
     amount: args.amount,
     mode: null,
     status: 'pending',

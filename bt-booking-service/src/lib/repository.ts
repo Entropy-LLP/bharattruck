@@ -119,9 +119,17 @@ export async function getBookingById(id: string): Promise<BookingWithProfiles | 
 // -----------------------------------------------------------
 // listBookings
 // Role-scoped: shipper→own rows, driver→pending rows, admin→all.
+//
+// fleetAffiliatedDriverId (drivers.id) is passed ONLY for a driver the caller
+// has already confirmed is fleet-employed: that driver has no load board, so
+// they get the trips assigned to them instead of the open 'pending' pool.
+// Absent — every solo driver — the query is unchanged.
 // -----------------------------------------------------------
 
-export async function listBookings(actor: AuthenticatedUser): Promise<DbBooking[]> {
+export async function listBookings(
+  actor: AuthenticatedUser,
+  fleetAffiliatedDriverId?: string,
+): Promise<DbBooking[]> {
   let query = supabase
     .from('bookings')
     .select('*')
@@ -130,7 +138,9 @@ export async function listBookings(actor: AuthenticatedUser): Promise<DbBooking[
   if (actor.role === 'shipper') {
     query = query.eq('shipper_id', actor.userId)
   } else if (actor.role === 'driver') {
-    query = query.eq('status', 'pending')
+    query = fleetAffiliatedDriverId
+      ? query.eq('driver_id', fleetAffiliatedDriverId)
+      : query.eq('status', 'pending')
   }
   // admin: no additional filter
 
@@ -207,9 +217,15 @@ export async function transitionBookingStatus(
 // bt-tracking-service reader and infra's migration 009 line up.
 // -----------------------------------------------------------
 
+// vehicle_id (migration 016) attributes the movement to the ASSET as well as
+// the person, which is what makes per-truck distance utilization computable for
+// a fleet. It is OPTIONAL and omitted entirely when the booking names no
+// vehicle: a solo booking then writes the exact same column set it always has,
+// which also keeps ingestion working on a database where 016 has not landed.
 export type LocationBreadcrumb = {
   booking_id:  string
   driver_id:   string
+  vehicle_id?: string
   lat:         number
   lng:         number
   heading:     number | null

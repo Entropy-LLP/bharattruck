@@ -1,7 +1,13 @@
 import type { AuthenticatedUser, BookingStatus, BookingWithProfiles, CreateBookingBody, DbBooking } from './types.js'
 import { BookingError } from './types.js'
-import { assertValidTransition } from './state.js'
+import { assertFleetAssignmentReady, assertValidTransition } from './state.js'
 import * as repo from './repository.js'
+import {
+  hasLiveVehicleAssignment,
+  isFleetAffiliatedDriver,
+  stripCommercialFields,
+  type PriceMasked,
+} from './fleet.js'
 import { defaultPricingClient, type PricingClient } from './pricing-client.js'
 
 // -----------------------------------------------------------
@@ -143,6 +149,27 @@ export async function createBooking(
 }
 
 // -----------------------------------------------------------
+// PRICE HIDING (founder Q16) — the one rule in this slice that reaches into an
+// EXISTING driver payload, so it is gated as narrowly as possible.
+//
+// A driver employed by a fleet is not the commercial party on the trip: their
+// owner bid and their owner gets paid, so they must not see quoted_price,
+// final_price or min_acceptable. A SOLO driver is the commercial party and
+// their payload must stay exactly as it is today — which is why the mask is
+// applied only behind an explicit, positive isFleetAffiliatedDriver() answer
+// (active affiliation only). No affiliation row, no drivers row, a non-driver
+// role, or a database without the fleet tables all resolve to "solo" and
+// return the untouched booking.
+// -----------------------------------------------------------
+
+async function fleetAffiliatedDriverId(actor: AuthenticatedUser): Promise<string | null> {
+  if (actor.role !== 'driver') return null
+  const driverRow = await repo.getDriverByUserId(actor.userId)
+  if (!driverRow) return null
+  return (await isFleetAffiliatedDriver(driverRow.id)) ? driverRow.id : null
+}
+
+// -----------------------------------------------------------
 // getBooking
 // Returns booking with driver profile joined.
 // Shippers can only fetch their own bookings.
@@ -151,7 +178,7 @@ export async function createBooking(
 export async function getBooking(
   id: string,
   actor: AuthenticatedUser,
-): Promise<BookingWithProfiles> {
+): Promise<PriceMasked<BookingWithProfiles>> {
   const booking = await repo.getBookingById(id)
   if (!booking) {
     throw new BookingError(`Booking ${id} not found`, 'NOT_FOUND', 404)
@@ -159,16 +186,29 @@ export async function getBooking(
   if (actor.role === 'shipper' && booking.shipper_id !== actor.userId) {
     throw new BookingError('Forbidden', 'FORBIDDEN', 403)
   }
+  if (await fleetAffiliatedDriverId(actor)) {
+    return stripCommercialFields(booking)
+  }
   return booking
 }
 
 // -----------------------------------------------------------
 // listBookings
 // Role-scoped filtering is handled inside the repository.
+//
+// One exception: a FLEET-AFFILIATED driver has no load board (founder Q14) —
+// they cannot self-select work, so the open 'pending' list is replaced by the
+// trips their owner has actually assigned to them, with the money masked. A
+// solo driver still gets the same pending load board, unmasked.
 // -----------------------------------------------------------
 
-export async function listBookings(actor: AuthenticatedUser): Promise<DbBooking[]> {
-  return repo.listBookings(actor)
+export async function listBookings(actor: AuthenticatedUser): Promise<PriceMasked<DbBooking>[]> {
+  const fleetDriverId = await fleetAffiliatedDriverId(actor)
+  if (!fleetDriverId) {
+    return repo.listBookings(actor)
+  }
+  const assigned = await repo.listBookings(actor, fleetDriverId)
+  return assigned.map(stripCommercialFields)
 }
 
 // -----------------------------------------------------------
@@ -195,6 +235,17 @@ export async function acceptBooking(
   const driverRow = await repo.getDriverByUserId(actor.userId)
   if (!driverRow) {
     throw new BookingError('Driver profile not found', 'NOT_FOUND', 404)
+  }
+
+  // Self-accepting an open booking IS load-board self-selection, so it is
+  // closed to a fleet-employed driver for the same reason bidding is (Q14):
+  // their work is assigned by their owner. Solo drivers are unaffected.
+  if (await isFleetAffiliatedDriver(driverRow.id)) {
+    throw new BookingError(
+      'You drive for a fleet — your fleet owner takes loads and assigns them to you',
+      'FORBIDDEN',
+      403,
+    )
   }
 
   const updated = await repo.acceptBooking(bookingId, driverRow.id)
@@ -257,6 +308,13 @@ async function transitionAssignedBooking(
   // Server-side state-machine guard: illegal moves → 409, not 500.
   assertValidTransition(booking.status, to)
 
+  // Fleet-won trips carry a truck of record. Solo bookings have
+  // fleet_owner_id NULL and skip this entirely — no extra query, no new
+  // failure mode on the path that exists today.
+  if (booking.fleet_owner_id) {
+    assertFleetAssignmentReady(await hasLiveVehicleAssignment(bookingId))
+  }
+
   const updated = await repo.transitionBookingStatus(bookingId, driverRow.id, booking.status, to)
   if (!updated) {
     // Status changed between our read and write (concurrent transition).
@@ -276,6 +334,10 @@ async function transitionAssignedBooking(
 // consignee receiver_email). Assigned-driver-only; the trip must
 // be in_transit (POD closes an in-progress trip). Owned here
 // because bookings + driver identity live in this service.
+//
+// PriceMasked by construction: PodContext carries no commercial field, so the
+// Q16 price-hiding rule needs nothing here — a fleet driver's POD flow is the
+// solo driver's POD flow. Keep it that way if this payload ever grows.
 // -----------------------------------------------------------
 
 export type PodContext = {
