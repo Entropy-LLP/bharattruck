@@ -150,7 +150,16 @@ else
     --region="$REGION" --project="$PROJECT" \
     --update-env-vars="FLEET_SERVICE_URL=${FLEET_URL}" \
     --quiet >/dev/null
-  echo "  ok"
+  echo "  ok (bt-gateway)"
+
+  # bt-payment-service ALSO reads FLEET_SERVICE_URL — src/lib/fleet-emit.ts posts trip economics
+  # to the fleet service after a settlement. It "skips silently" when the var is unset, so a fleet
+  # owner's P&L would quietly stop updating after every payout with no error anywhere.
+  gcloud run services update bt-payment-service \
+    --region="$REGION" --project="$PROJECT" \
+    --update-env-vars="FLEET_SERVICE_URL=${FLEET_URL}" \
+    --quiet >/dev/null
+  echo "  ok (bt-payment-service)"
 fi
 
 # -----------------------------------------------------------------------------
