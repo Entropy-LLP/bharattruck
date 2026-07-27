@@ -21,7 +21,10 @@ const B2 = '22222222-2222-4222-8222-222222222222' // in_transit — non-complete
 const B4 = '44444444-4444-4444-8444-444444444444' // in_transit — emit chain
 const B5 = '55555555-5555-4555-8555-555555555555' // completed — admin settle
 const B3 = '33333333-3333-4333-8333-333333333333' // saga-only id
+const B6 = '66666666-6666-4666-8666-666666666666' // completed — FLEET-won booking
+const B7 = '77777777-7777-4777-8777-777777777777' // saga-only id, fleet payee
 const D1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+const F1 = 'ffffffff-ffff-4fff-8fff-ffffffffffff' // fleet_owners.id (NOT a users.id)
 const U1 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' // driver user
 const S1 = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' // shipper (owner) user
 const OTHER = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd' // shipper (non-owner)
@@ -34,6 +37,9 @@ const bstore: Record<string, Row[]> = {
     { id: B2, driver_id: D1, shipper_id: S1, status: 'in_transit', quoted_price: 5000, final_price: null },
     { id: B4, driver_id: D1, shipper_id: S1, status: 'in_transit', quoted_price: 7000, final_price: null },
     { id: B5, driver_id: D1, shipper_id: S1, status: 'completed', quoted_price: 6000, final_price: 6000 },
+    // Fleet-won: the fleet bid, so the fleet owner is the payee even though a
+    // driver of record is assigned for tracking/POD.
+    { id: B6, driver_id: D1, fleet_owner_id: F1, shipper_id: S1, status: 'completed', quoted_price: 8000, final_price: 8000 },
   ],
   drivers: [{ id: D1, user_id: U1 }],
 }
@@ -106,6 +112,17 @@ async function main() {
   const payBase = `http://127.0.0.1:${(payApp.server.address() as any).port}`
   process.env.PAYMENT_SERVICE_URL = payBase // enables booking's best-effort emit
 
+  // Stand-in for bt-fleet-service: records which bookings got a trip-economics
+  // roll-up, so we can prove fleet trips emit and solo-driver trips do not.
+  const economicsHits: string[] = []
+  const fleetApp = Fastify({ logger: false })
+  fleetApp.post('/internal/trip-economics/:bookingId', async (req: any) => {
+    economicsHits.push(req.params.bookingId)
+    return { success: true, data: { booking_id: req.params.bookingId } }
+  })
+  await fleetApp.listen({ port: 0, host: '127.0.0.1' })
+  process.env.FLEET_SERVICE_URL = `http://127.0.0.1:${(fleetApp.server.address() as any).port}`
+
   const settle = (body: any, token?: string) => payApp.inject({
     method: 'POST', url: '/payments/settle',
     headers: token ? { authorization: `Bearer ${token}` } : {}, payload: body,
@@ -142,6 +159,18 @@ async function main() {
   r = await settle({ booking_id: B5, amount: 6000, mode: 'cash' }, tok(ADMIN, 'admin'))
   check('admin settle completed booking 200 paid', r.statusCode === 200 && r.json().data?.status === 'paid', `(got ${r.statusCode})`)
 
+  console.log('\n── fleet-won booking: payee = the bidder (Q15) ──')
+  check('solo payout is payee_type=driver with driver_id', (await fakeStore.getPayout(B1))?.payee_type === 'driver' && (await fakeStore.getPayout(B1))?.driver_id === D1 && (await fakeStore.getPayout(B1))?.fleet_owner_id === null, JSON.stringify(await fakeStore.getPayout(B1)))
+  r = await settle({ booking_id: B6, amount: 8000, mode: 'direct' }, tok(S1, 'shipper'))
+  check('settle fleet booking 200 paid', r.statusCode === 200 && r.json().data?.status === 'paid', `(got ${r.statusCode})`)
+  const fleetPayout = await fakeStore.getPayout(B6)
+  check('fleet payout payee_type=fleet_owner, driver_id NULL', fleetPayout?.payee_type === 'fleet_owner' && fleetPayout?.fleet_owner_id === F1 && fleetPayout?.driver_id === null, JSON.stringify(fleetPayout))
+
+  console.log('\n── trip-economics roll-up (best-effort, fleet only) ──')
+  for (let i = 0; i < 40 && !economicsHits.includes(B6); i++) await new Promise(res => setTimeout(res, 50))
+  check('fleet settlement emitted trip-economics', economicsHits.includes(B6), JSON.stringify(economicsHits))
+  check('solo-driver settlements emitted nothing', !economicsHits.includes(B1) && !economicsHits.includes(B5), JSON.stringify(economicsHits))
+
   console.log('\n── saga consumer /internal/trip-completed (idempotent) ──')
   const tripCompleted = (id: string, secret: string) => payApp.inject({
     method: 'POST', url: '/internal/trip-completed',
@@ -153,6 +182,12 @@ async function main() {
   check('trip-completed 200 creates pending payout', r.statusCode === 200 && (await fakeStore.getPayout(B3))?.status === 'pending', JSON.stringify(await fakeStore.getPayout(B3)))
   r = await tripCompleted(B3, SECRET)
   check('trip-completed replay idempotent (still pending, no change)', (await fakeStore.getPayout(B3))?.status === 'pending' && P.payouts.size >= 1, '')
+  r = await payApp.inject({
+    method: 'POST', url: '/internal/trip-completed',
+    headers: { 'x-internal-secret': SECRET }, payload: { booking_id: B7, driver_id: D1, fleet_owner_id: F1, amount: 4000 },
+  })
+  const pendingFleet = await fakeStore.getPayout(B7)
+  check('trip-completed with fleet_owner_id → fleet payee pending payout', r.statusCode === 200 && pendingFleet?.payee_type === 'fleet_owner' && pendingFleet?.driver_id === null, JSON.stringify(pendingFleet))
 
   console.log('\n── best-effort emit: complete → pending payout ──')
   // Drive booking B4 in_transit→completed via the POD internal path; the
@@ -164,6 +199,7 @@ async function main() {
 
   await payApp.close()
   await bookingApp.close()
+  await fleetApp.close()
   console.log(`\n${failures.length ? 'RESULT: FAIL' : 'RESULT: PASS'} — ${passed} checks passed, ${failures.length} failed`)
   if (failures.length) { failures.forEach(f => console.log('  ✗ ' + f)); process.exit(1) }
 }

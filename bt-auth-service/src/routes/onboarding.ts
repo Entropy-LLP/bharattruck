@@ -52,6 +52,9 @@ const LinkBankAccountBody = z.object({
   is_primary:          z.boolean().optional(),
 })
 
+// Whitelist, never a blacklist: every route below reads/writes `drivers`-keyed rows, and a
+// fleet_owner has no drivers row at all (fleet trucks and licences are bt-fleet-service's).
+// Letting one through would 500 on the missing row rather than 403 honestly.
 function driverOnly(role: string): string | null {
   return role === 'driver' ? null : 'Only drivers can access onboarding'
 }

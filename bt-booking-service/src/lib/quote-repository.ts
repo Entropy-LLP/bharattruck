@@ -27,6 +27,10 @@
 //     UNIQUE (booking_id, driver_id)
 //   );
 //
+//   -- migration 016 then made quotes.driver_id NULLABLE and added
+//   -- fleet_owner_id + a num_nonnulls(driver_id, fleet_owner_id) = 1 check,
+//   -- so a bid can come from a fleet instead of a solo driver.
+//
 //   CREATE TABLE IF NOT EXISTS negotiations (
 //     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
 //     quote_id uuid NOT NULL REFERENCES quotes(id) ON DELETE CASCADE,
@@ -43,25 +47,35 @@
 import { supabase } from './supabase.js'
 import type { AuthenticatedUser, DbBooking, DbNegotiation, DbQuote, QuoteStatus } from './types.js'
 import { BookingError } from './types.js'
+import type { Bidder } from './fleet.js'
 
 // -----------------------------------------------------------
 // createQuote
-// Inserts a new quote row. If the UNIQUE(booking_id, driver_id)
-// constraint fires, we catch it and throw a domain error so
-// callers get a clean DUPLICATE_QUOTE response.
+// Inserts a new quote row for whichever party is bidding. If the
+// UNIQUE(booking_id, driver_id) / one-live-bid-per-fleet constraint
+// fires, we catch it and throw a domain error so callers get a clean
+// DUPLICATE_QUOTE response.
+//
+// The two branches write DISJOINT columns (quotes_exactly_one_bidder
+// enforces that) — a driver bid inserts exactly the same payload it
+// always did, so nothing about the solo path moved.
 // -----------------------------------------------------------
 
 export async function createQuote(
   bookingId: string,
-  driverId: string,
+  bidder: Bidder,
   amount: number,
   message: string | null,
 ): Promise<DbQuote> {
+  const bidderColumns = bidder.kind === 'fleet'
+    ? { fleet_owner_id: bidder.fleetOwnerId }
+    : { driver_id: bidder.driverId }
+
   const { data, error } = await supabase
     .from('quotes')
     .insert({
       booking_id: bookingId,
-      driver_id:  driverId,
+      ...bidderColumns,
       amount,
       message,
       status: 'submitted',
@@ -71,7 +85,13 @@ export async function createQuote(
 
   if (error) {
     if (error.code === '23505') {
-      throw new BookingError('Driver already has an active quote', 'DUPLICATE_QUOTE', 409)
+      throw new BookingError(
+        bidder.kind === 'fleet'
+          ? 'This fleet already has an active quote on this booking'
+          : 'Driver already has an active quote',
+        'DUPLICATE_QUOTE',
+        409,
+      )
     }
     throw new Error(`DB insert quote failed: ${error.message}`)
   }
@@ -96,14 +116,16 @@ export async function getQuoteById(quoteId: string): Promise<DbQuote | null> {
 
 // -----------------------------------------------------------
 // listQuotesForBooking
-// Role-scoped: drivers only see their own quote (blind auction),
-// shippers and admins see all quotes for the booking.
+// Role-scoped: a bidder only sees its own quote (blind auction),
+// shippers and admins see all quotes for the booking. `bidder` is the
+// resolved identity of a driver/fleet-owner caller — absent for
+// shippers and admins.
 // -----------------------------------------------------------
 
 export async function listQuotesForBooking(
   bookingId: string,
   actor: AuthenticatedUser,
-  driverRowId?: string,
+  bidder?: Bidder,
 ): Promise<DbQuote[]> {
   let query = supabase
     .from('quotes')
@@ -111,11 +133,14 @@ export async function listQuotesForBooking(
     .eq('booking_id', bookingId)
     .order('submitted_at', { ascending: false })
 
-  if (actor.role === 'driver') {
-    if (!driverRowId) {
+  if (actor.role !== 'shipper' && actor.role !== 'admin') {
+    // Blind auction: a bidder we could not resolve to a party sees nothing.
+    if (!bidder) {
       return []
     }
-    query = query.eq('driver_id', driverRowId)
+    query = bidder.kind === 'fleet'
+      ? query.eq('fleet_owner_id', bidder.fleetOwnerId)
+      : query.eq('driver_id', bidder.driverId)
   }
   // shipper and admin: no additional filter
 
@@ -200,9 +225,15 @@ export async function listNegotiationsForQuote(quoteId: string): Promise<DbNegot
 
 // -----------------------------------------------------------
 // awardBooking
-// Atomically assigns a driver and marks the booking as accepted.
-// The WHERE guard (status IN (...) AND awarded_quote_id IS NULL)
-// ensures only one concurrent award call can succeed.
+// Atomically binds the booking to the WINNING BIDDER and marks it
+// accepted. The WHERE guard (status IN (...) AND awarded_quote_id IS
+// NULL) ensures only one concurrent award call can succeed.
+//
+// A driver bid sets driver_id, exactly as before. A fleet bid sets
+// fleet_owner_id and leaves driver_id NULL: the fleet may have bid with
+// no free truck (founder Q10), so the driver and the truck are bound
+// later by the owner's assignment step in bt-fleet-service — which is
+// what the accepted → in_transit gate then checks for.
 //
 // Also marks the winning quote as 'accepted' and expires all
 // other open quotes on this booking.
@@ -211,14 +242,18 @@ export async function listNegotiationsForQuote(quoteId: string): Promise<DbNegot
 export async function awardBooking(
   bookingId: string,
   quoteId: string,
-  driverId: string,
+  bidder: Bidder,
   finalPrice: number,
 ): Promise<DbBooking | null> {
+  const winnerColumns = bidder.kind === 'fleet'
+    ? { fleet_owner_id: bidder.fleetOwnerId }
+    : { driver_id: bidder.driverId }
+
   // Step 1: atomically update the booking
   const { data, error } = await supabase
     .from('bookings')
     .update({
-      driver_id:        driverId,
+      ...winnerColumns,
       awarded_quote_id: quoteId,
       final_price:      finalPrice,
       status:           'accepted',

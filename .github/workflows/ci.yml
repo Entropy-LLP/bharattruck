@@ -38,12 +38,15 @@ jobs:
         with:
           # Any change to shared CI config rebuilds everything (safety).
           filters: |
+            # Services consuming @bharattruck/shared via a `file:` dep list packages/shared
+            # too: a shared-only change alters their compile input, so it must rebuild them.
             bt-auth-service: ['bt-auth-service/**', '.github/workflows/ci.yml']
-            bt-booking-service: ['bt-booking-service/**', '.github/workflows/ci.yml']
+            bt-booking-service: ['bt-booking-service/**', 'packages/shared/**', '.github/workflows/ci.yml']
             bt-pricing-service: ['bt-pricing-service/**', '.github/workflows/ci.yml']
             bt-payment-service: ['bt-payment-service/**', '.github/workflows/ci.yml']
             bt-cargo-ledger: ['bt-cargo-ledger/**', '.github/workflows/ci.yml']
-            bt-tracking-service: ['bt-tracking-service/**', '.github/workflows/ci.yml']
+            bt-tracking-service: ['bt-tracking-service/**', 'packages/shared/**', '.github/workflows/ci.yml']
+            bt-fleet-service: ['bt-fleet-service/**', '.github/workflows/ci.yml']
             driver: ['driver/**', '.github/workflows/ci.yml']
             shipper: ['shipper/**', '.github/workflows/ci.yml']
             bt-ops-web: ['bt-ops-web/**', '.github/workflows/ci.yml']
@@ -126,8 +129,9 @@ jobs:
             AUTH_SERVICE_URL=http://auth:3001 BOOKING_SERVICE_URL=http://booking:3002 \
             TRACKING_SERVICE_URL=http://tracking:3006 PRICING_SERVICE_URL=http://pricing:3003 \
             PAYMENT_SERVICE_URL=http://payment:3004 CARGO_SERVICE_URL=http://cargo:3005 \
+            FLEET_SERVICE_URL=http://fleet:3007 \
             CORS_ALLOWED_ORIGINS=https://example.com
-          envsubst '$DNS_RESOLVER $AUTH_SERVICE_URL $BOOKING_SERVICE_URL $TRACKING_SERVICE_URL $PRICING_SERVICE_URL $PAYMENT_SERVICE_URL $CARGO_SERVICE_URL $CORS_ALLOWED_ORIGINS' \
+          envsubst '$DNS_RESOLVER $AUTH_SERVICE_URL $BOOKING_SERVICE_URL $TRACKING_SERVICE_URL $PRICING_SERVICE_URL $PAYMENT_SERVICE_URL $CARGO_SERVICE_URL $FLEET_SERVICE_URL $CORS_ALLOWED_ORIGINS' \
             < nginx.conf.template > /tmp/nginx.conf
           # Rely on the explicit "syntax is ok" line, not just exit code (pid/path quirks vary by runner).
           sudo nginx -t -c /tmp/nginx.conf 2>&1 | tee /tmp/nginx-check.log

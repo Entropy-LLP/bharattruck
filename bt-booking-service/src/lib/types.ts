@@ -50,6 +50,12 @@ export type DbBooking = {
   min_acceptable: number | null
   awarded_quote_id: string | null
   dimensions_json: Record<string, unknown> | null
+  // Fleet persona (migration 016). Both NULL on every solo-driver booking, which
+  // is what keeps the solo flow on its original code paths: fleet_owner_id is set
+  // only when a FLEET quote wins the auction, and vehicle_id only when the owner
+  // pairs a truck to the trip in bt-fleet-service.
+  fleet_owner_id: string | null
+  vehicle_id: string | null
   created_at: string
   updated_at: string
 }
@@ -58,10 +64,15 @@ export type DbBooking = {
 // DbQuote — raw row shape from the `quotes` table
 // -----------------------------------------------------------
 
+// A bid comes from EITHER a solo driver OR a fleet owner — migration 016 made
+// driver_id nullable and added fleet_owner_id under a
+// `num_nonnulls(driver_id, fleet_owner_id) = 1` check. Exactly one is ever set.
+
 export type DbQuote = {
   id: string
   booking_id: string
-  driver_id: string
+  driver_id: string | null
+  fleet_owner_id: string | null
   amount: number
   message: string | null
   status: QuoteStatus
@@ -79,7 +90,10 @@ export type DbNegotiation = {
   quote_id: string
   booking_id: string
   actor_id: string
-  actor_role: 'shipper' | 'driver'
+  // 'fleet_owner' is written when the carrier side of a negotiation is a fleet.
+  // The live negotiations.actor_role CHECK still only allows shipper|driver, so
+  // that write is best-effort until the constraint is widened (see quote-service).
+  actor_role: 'shipper' | 'driver' | 'fleet_owner'
   amount: number
   message: string | null
   created_at: string

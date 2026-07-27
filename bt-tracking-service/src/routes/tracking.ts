@@ -1,5 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
+import { canFleetAccessBooking, resolveFleetOwnerByUserId } from '@bharattruck/shared/fleet'
+import { supabase } from '../lib/supabase.js'
 import {
   redis,
   driverLocationKey,
@@ -12,6 +14,7 @@ import { getOrCompute, computeAndSet } from '../lib/cache.js'
 import { computeRoute, computeEta, type ComputedRoute } from '../lib/google.js'
 import {
   getBookingForTracking,
+  getBookingFleetColumns,
   getDriverByUserId,
   upsertTripRoute,
   getAlerts,
@@ -37,7 +40,9 @@ async function loadBookingOrThrow(bookingId: string): Promise<TrackingBooking> {
   return booking
 }
 
-// Authz: caller must be the booking's shipper or its assigned driver (admin allowed).
+// Authz: caller must be the booking's shipper, its assigned driver, or the fleet that owns
+// the truck/driver running it (admin allowed). Closed by default — an unknown role falls
+// through to 403 rather than being handled.
 async function assertCanAccess(booking: TrackingBooking, user: AuthenticatedUser): Promise<void> {
   if (user.role === 'admin') return
   if (user.role === 'shipper') {
@@ -47,6 +52,21 @@ async function assertCanAccess(booking: TrackingBooking, user: AuthenticatedUser
   if (user.role === 'driver') {
     const driver = await getDriverByUserId(user.userId)
     if (!driver || booking.driver_id !== driver.id) {
+      throw new TrackingError('Forbidden', 'FORBIDDEN', 403)
+    }
+    return
+  }
+  if (user.role === 'fleet_owner') {
+    // The reach test is deliberately NOT inlined here: it is the one tenant-isolation rule
+    // and lives in @bharattruck/shared/fleet so booking/payment/fleet services cannot drift
+    // from it. A fleet_owner token with no profile row resolves to null and is refused.
+    const fleet = await resolveFleetOwnerByUserId(supabase, user.userId)
+    if (!fleet) throw new TrackingError('Forbidden', 'FORBIDDEN', 403)
+    // fleet_owner_id / vehicle_id are read HERE, not in the shared booking select,
+    // so that a pre-0016 database cannot break the shipper and driver paths. See
+    // getBookingFleetColumns.
+    const fleetCols = await getBookingFleetColumns(booking.id)
+    if (!(await canFleetAccessBooking(supabase, fleet.id, { ...booking, ...fleetCols }))) {
       throw new TrackingError('Forbidden', 'FORBIDDEN', 403)
     }
     return

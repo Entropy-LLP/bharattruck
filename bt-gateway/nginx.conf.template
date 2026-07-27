@@ -9,6 +9,7 @@
 #   /api/pricing/    -> PRICING_SERVICE_URL
 #   /api/payments/   -> PAYMENT_SERVICE_URL
 #   /api/cargo/      -> CARGO_SERVICE_URL
+#   /api/fleet/      -> FLEET_SERVICE_URL    (fleet owners, trucks, assignment, P&L; port 3007)
 #   /ws/             -> BOOKING_SERVICE_URL  (WebSocket)
 #   /health          -> gateway itself
 
@@ -215,6 +216,16 @@ http {
       set $cargo_upstream ${CARGO_SERVICE_URL};
       rewrite ^/api/cargo/(.*) /cargo/$1 break;
       proxy_pass $cargo_upstream;
+    }
+
+    # Fleet-owner console (bt-fleet-service, routes mounted at /fleet).
+    # GET /api/fleet/live is polled ~every 10s with the whole fleet in ONE response, so the
+    # burst matches the other dashboard routes rather than the per-vehicle rate it replaces.
+    location /api/fleet/ {
+      limit_req zone=api_zone burst=30 nodelay;
+      set $fleet_upstream ${FLEET_SERVICE_URL};
+      rewrite ^/api/fleet/(.*) /fleet/$1 break;
+      proxy_pass $fleet_upstream;
     }
 
     location / {

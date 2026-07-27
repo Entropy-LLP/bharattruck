@@ -35,6 +35,32 @@ export function assertValidTransition(from: BookingStatus, to: BookingStatus): v
 }
 
 // -----------------------------------------------------------
+// assertFleetAssignmentReady
+// Extra guard on accepted → in_transit for FLEET-won bookings only.
+//
+// A fleet may bid with no free truck (founder Q10), so the award leaves
+// bookings.driver_id NULL and binds nothing physical. The owner then pairs a
+// driver and a truck in bt-fleet-service, which writes the vehicle_assignments
+// row. Until that row exists the trip has no truck of record, so its distance,
+// fuel and per-asset P&L would be unattributable — hence the trip cannot start.
+//
+// Pure and synchronous like the transition guards above: the caller does the
+// lookup and only for a booking that actually carries fleet_owner_id, so a solo
+// booking (fleet_owner_id NULL) never reaches this function at all.
+// -----------------------------------------------------------
+
+export function assertFleetAssignmentReady(hasLiveAssignment: boolean): void {
+  if (!hasLiveAssignment) {
+    throw new BookingError(
+      'This trip was won by a fleet and has no driver+truck assigned yet — ' +
+      'the fleet owner must assign a driver and a truck before the trip can start',
+      'INVALID_TRANSITION',
+      409,
+    )
+  }
+}
+
+// -----------------------------------------------------------
 // AuctionStatus — high-level lifecycle for auction-mode bookings
 // -----------------------------------------------------------
 

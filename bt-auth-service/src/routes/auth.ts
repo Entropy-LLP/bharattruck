@@ -69,6 +69,54 @@ async function sendMagicLinkEmail(email: string, link: string) {
   })
 }
 
+// fleet_owners.company_name is NOT NULL, so fall through the identity fields we actually
+// have. The owner renames the fleet properly via PATCH /fleet/owners/me — this only has to
+// be a truthful, non-empty placeholder so the row can exist from the moment the role is set.
+function fleetCompanyName(supplied: string | undefined, user: Record<string, unknown>): string {
+  const candidates = [
+    supplied,
+    user.full_name as string | null | undefined,
+    (user.email as string | null | undefined)?.split('@')[0],
+  ]
+  for (const c of candidates) {
+    const trimmed = c?.trim()
+    if (trimmed) return trimmed
+  }
+  return 'Fleet owner'
+}
+
+/**
+ * Create the profile row the user's role implies.
+ *
+ * Every downstream service joins on it (drivers.id for bookings/quotes/GPS, fleet_owners.id
+ * for the whole tenant-isolation rule), so it has to exist the instant the role is decided —
+ * not lazily on first use. Both tables have a UNIQUE user_id, which makes this idempotent;
+ * `ignoreDuplicates` on the fleet side stops a re-login from clobbering a company name the
+ * owner has since edited.
+ */
+async function ensureRoleProfile(
+  app: FastifyInstance,
+  user: Record<string, unknown>,
+  companyName?: string,
+): Promise<void> {
+  const userId = user.id as string
+
+  if (user.role === 'driver') {
+    await app.supabase.from('drivers').upsert({ user_id: userId }, { onConflict: 'user_id' })
+    return
+  }
+
+  if (user.role === 'fleet_owner') {
+    const { error } = await app.supabase.from('fleet_owners').upsert(
+      { user_id: userId, company_name: fleetCompanyName(companyName, user) },
+      { onConflict: 'user_id', ignoreDuplicates: true },
+    )
+    // Never fail sign-in on this: the token is valid regardless, and POST /fleet/owners
+    // repairs a missing profile. Silently swallowing it, though, would strand the owner.
+    if (error) app.log.error({ err: error, userId }, 'Failed to create fleet_owners profile')
+  }
+}
+
 // Returns the public user shape both apps expect
 function userProfile(row: Record<string, unknown>) {
   return {
@@ -97,9 +145,11 @@ const EmailRegisterBody  = z.object({
 const EmailVerifyBody    = z.object({ email: z.string().email(), otp: z.string().length(6) })
 const EmailLoginBody     = z.object({ email: z.string().email(), password: z.string() })
 const ResendOtpBody      = z.object({ email: z.string().email() })
+// `role` here CREATES the account when the email is unknown, so it must be constrained to
+// the live user_role enum — an unconstrained string reaches the insert and 500s on a bad value.
 const MagicLinkSendBody  = z.object({
   email:        z.string().email(),
-  role:         z.string().optional(),
+  role:         z.enum(['shipper', 'driver', 'fleet_owner']).optional(),
   callback_url: z.string().url().optional(),
 })
 const GoogleSignInBody   = z.object({ id_token: z.string(), role: z.enum(['shipper', 'driver', 'fleet_owner']).default('shipper') })
@@ -108,6 +158,9 @@ const RegisterProfileBody = z.object({
   full_name:    z.string().min(2).max(100),
   role:         z.enum(['shipper', 'driver', 'fleet_owner']),
   email:        z.string().email().optional(),
+  // role='fleet_owner' only; falls back to full_name when the caller has no separate
+  // trading name yet.
+  company_name: z.string().min(2).max(200).optional(),
   truck_type:   z.string().optional(),
   truck_number: z.string().optional(),
   license_number: z.string().optional(),
@@ -276,10 +329,7 @@ export async function authRoutes(app: FastifyInstance) {
       return reply.status(404).send({ success: false, error: 'User not found' })
     }
 
-    // Create driver row if role is driver
-    if (user.role === 'driver') {
-      await app.supabase.from('drivers').upsert({ user_id: user.id }, { onConflict: 'user_id' })
-    }
+    await ensureRoleProfile(app, user)
 
     const { access_token, refresh_token } = issueTokens(user.id, user.role)
     await app.redis.set(`refresh:${user.id}`, refresh_token, 'EX', REFRESH_TTL_S)
@@ -458,6 +508,10 @@ export async function authRoutes(app: FastifyInstance) {
       return reply.status(404).send({ success: false, error: 'User not found' })
     }
 
+    // /magic-link/send creates the account, so this can be a user's very first sign-in —
+    // the same point in the flow where /email/verify creates the role's profile row.
+    await ensureRoleProfile(app, user)
+
     const { access_token, refresh_token } = issueTokens(user.id, user.role)
     await app.redis.set(`refresh:${user.id}`, refresh_token, 'EX', REFRESH_TTL_S)
 
@@ -548,9 +602,7 @@ export async function authRoutes(app: FastifyInstance) {
       }
       user = newUser
 
-      if (user.role === 'driver') {
-        await app.supabase.from('drivers').upsert({ user_id: user.id }, { onConflict: 'user_id' })
-      }
+      await ensureRoleProfile(app, user)
     }
 
     const { access_token, refresh_token } = issueTokens(user.id, user.role)
@@ -621,7 +673,7 @@ export async function authRoutes(app: FastifyInstance) {
     if (!body.success) {
       return reply.status(400).send({ success: false, error: body.error.errors[0].message })
     }
-    const { full_name, role, email } = body.data
+    const { full_name, role, email, company_name } = body.data
 
     const { data: user, error } = await app.supabase
       .from('users')
@@ -633,9 +685,7 @@ export async function authRoutes(app: FastifyInstance) {
       return reply.status(500).send({ success: false, error: 'Failed to update profile' })
     }
 
-    if (role === 'driver') {
-      await app.supabase.from('drivers').upsert({ user_id: user.id }, { onConflict: 'user_id' })
-    }
+    await ensureRoleProfile(app, user, company_name)
 
     return reply.send({ success: true, data: { user: userProfile(user) } })
   })

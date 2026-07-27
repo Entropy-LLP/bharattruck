@@ -13,7 +13,9 @@
  */
 import jwt from 'jsonwebtoken'
 
-export type UserRole = 'shipper' | 'driver' | 'admin'
+// Mirrors the live `public.user_role` enum. 'fleet_owner' was added by migration 0014 —
+// the owning party of a fleet, who never drives and therefore never has a drivers row.
+export type UserRole = 'shipper' | 'driver' | 'admin' | 'fleet_owner'
 
 export type AuthenticatedUser = {
   userId: string

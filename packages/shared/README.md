@@ -18,6 +18,7 @@ package is the single source for those.
 | `errors` — `AppError`, `ErrorCode`, `errorEnvelope()`, `ok()`, `ApiEnvelope<T>` | ✅ built | per-service error classes + ad-hoc `{success:false,error,code}` |
 | `auth` — HS256 JWT verify + `AuthenticatedUser`, the `users.id` vs `drivers.id` helper contract | ⏳ next | `authenticate.ts` copies |
 | `db` — Supabase **service-role** client factory (validates `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` at boot) | ⏳ | `lib/supabase.ts` copies |
+| `fleet` — fleet-owner **tenant isolation**: `resolveFleetOwnerByUserId`, `isFleetAffiliatedDriver`, `canFleetAccessBooking` | ✅ built | nothing — new with the fleet persona, shared from day one so no service hand-rolls the predicate |
 | `redis` — shared ioredis client + key helpers | ⏳ | per-service redis setup |
 | `http` — Fastify bootstrap (global error handler mapping `AppError`→envelope, request-id, health, graceful shutdown) | ⏳ | 7× bootstrap copies |
 | `config` — Zod-validated env loader (fail-fast on missing secrets; no `JWT_SECRET!` assertions) | ⏳ | scattered `process.env.X!` |
