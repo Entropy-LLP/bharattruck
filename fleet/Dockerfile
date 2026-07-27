@@ -21,7 +21,11 @@ ARG NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 ENV NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY=$NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY
 ENV NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID=$NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID
-RUN npm run build
+# `fleet/public` is currently EMPTY, and git does not track empty directories — so the CI
+# checkout has no public/ at all and the runner stage's `COPY /app/public` fails the build with
+# `"/app/public": not found`. Create it unconditionally rather than dropping the COPY, so the
+# image still picks up assets the moment anyone adds a favicon or icon here.
+RUN mkdir -p public && npm run build
 
 FROM node:20-alpine AS runner
 WORKDIR /app

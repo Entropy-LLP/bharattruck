@@ -129,6 +129,13 @@ jobs:
       id-token: write
     strategy:
       fail-fast: false
+      # Cap concurrent source deploys. `gcloud run deploy --source` POLLS its Cloud Build
+      # operation while waiting, and Cloud Build allows only 60 operation-GETs per minute per
+      # PROJECT. A change to this workflow file matches every path filter, so all 8 services
+      # deploy at once, and their combined polling blew that quota — five deploys died with
+      # RATE_LIMIT_EXCEEDED on 'Build and Operation Get requests' despite their builds being
+      # fine. Three at a time keeps the poll rate well under the limit.
+      max-parallel: 3
       matrix:
         svc: ${{ fromJSON(needs.detect.outputs.services) }}
     # Serialize deploys of the SAME service; different services still deploy in parallel.
