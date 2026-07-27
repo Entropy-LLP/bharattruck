@@ -112,6 +112,15 @@ jobs:
       - name: Lint (if present, non-blocking)
         run: npm run lint --if-present
         continue-on-error: true
+      # bt-payment-service and bt-cargo-ledger's e2e suites boot the REAL bt-booking-service
+      # in-process (with a fake Supabase) to exercise settlement and POD across the service
+      # boundary. That is deliberate and worth keeping -- but it means those jobs need the
+      # SIBLING's node_modules, which the per-package matrix does not install, so the import
+      # died with ERR_MODULE_NOT_FOUND on @bharattruck/shared.
+      - name: Install bt-booking-service deps (cross-service e2e boots it in-process)
+        if: matrix.pkg == 'bt-payment-service' || matrix.pkg == 'bt-cargo-ledger'
+        working-directory: ${{ github.workspace }}
+        run: npm ci --prefix bt-booking-service
       - name: Test (if present)
         run: npm test --if-present
         env:
