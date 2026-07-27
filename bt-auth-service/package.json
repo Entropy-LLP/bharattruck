@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@fastify/cors": "^9.0.1",
-    "@supabase/supabase-js": "^2.43.4",
+    "@supabase/supabase-js": "2.100.1",
     "bcrypt": "^6.0.0",
     "dotenv": "^16.4.5",
     "fastify": "^4.27.0",
