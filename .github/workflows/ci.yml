@@ -47,8 +47,13 @@ jobs:
             bt-cargo-ledger: ['bt-cargo-ledger/**', '.github/workflows/ci.yml']
             bt-tracking-service: ['bt-tracking-service/**', 'packages/shared/**', '.github/workflows/ci.yml']
             bt-fleet-service: ['bt-fleet-service/**', '.github/workflows/ci.yml']
+            # packages/shared builds AND tests as a package in its own right. Without this entry
+            # its tests never run in CI — including the cross-tenant fleet-access regression suite,
+            # which is the only thing pinning canFleetAccessBooking's owner guard.
+            packages/shared: ['packages/shared/**', '.github/workflows/ci.yml']
             driver: ['driver/**', '.github/workflows/ci.yml']
             shipper: ['shipper/**', '.github/workflows/ci.yml']
+            fleet: ['fleet/**', '.github/workflows/ci.yml']
             bt-ops-web: ['bt-ops-web/**', '.github/workflows/ci.yml']
             bt-gateway: ['bt-gateway/**', '.github/workflows/ci.yml']
       - id: pkgs

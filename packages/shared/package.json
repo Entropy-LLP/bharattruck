@@ -6,17 +6,34 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
-    "./errors": { "types": "./dist/errors.d.ts", "import": "./dist/errors.js" },
-    "./auth": { "types": "./dist/auth.d.ts", "import": "./dist/auth.js" },
-    "./db": { "types": "./dist/db.d.ts", "import": "./dist/db.js" },
-    "./fleet": { "types": "./dist/fleet.d.ts", "import": "./dist/fleet.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./errors": {
+      "types": "./dist/errors.d.ts",
+      "import": "./dist/errors.js"
+    },
+    "./auth": {
+      "types": "./dist/auth.d.ts",
+      "import": "./dist/auth.js"
+    },
+    "./db": {
+      "types": "./dist/db.d.ts",
+      "import": "./dist/db.js"
+    },
+    "./fleet": {
+      "types": "./dist/fleet.d.ts",
+      "import": "./dist/fleet.js"
+    }
   },
   "scripts": {
     "build": "tsc",
-    "test": "node --test --experimental-strip-types"
+    "test": "tsx --test test/*.test.mts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.43.4",
@@ -25,6 +42,7 @@
   },
   "devDependencies": {
     "@types/jsonwebtoken": "^9.0.6",
+    "tsx": "^4.23.1",
     "typescript": "^5.4.5"
   }
 }

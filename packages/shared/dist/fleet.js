@@ -83,7 +83,23 @@ export async function canFleetAccessBooking(supabase, fleetOwnerId, booking) {
         throw new Error(`vehicle_assignments lookup failed: ${assignmentError.message}`);
     if (assignment)
         return true;
-    if (booking.driver_id) {
+    // (3) The driver-affiliation grant, and the ONLY clause with no fleet_owner_id filter of its
+    // own — so it must carry its own guard. It is restricted to UNOWNED bookings.
+    //
+    // Without `!booking.fleet_owner_id` this clause leaks across tenants: clause (1) grants on
+    // equality but never DENIES on inequality, so a booking owned by fleet X falls through to
+    // here, and hiring X's ex-driver is enough to make it resolve true for fleet Y. That state is
+    // reachable through shipped routes — `fleet_drivers_one_live_per_driver` is a PARTIAL unique
+    // index over ('pending','active') only (migration 0015), DELETE /fleet/drivers/:id soft-sets
+    // status='left', and invite does not check prior affiliations — so a driver can hold a live
+    // affiliation with Y while bookings.driver_id still points at them on X's historical trips.
+    // bt-tracking-service gates /route, /eta and /track on this helper, so the leak was X's trip
+    // geometry (including the consignee's coordinates) to a competitor.
+    //
+    // Unowned-only is exactly what the docstring above always promised: a trip awarded to a solo
+    // driver who has since joined this fleet. Once a booking names an owning fleet, membership in
+    // a different fleet is never a reason to see it.
+    if (booking.driver_id && !booking.fleet_owner_id) {
         const affiliation = await getLiveFleetAffiliation(supabase, booking.driver_id);
         if (affiliation?.status === 'active' && affiliation.fleet_owner_id === fleetOwnerId)
             return true;

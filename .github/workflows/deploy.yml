@@ -70,13 +70,19 @@ jobs:
           filters: |
             bt-gateway: ['bt-gateway/**', '.github/workflows/deploy.yml']
             bt-auth-service: ['bt-auth-service/**', '.github/workflows/deploy.yml']
-            bt-booking-service: ['bt-booking-service/**', '.github/workflows/deploy.yml']
+            # bt-booking-service and bt-tracking-service consume packages/shared via a `file:`
+            # dependency (verified in their package.json), so a change there must redeploy them —
+            # otherwise a shared fix like the fleet tenant-isolation guard lands in the repo but
+            # never reaches the running services. bt-fleet-service does NOT depend on shared.
+            bt-booking-service: ['bt-booking-service/**', 'packages/shared/**', '.github/workflows/deploy.yml']
             bt-pricing-service: ['bt-pricing-service/**', '.github/workflows/deploy.yml']
             bt-payment-service: ['bt-payment-service/**', '.github/workflows/deploy.yml']
             bt-cargo-ledger: ['bt-cargo-ledger/**', '.github/workflows/deploy.yml']
-            bt-tracking-service: ['bt-tracking-service/**', '.github/workflows/deploy.yml']
+            bt-tracking-service: ['bt-tracking-service/**', 'packages/shared/**', '.github/workflows/deploy.yml']
+            bt-fleet-service: ['bt-fleet-service/**', '.github/workflows/deploy.yml']
             driver: ['driver/**', '.github/workflows/deploy.yml']
             shipper: ['shipper/**', '.github/workflows/deploy.yml']
+            fleet: ['fleet/**', '.github/workflows/deploy.yml']
             bt-ops-web: ['bt-ops-web/**', '.github/workflows/deploy.yml']
       - id: split
         name: partition changed dirs → backend services (dir==svc) vs apps (dir→svc, maps flag)
@@ -84,17 +90,25 @@ jobs:
           set -euo pipefail
           CHANGES='${{ steps.filter.outputs.changes }}'
           # Backend services: the dir name IS the Cloud Run service name; deployed via `--source`.
+          # NOTE `packages/shared` is a build input, not a deployable dir — it must never reach
+          # the services list or `gcloud run deploy --source packages/shared` would try to deploy
+          # a library. The filter above already maps it onto its two real consumers
+          # (bt-booking-service, bt-tracking-service); this select drops the bare name, along
+          # with the four app dirs.
           SERVICES=$(printf '%s' "$CHANGES" | jq -c '
-            [ .[] | select(. == "driver" or . == "shipper" or . == "bt-ops-web" | not) ]')
-          # Apps: dir → Cloud Run service name (driver→bt-driver, shipper→bt-shipper, ops-web unchanged).
-          # maps=true only for the apps that render a Google Map (driver/shipper) → they get the Maps
-          # build args; bt-ops-web (maps=false) gets NEXT_PUBLIC_API_URL only.
+            [ .[] | select(. == "driver" or . == "shipper" or . == "fleet"
+                        or . == "bt-ops-web" or . == "packages/shared" | not) ]')
+          # Apps: dir → Cloud Run service name (driver→bt-driver, shipper→bt-shipper,
+          # fleet→bt-fleet-console, ops-web unchanged).
+          # maps=true for the apps that render a Google Map (driver/shipper/fleet) → they get the
+          # Maps build args; bt-ops-web (maps=false) gets NEXT_PUBLIC_API_URL only.
           APPS=$(printf '%s' "$CHANGES" | jq -c '
             [ .[]
-              | select(. == "driver" or . == "shipper" or . == "bt-ops-web")
+              | select(. == "driver" or . == "shipper" or . == "fleet" or . == "bt-ops-web")
               | { dir: .,
                   service: (if . == "driver" then "bt-driver"
                             elif . == "shipper" then "bt-shipper"
+                            elif . == "fleet" then "bt-fleet-console"
                             else "bt-ops-web" end),
                   maps: (if . == "bt-ops-web" then "false" else "true" end) } ]')
           echo "services=$SERVICES" >> "$GITHUB_OUTPUT"

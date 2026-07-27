@@ -29,6 +29,36 @@ import { parseOrThrow } from '../lib/types.js'
 
 const emissionNorm = z.enum(['BS4', 'BS6', 'BS6_PH2'])
 
+/**
+ * A Postgres `date` column, validated HERE rather than at the database.
+ *
+ * Five fields map to `date` (finance start/end, permit issued_on/expiry_date, rc_expiry) and
+ * were previously plain strings. That matters more than a tidy error message, because
+ * `replaceVehiclePermits` and `replaceVehicleLanes` DELETE the existing rows and then INSERT
+ * over two independent PostgREST calls with no transaction: a date the DB rejects means the
+ * delete has already committed and the truck's permits are simply gone, surfaced as an opaque
+ * 500. Rejecting the bad value before any write is what makes that unreachable.
+ *
+ * Requiring ISO `YYYY-MM-DD` is deliberate. Postgres's default DateStyle is `ISO, MDY`, so
+ * `01-13-2025` does NOT error — it silently parses as 13 Jan 2025. A DD/MM/YYYY habit therefore
+ * corrupts data rather than failing loudly, which is the worse outcome.
+ *
+ * `''` is coerced to null: an untouched date input in a form posts an empty string, and the
+ * repo's `?? null` is nullish-coalescing, so it would otherwise pass `''` straight to a `date`.
+ */
+const dateOnly = z.preprocess(
+  v => (typeof v === 'string' && v.trim() === '' ? null : v),
+  z.string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be in YYYY-MM-DD format')
+    .refine(s => {
+      const d = new Date(`${s}T00:00:00Z`)
+      // Round-trips only for a real calendar date — rejects 2026-02-30 and 2026-13-01,
+      // which the regex alone happily accepts.
+      return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s
+    }, 'Not a valid calendar date')
+    .nullable(),
+).nullable().optional()
+
 const CreateVehicleBody = z.object({
   rc_number: z.string().trim().min(4, 'rc_number must be at least 4 characters').max(20),
   model_category: z.string().trim().min(1, 'model_category is required'),
@@ -43,7 +73,7 @@ const CreateVehicleBody = z.object({
   axle_config: z.string().trim().max(20).nullable().optional(),
   maker_model: z.string().trim().max(100).nullable().optional(),
   fuel_type: z.string().trim().max(20).nullable().optional(),
-  rc_expiry: z.string().trim().max(20).nullable().optional(),
+  rc_expiry: dateOnly,
 })
 
 const UpdateVehicleBody = CreateVehicleBody.partial().refine(
@@ -66,8 +96,8 @@ const FinanceBody = z.object({
   emi_day_of_month: z.number().int().min(1).max(31).nullable().optional(),
   tenure_months: z.number().int().positive().max(600).nullable().optional(),
   interest_rate_pct: z.number().min(0).max(100).nullable().optional(),
-  start_date: z.string().trim().nullable().optional(),
-  end_date: z.string().trim().nullable().optional(),
+  start_date: dateOnly,
+  end_date: dateOnly,
   outstanding_inr: z.number().min(0).max(100_000_000).nullable().optional(),
   insurance_annual_inr: z.number().min(0).max(10_000_000).default(0),
   permit_annual_inr: z.number().min(0).max(10_000_000).default(0),
@@ -80,8 +110,8 @@ const PermitsBody = z.object({
     // Empty for a national permit — that is the migration's documented convention.
     allowed_states: z.array(z.string().trim().min(1).max(5)).max(40).default([]),
     permit_number: z.string().trim().max(60).nullable().optional(),
-    issued_on: z.string().trim().nullable().optional(),
-    expiry_date: z.string().trim().nullable().optional(),
+    issued_on: dateOnly,
+    expiry_date: dateOnly,
     is_active: z.boolean().default(true),
   })).max(20),
 })
