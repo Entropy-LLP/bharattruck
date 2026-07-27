@@ -6,8 +6,11 @@ name: deploy
 # Fires on push to `main`. Path-filtered so ONLY changed services/apps rebuild+deploy
 # (mirrors ci.yml's dorny/paths-filter style). Two deploy paths:
 #
-#   • Backend services (bt-gateway + the 6 bt-*-service dirs)
-#       `gcloud run deploy <svc> --source <dir>` — Cloud Build builds the dir's Dockerfile.
+#   • Backend services (bt-gateway + the bt-*-service dirs)
+#       `gcloud builds submit --config cloudbuild.yaml` builds the service's Dockerfile with the
+#       REPO ROOT as context, then `gcloud run deploy --image`. Root context is REQUIRED:
+#       bt-booking-service and bt-tracking-service depend on `file:../packages/shared`, which
+#       cannot resolve inside a single-service context (the old `--source <dir>` never built them).
 #       NO env vars are set here: a source/image deploy PRESERVES existing Cloud Run env,
 #       runtime service account, port and scaling. When a service gains a NEW env var, set it
 #       ONCE, manually:  gcloud run services update <svc> --update-env-vars KEY=VALUE
@@ -36,10 +39,9 @@ name: deploy
 #     (lets this repo impersonate the SA via OIDC — no JSON key).
 #   • roles/run.admin                 — create/deploy Cloud Run revisions.
 #   • roles/iam.serviceAccountUser    — act AS the Cloud Run runtime service account.
-#   • roles/cloudbuild.builds.editor  — run the `--source` Cloud Build builds (backend services).
+#   • roles/cloudbuild.builds.editor  — run the root-context Cloud Build builds (backend services).
 #   • roles/artifactregistry.writer   — push images (apps) + store Cloud Build output; the
-#                                       `cloud-run-source-deploy` repo must exist (auto-created on the
-#                                       first manual `--source` deploy, or pre-create it).
+#                                       images are pushed to the `bt` Artifact Registry repo.
 #   See .github/workflows/README.md for the exact gcloud grant commands.
 
 on:
@@ -68,31 +70,30 @@ jobs:
         with:
           # A change to this workflow file redeploys everything (safety — same convention as ci.yml).
           filters: |
-            bt-gateway: ['bt-gateway/**', '.github/workflows/deploy.yml']
-            bt-auth-service: ['bt-auth-service/**', '.github/workflows/deploy.yml']
+            bt-gateway: ['bt-gateway/**', '.github/workflows/deploy.yml', 'cloudbuild.yaml', '.gcloudignore']
+            bt-auth-service: ['bt-auth-service/**', '.github/workflows/deploy.yml', 'cloudbuild.yaml', '.gcloudignore']
             # bt-booking-service and bt-tracking-service consume packages/shared via a `file:`
             # dependency (verified in their package.json), so a change there must redeploy them —
             # otherwise a shared fix like the fleet tenant-isolation guard lands in the repo but
             # never reaches the running services. bt-fleet-service does NOT depend on shared.
-            bt-booking-service: ['bt-booking-service/**', 'packages/shared/**', '.github/workflows/deploy.yml']
-            bt-pricing-service: ['bt-pricing-service/**', '.github/workflows/deploy.yml']
-            bt-payment-service: ['bt-payment-service/**', '.github/workflows/deploy.yml']
-            bt-cargo-ledger: ['bt-cargo-ledger/**', '.github/workflows/deploy.yml']
-            bt-tracking-service: ['bt-tracking-service/**', 'packages/shared/**', '.github/workflows/deploy.yml']
-            bt-fleet-service: ['bt-fleet-service/**', '.github/workflows/deploy.yml']
-            driver: ['driver/**', '.github/workflows/deploy.yml']
-            shipper: ['shipper/**', '.github/workflows/deploy.yml']
-            fleet: ['fleet/**', '.github/workflows/deploy.yml']
-            bt-ops-web: ['bt-ops-web/**', '.github/workflows/deploy.yml']
+            bt-booking-service: ['bt-booking-service/**', 'packages/shared/**', '.github/workflows/deploy.yml', 'cloudbuild.yaml', '.gcloudignore']
+            bt-pricing-service: ['bt-pricing-service/**', '.github/workflows/deploy.yml', 'cloudbuild.yaml', '.gcloudignore']
+            bt-payment-service: ['bt-payment-service/**', '.github/workflows/deploy.yml', 'cloudbuild.yaml', '.gcloudignore']
+            bt-cargo-ledger: ['bt-cargo-ledger/**', '.github/workflows/deploy.yml', 'cloudbuild.yaml', '.gcloudignore']
+            bt-tracking-service: ['bt-tracking-service/**', 'packages/shared/**', '.github/workflows/deploy.yml', 'cloudbuild.yaml', '.gcloudignore']
+            bt-fleet-service: ['bt-fleet-service/**', '.github/workflows/deploy.yml', 'cloudbuild.yaml', '.gcloudignore']
+            driver: ['driver/**', '.github/workflows/deploy.yml', 'cloudbuild.yaml', '.gcloudignore']
+            shipper: ['shipper/**', '.github/workflows/deploy.yml', 'cloudbuild.yaml', '.gcloudignore']
+            fleet: ['fleet/**', '.github/workflows/deploy.yml', 'cloudbuild.yaml', '.gcloudignore']
+            bt-ops-web: ['bt-ops-web/**', '.github/workflows/deploy.yml', 'cloudbuild.yaml', '.gcloudignore']
       - id: split
         name: partition changed dirs → backend services (dir==svc) vs apps (dir→svc, maps flag)
         run: |
           set -euo pipefail
           CHANGES='${{ steps.filter.outputs.changes }}'
-          # Backend services: the dir name IS the Cloud Run service name; deployed via `--source`.
+          # Backend services: the dir name IS the Cloud Run service name AND the Dockerfile dir.
           # NOTE `packages/shared` is a build input, not a deployable dir — it must never reach
-          # the services list or `gcloud run deploy --source packages/shared` would try to deploy
-          # a library. The filter above already maps it onto its two real consumers
+          # the services list, or CD would try to build and deploy a library as a service. The filter above already maps it onto its two real consumers
           # (bt-booking-service, bt-tracking-service); this select drops the bare name, along
           # with the four app dirs.
           SERVICES=$(printf '%s' "$CHANGES" | jq -c '
@@ -155,19 +156,39 @@ jobs:
           workload_identity_provider: projects/752385541585/locations/global/workloadIdentityPools/github-pool/providers/github
           service_account: bt-cicd-deployer@project-aa0faf06-c115-438a-a36.iam.gserviceaccount.com
       - uses: google-github-actions/setup-gcloud@v2
-      - name: Deploy ${{ matrix.svc }} from source (SHA-tagged revision)
+      - name: Build ${{ matrix.svc }} from the REPO ROOT (Cloud Build)
+        run: |
+          set -euo pipefail
+          IMG="${REGION}-docker.pkg.dev/${PROJECT}/bt/${{ matrix.svc }}:${GITHUB_SHA}"
+          echo "IMG=$IMG" >> "$GITHUB_ENV"
+          # Root-context build. This REPLACES `gcloud run deploy --source <dir>`, which uploaded
+          # only the service's own directory — a context in which bt-booking-service and
+          # bt-tracking-service can never build, because their `file:../packages/shared`
+          # dependency points outside it. cloudbuild.yaml builds from `.` instead, and
+          # .gcloudignore keeps that upload to ~4 MiB.
+          gcloud builds submit \
+            --config cloudbuild.yaml \
+            --region "$REGION" \
+            --project "$PROJECT" \
+            --substitutions "_SERVICE=${{ matrix.svc }},_IMAGE=${IMG}" \
+            --quiet
+      - name: Deploy ${{ matrix.svc }} (SHA-tagged revision)
         run: |
           set -euo pipefail
           # SHA-tagged, collision-safe revision name (unique per run + re-run attempt).
           REV="${GITHUB_SHA::7}-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
-          # `--source <dir>` builds the dir's Dockerfile via Cloud Build and deploys the result.
-          # NO --set-env-vars here: a source deploy PRESERVES existing env / runtime SA / port /
-          # scaling. New env vars are a one-time manual `gcloud run services update ... --update-env-vars`.
+          # Deploy by DIGEST-pinned tag, never a mutable one. NO --set-env-vars: an image deploy
+          # PRESERVES existing env / runtime SA / port / scaling. New env vars stay a one-time
+          # manual `gcloud run services update ... --update-env-vars`.
+          # --allow-unauthenticated is a no-op for the existing services but required the first
+          # time one is created, otherwise the new service serves 403 to everyone (which is
+          # exactly how bt-fleet-console shipped).
           gcloud run deploy "${{ matrix.svc }}" \
-            --source "${{ matrix.svc }}" \
+            --image "$IMG" \
             --region "$REGION" \
             --project "$PROJECT" \
             --revision-suffix "$REV" \
+            --allow-unauthenticated \
             --labels "commit-sha=${GITHUB_SHA},managed-by=github-actions" \
             --quiet
 
