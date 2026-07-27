@@ -53,6 +53,15 @@ permissions:
   contents: read
   id-token: write
 
+# Serialize deploy RUNS. `max-parallel` caps builds within ONE run, but two runs overlapping
+# (e.g. two PRs merged a minute apart) multiply that — 3 + 3 concurrent `gcloud builds submit`
+# calls blew Cloud Build's 60/min "Build and Operation Get requests" quota and killed one
+# service in each run. cancel-in-progress:false so the second run QUEUES rather than being
+# dropped: every commit to main must still deploy, just never at the same time as another.
+concurrency:
+  group: deploy-main
+  cancel-in-progress: false
+
 jobs:
   # ---------------------------------------------------------------------------
   # 1) Detect which deploy targets changed, split into backend services vs apps.
