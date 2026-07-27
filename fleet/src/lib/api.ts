@@ -92,10 +92,28 @@ async function parse<T>(res: Response): Promise<T> {
   try { json = await res.json() } catch {
     throw new ApiError('Server error — please try again', 'NETWORK_ERROR')
   }
+
   if (!json.success) {
+    // The gateway answers an UNROUTED path with its own nginx-shaped body,
+    // {"error":"not_found","message":"No route matched this path"} — no `success`,
+    // no `code`. Falling through to json.error there puts the literal string
+    // "not_found" on screen, which tells the owner nothing. That is the exact state
+    // when bt-fleet-service is not deployed or FLEET_SERVICE_URL is unset on the
+    // gateway, so it is worth naming precisely rather than papering over.
+    if (json.code === undefined && json.error === 'not_found') {
+      throw new ApiError(
+        'The fleet service is not reachable. It may not be deployed yet, or the gateway is not routing /api/fleet.',
+        'SERVICE_UNAVAILABLE',
+      )
+    }
+    if (res.status >= 500 && json.code === undefined) {
+      throw new ApiError('The service is temporarily unavailable — please retry.', 'SERVICE_UNAVAILABLE')
+    }
+
     const code = json.code || 'UNKNOWN'
     throw new ApiError(ERROR_MESSAGES[code] || json.error || json.message || 'Something went wrong', code)
   }
+
   return json.data
 }
 
