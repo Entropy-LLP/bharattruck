@@ -250,10 +250,16 @@ jobs:
           REV="${GITHUB_SHA::7}-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
           # --image deploy preserves existing Cloud Run runtime config (SA, port, scaling). The app's
           # public config is already baked into the image, so no runtime env is needed.
+          # --allow-unauthenticated is a NO-OP for the apps that already grant allUsers, but it is
+          # required the FIRST time a service is created: a brand-new Cloud Run service defaults to
+          # requiring IAM auth, so bt-fleet-console's first deploy "succeeded" and then served 403
+          # to everyone. Every app here is public by design (they are browser front-ends), so make
+          # that explicit rather than depending on the service having been hand-created earlier.
           gcloud run deploy "${{ matrix.service }}" \
             --image "$IMG" \
             --region "$REGION" \
             --project "$PROJECT" \
             --revision-suffix "$REV" \
+            --allow-unauthenticated \
             --labels "commit-sha=${GITHUB_SHA},managed-by=github-actions" \
             --quiet
