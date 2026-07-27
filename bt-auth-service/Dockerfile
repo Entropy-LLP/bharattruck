@@ -13,21 +13,26 @@
 # =============================================================================
 
 # ── Stage 1: production deps ──────────────────────────────────────────────────
+# BUILD CONTEXT IS THE REPO ROOT (docker build -f bt-auth-service/Dockerfile .), so every COPY
+# source below is repo-relative. CD builds all services this way via cloudbuild.yaml —
+# uniform with bt-booking-service/bt-tracking-service, which REQUIRE a root context to
+# resolve their `file:../packages/shared` dependency.
+
 FROM node:20-alpine AS deps
 WORKDIR /app
 # bcrypt requires native compilation
 RUN apk add --no-cache python3 make g++
-COPY package.json package-lock.json ./
+COPY bt-auth-service/package.json bt-auth-service/package-lock.json ./
 RUN npm ci --omit=dev
 
 # ── Stage 2: development (hot-reload via tsx watch) ───────────────────────────
 FROM node:20-alpine AS development
 WORKDIR /app
 RUN apk add --no-cache python3 make g++
-COPY package.json package-lock.json ./
+COPY bt-auth-service/package.json bt-auth-service/package-lock.json ./
 RUN npm ci
-COPY tsconfig.json ./
-COPY src ./src
+COPY bt-auth-service/tsconfig.json ./
+COPY bt-auth-service/src ./src
 EXPOSE 3001
 ENV NODE_ENV=development
 CMD ["node_modules/.bin/tsx", "watch", "src/index.ts"]
@@ -36,9 +41,9 @@ CMD ["node_modules/.bin/tsx", "watch", "src/index.ts"]
 FROM node:20-alpine AS builder
 WORKDIR /app
 RUN apk add --no-cache python3 make g++
-COPY package.json package-lock.json tsconfig.json ./
+COPY bt-auth-service/package.json bt-auth-service/package-lock.json bt-auth-service/tsconfig.json ./
 RUN npm ci
-COPY src ./src
+COPY bt-auth-service/src ./src
 RUN npm run build
 
 # ── Stage 4: lean production image ────────────────────────────────────────────
@@ -46,8 +51,8 @@ FROM node:20-alpine AS production
 WORKDIR /app
 COPY --from=deps    /app/node_modules ./node_modules
 COPY --from=builder /app/dist         ./dist
-COPY package.json ./
-COPY public ./public
+COPY bt-auth-service/package.json ./
+COPY bt-auth-service/public ./public
 EXPOSE 3001
 ENV NODE_ENV=production
 USER node
