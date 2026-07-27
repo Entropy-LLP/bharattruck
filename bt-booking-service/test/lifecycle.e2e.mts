@@ -115,9 +115,24 @@ async function main() {
   check('C1 start: booking status is in_transit', r.json().data?.status === 'in_transit', `(got ${r.json().data?.status})`)
   check('C1 start: store persisted in_transit', bookingStatus() === 'in_transit')
 
+  // C2 — a driver must NOT be able to self-complete a trip.
+  //
+  // This assertion used to expect 200 from `PATCH /bookings/:id/complete`. That route was
+  // deliberately removed (see the comment at bt-booking-service/src/routes/bookings.ts:110):
+  // in_transit → completed is now closed ONLY by the receiver-OTP POD path
+  // (internal /bookings/:id/complete-pod) or an ops force-complete. Letting a driver mark
+  // their own delivery complete would defeat proof-of-delivery entirely — the driver is the
+  // party POD exists to check.
+  //
+  // So the route being absent IS the contract, and this now pins it that way. The happy path
+  // (POD closes the trip) is covered by pod.e2e.mts; ops force-complete by ops.e2e.mts.
   r = await patch(`/bookings/${B1}/complete`, tok(U1, 'driver'))
-  check('C2 complete: in_transit→completed returns 200', r.statusCode === 200, `(got ${r.statusCode})`)
-  check('C2 complete: booking status is completed', r.json().data?.status === 'completed', `(got ${r.json().data?.status})`)
+  check('C2 driver self-complete route does not exist', r.statusCode === 404, `(got ${r.statusCode})`)
+  check('C2 booking is still in_transit after the attempt', bookingStatus() === 'in_transit', `(got ${bookingStatus()})`)
+
+  // Drive it to completed the way production does — through the store — so the state-machine
+  // checks below still exercise transitions out of `completed`.
+  store.bookings.find(b => b.id === B1)!.status = 'completed'
 
   console.log('\n── State machine rejects illegal moves with 4xx (not 500) ──')
   r = await patch(`/bookings/${B1}/start`, tok(U1, 'driver')) // completed → in_transit is illegal
@@ -125,10 +140,12 @@ async function main() {
   check('C3 illegal start is a 4xx not 5xx', r.statusCode >= 400 && r.statusCode < 500)
   check('C3 illegal start error envelope code', r.json().code === 'INVALID_TRANSITION', `(got ${r.json().code})`)
 
-  // reset to accepted and try complete from accepted (skips in_transit) → illegal
+  // C3b — the driver-complete route is absent in EVERY state, not just in_transit. Asserting
+  // it from `accepted` too stops a future change from quietly reintroducing self-completion
+  // for some subset of statuses.
   store.bookings.find(b => b.id === B1)!.status = 'accepted'
   r = await patch(`/bookings/${B1}/complete`, tok(U1, 'driver'))
-  check('C3b complete from accepted returns 409', r.statusCode === 409, `(got ${r.statusCode})`)
+  check('C3b driver self-complete absent from accepted too', r.statusCode === 404, `(got ${r.statusCode})`)
 
   console.log('\n── Only the assigned driver may transition (others 403) ──')
   r = await patch(`/bookings/${B1}/start`, tok(U2, 'driver')) // driver 2, not assigned
