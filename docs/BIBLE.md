@@ -19,6 +19,11 @@
 - [§3 — Maps & Tracking](#3--maps--tracking)
 - [§4 — Team operating model](#4--team-operating-model)
 - [§5 — Current live state](#5--current-live-state)
+  - **New here, or planning what to build next? Read [§5.0](#50-what-changed-on-2026-07-28-read-this-first-if-youre-new-to-the-repo)
+    and [§5.6](#56-honest-progress-assessment-2026-07-28--read-before-planning) first.** §5.0 is what
+    changed on 2026-07-28 (CD went from silently dead to green); §5.6 is the evidence-based answer to
+    "how far along are we really" — the short version is that the platform is built but no trip has
+    ever traversed the real production path.
 - [§6 — Claude Browser QA harness](#6--claude-browser-qa-harness)
 - [§7 — Runbooks](#7--runbooks)
 - [Appendix A — Audit trail & rulings](#appendix-a--audit-trail--rulings)
@@ -1377,164 +1382,223 @@ step "done" that wasn't verified end-to-end.
 
 > **Keep this section current — see §0.2.** This replaces what used to be five separate "handoff"
 > docs each re-describing state from scratch (§0.3). One table, updated in place, dated per entry.
-> *Last full reconciliation: 2026-07-20.*
+> *Last full reconciliation: 2026-07-28 (CD-repair + fleet-owner session).*
+
+### 5.0 What changed on 2026-07-28 (read this first if you're new to the repo)
+
+This session moved the project from "code exists on `main`" to "commits actually reach production."
+That distinction had been silently false for three weeks. In order:
+
+1. **CD had failed on every push to `main` since the 2026-07-04 monorepo consolidation**, while CI
+   stayed green — so nobody noticed. Artifact Registry was frozen at 2026-07-09, and
+   `bt-tracking-service`, `bt-fleet-service` and `bt-ops-web` had no image at all. Root cause:
+   `roles/iam.workloadIdentityUser` on `bt-cicd-deployer@` listed principalSets for the **retired
+   standalone repos** but never `Entropy-LLP/bharattruck`. WIF authenticated, then impersonation was
+   denied. The trust was never migrated with the code.
+2. **`bt-booking-service` and `bt-tracking-service` had NEVER deployed through CD** — not once. They
+   consume `@bharattruck/shared` via `file:../packages/shared`, and CD used
+   `gcloud run deploy --source <svc-dir>`, which uploads only that directory. Fixed by moving every
+   service to a **repo-root Docker context** (§5.6).
+3. **The fleet-owner persona was built, deployed and verified** — new `bt-fleet-service` + a new
+   Next.js console at `bt-fleet-console`.
+4. Four production faults were found and fixed along the way (§5.4 "Resolved").
+
+**As of the end of this session, CD is green end-to-end: 12/12 targets deploy on merge to `main`.**
 
 ### 5.1 Service health (live, Cloud Run, `asia-south1`, project `project-aa0faf06-c115-438a-a36`)
 
-Verified by direct curl **2026-07-20** (this session):
+Verified by direct curl **2026-07-28**:
 
-| Service/App | Health | Notes |
-|---|---|---|
-| `bt-auth-service` | ✅ 200 | KYC still stubbed |
-| `bt-booking-service` | ✅ 200 | source-of-truth for shared env (JWT/SUPABASE/REDIS/INTERNAL secrets) |
-| `bt-pricing-service` | ✅ 200 | env fixed 2026-07-20; deterministic TS engine, constants still placeholders (Appendix D) |
-| `bt-payment-service` | ✅ 200 | env fixed 2026-07-20; cash-recorded settle path |
-| `bt-cargo-ledger` | ✅ 200 | env fixed **+** manual-scaling-pinned-to-0 fixed 2026-07-20 (§7.2) — health check does not confirm mail delivery; the live env still has no `RESEND_API_KEY` (never provisioned) so POD OTP was silently console-logging, not reaching the receiver, until the fix on `feat/pod-email-smtp` merges + its new `SMTP_*` vars are set (branch not yet merged — see `docs/tasks/feat-pod-email-smtp.md`) |
-| `bt-tracking-service` | ✅ 200 | `/route /eta /track /health` built; `/history /pumps /fuel /alerts` NOT built (Phase 3+, §3.3) |
-| `bt-gateway` | ✅ 200 | CORS allows only `https://bt-*.run.app` — localhost dev can't call it directly (see §6 for the local-dev workaround) |
-| `bt-shipper` | ✅ 200 | **live map renders** (correct Maps key + Map ID baked in, redeployed 2026-07-19 — this resolves the "map broken" issue §6 used to carry as open) |
-| `bt-driver` | ✅ 200 | redeployed w/ correct Maps values (driver has no map UI itself — deep-link nav only, by design) |
-| `bt-ops-web` | ✅ 307 | redirects to `/login` — normal |
+| Service/App | URL (`https://<name>-itcdoenefa-el.a.run.app`) | Health | Notes |
+|---|---|---|---|
+| `bt-gateway` | `bt-gateway-…` | ✅ 200 | now routes `/api/fleet/` → `bt-fleet-service`; entrypoint now fails **open** (§5.4) |
+| `bt-auth-service` | `bt-auth-service-…` | ✅ 200 | KYC still stubbed; `kyc_documents` and `driver_licenses` are **empty** |
+| `bt-booking-service` | `bt-booking-service-…` | ✅ 200 | source-of-truth for shared env (JWT/SUPABASE/REDIS/INTERNAL secrets) |
+| `bt-pricing-service` | `bt-pricing-service-…` | ✅ 200 | env repaired 2026-07-28; constants still placeholders (Appendix D) |
+| `bt-payment-service` | `bt-payment-service-…` | ✅ 200 | env repaired 2026-07-28; `FLEET_SERVICE_URL` added |
+| `bt-cargo-ledger` | `bt-cargo-ledger-…` | ✅ 200 | `POD_OTP_PEPPER` set 2026-07-28 |
+| `bt-tracking-service` | `bt-tracking-service-…` | ✅ 200 | `/route /eta /track /health` built; `/history /pumps /fuel /alerts` NOT built (Phase 3+, §3.3) |
+| `bt-fleet-service` | `bt-fleet-service-…` | ✅ 200 | **new** — port 3007, `/api/fleet/*` |
+| `bt-shipper` | `bt-shipper-…` | ✅ 200 | live map renders |
+| `bt-driver` | `bt-driver-…` | ✅ 200 | deep-link nav only, by design |
+| `bt-ops-web` | `bt-ops-web-…` | ✅ 307 | redirects to `/login` — normal |
+| `bt-fleet-console` | `bt-fleet-console-…` | ✅ 200 | **new** — fleet-owner console |
 
-All ten green as of the last check. Re-run the sweep in §6.2 before trusting this table more than a
-couple weeks out.
+All twelve green. Re-run the sweep in §6.2 before trusting this table more than a couple weeks out.
 
-### 5.2 What's built, verified, and live (the Completed-Paid-Trip slice)
+### 5.2 What's built and live
 
-Per the last CTO verification pass: **lifecycle → live tracking → POD-OTP → cash payment → pricing
-breakdown → ops console are all code-complete and merged to `main`.**
-- **Lifecycle** (`bt-booking-service`): `accepted→in_transit→completed→paid` state machine,
-  assigned-driver guards, durable throttled `location_history` breadcrumb write.
-- **Tracking**: `/track` aggregate + shipper `<LiveTrackMap/>` — verified live, real route returned.
-- **POD** (`bt-cargo-ledger`): receiver-OTP (hashed+peppered, constant-time, rate-limited) drives
-  `in_transit→completed`; migration 010 (`pod_receipts`). OTP *delivery* was silently broken in
-  production (console-logged, never emailed — see 5.1); a fix is code-complete on
-  `feat/pod-email-smtp` (not yet merged/deployed, `docs/tasks/feat-pod-email-smtp.md`).
-- **Cash payment** (`bt-payment-service`): idempotent settle→`paid`+payout record, outbox saga on
-  `trip_completed`; migration 011. Escrow deliberately not built yet (see §2's reversal banner).
-- **Pricing**: deterministic cost-breakdown, JWT-authed. Constants are still placeholders pending the
-  kartik-constant harvest (§5.5, Appendix D).
-- **Ops console**: real JWT/RBAC login, live-trip board on real data, force-complete/reassign/cancel
-  overrides; migration 012.
-- **Infra**: GitHub Actions CI (path-filtered, green); `packages/shared` (`@bharattruck/shared`) —
-  `bt-booking-service` migrated onto it via the `file:` + `install-links=true` pattern.
+**The three personas now all exist as deployed UIs:**
 
-**Seeded live demo data:** `demo-shipper@bharattruck.dev` / `demo-driver@…` / `demo-ops@…`, password
-`demo-<role>-2026`; booking `55555555-5555-5555-5555-555555555555`, Mumbai→Nagpur, `in_transit`, with
-breadcrumbs + `receiver_email`. Full demo-account details + local-dev recipe are in §6.
+| Persona | App | Backend | State |
+|---|---|---|---|
+| Shipper | `bt-shipper` | booking/pricing/tracking | live, map verified |
+| Driver | `bt-driver` | booking/tracking/cargo | live; **UI gaps, see §5.4** |
+| Fleet owner | `bt-fleet-console` | `bt-fleet-service` | live, verified end-to-end 2026-07-28 |
 
-**Migrations applied to the live DB** (`rxbdzbcndpzznvqcbimg`): 0009 (`location_history`) · 0010
-(`pod_receipts`) · 0011 (`payments`/`payouts`) · 0012 (`ops_overrides`) · 0013 (`price_quotes`). All
-five confirmed present in the live schema as of 2026-07-20 (§7.2). No `booking_status='expired'` value
-exists yet and nothing writes one — that's correctly still a TODO (`jobs.ts`), not a bug.
+- **Lifecycle** (`bt-booking-service`): `accepted→in_transit→completed→paid`, assigned-driver guards,
+  durable throttled `location_history` breadcrumb write. **There is deliberately NO driver-facing
+  `PATCH /bookings/:id/complete`** (see `src/routes/bookings.ts:110`) — completion is closed ONLY by
+  receiver-OTP POD or an ops force-complete, because a driver self-completing defeats POD entirely.
+  `lifecycle.e2e.mts` now pins that route's *absence* in two states.
+- **Tracking**: `/track` aggregate + shipper `<LiveTrackMap/>`.
+- **POD** (`bt-cargo-ledger`): receiver-OTP, hashed + peppered, constant-time, 10-min TTL,
+  `MAX_VERIFY_ATTEMPTS = 5`. SMTP delivery merged (PR #8). `POD_OTP_PEPPER` now set in prod.
+- **Cash payment** (`bt-payment-service`): idempotent settle → `paid` + payout record, outbox saga.
+- **Fleet owner** (`bt-fleet-service`, NEW): owners, vehicles, driver affiliation (invite → accept),
+  per-order assignment, bulk CSV import, `/fleet/live`, per-asset P&L. Trucks and drivers are
+  **independent assets**; a fleet driver owns no truck. Bids carry only the fleet until award; payout
+  follows the bidder. P&L is computed from `vehicle_cost_norms` + `vehicle_service_cost_by_age`
+  (migration 0018, seeded from the founder's `CV_Parc_Tables.xlsx`) — kmpl by model, DEF as % of
+  diesel, oil interval/qty, and **service cost by vehicle age, which is non-linear** (MHCV Cargo
+  ₹108k yr1 → ₹209k yr3 → ₹61k yr10), so the flat per-km maintenance figure in `cto-cost.ts` is wrong
+  at both ends of the curve.
+- **Ops console**: real JWT/RBAC login, live-trip board, force-complete/reassign/cancel.
+  `demo-ops@bharattruck.dev` has role **`admin`** (there is no `ops` role value).
 
-### 5.3 Git state
+**Migrations applied to live** (`rxbdzbcndpzznvqcbimg`): 0009–0013 (as before) · **0014–0018**
+(fleet-owner: `fleet_owners`, `fleet_drivers`, `vehicles` + finance/permits/lanes,
+`vehicle_assignments`, `trip_economics`, `vehicle_cost_norms`, `vehicle_service_cost_by_age`).
 
-- **`main`:** the verified, deployable base. Trunk-based — `feat/*` → PR → green CI → merge; agents
-  are blocked from pushing to `main` directly (§4.4); merges are the founder's/CTO's call.
-- **Remote:** `github.com/Entropy-LLP/bharattruck` — the only repo code lands in. Never push to the
-  retired `Entropy-LLP/bt-*` standalones, the stale `Entropy-LLP/LogisticOS` aggregate, or any
-  `deltaos1997/*` mirror (Appendix C).
+> **Live schema ≠ repo migrations.** The live DB has ~48 app tables; migrations 0001–0008 were never
+> applied and several tables (`trips`, `trip_expenses`, `fuel_estimates`, `saved_lanes`,
+> `trip_routes`) predate them. **PostGIS IS installed**, contradicting the frozen no-PostGIS
+> decision. Always introspect live before writing a migration.
 
-**Open feature branches** (not yet merged — re-verify before assuming any of these are still current):
+### 5.3 CI/CD — how deployment actually works now
 
-| Branch | What it adds |
-|---|---|
-| `feat/auction-expiry-rebased` | Auction expiry — past-deadline → `expired`, atomic via RPC (migration 0014) |
-| `feat/award-txn` | Atomic `awardBooking` via `award_booking` RPC (migration 0016) |
-| `feat/negotiation-cap` | Enforce 5-round negotiation cap + deadline on counters |
-| `feat/shipper-driver-identity` | Show driver name/badge/vehicle on quotes instead of raw UUID |
-| `feat/driver-live-map` | Driver live-trip map (copied `LiveTrackMap` + wired `/track`) |
-| `feat/driver-onboarding-live-rebased` | Un-orphans the driver onboarding wizard (§5.4) + drops dev-login backdoors |
-| `feat/driver-myquotes-fix-rebased` | My-quotes shows every quote across bookings (kills N+1) |
-| `feat/kyc-stub-rebased` | KYC stub + migration renumber |
-| `feat/gps-simulator` | Route-replay GPS simulator (§3.3 Phase 6) |
-| `feat/python-engines` | The "other coder"'s Python pricing/payment engines — **quarantined**, would break the Node deploy (Appendix D) |
-| `feat/cicd-deploy` | Path-filtered Cloud Run CD workflow; needs Phase-A IAM (§7) + a merge to activate |
-| `shipper/frontend-revamp`, `driver/frontend-revamp` | Frontend revamp WIP — CI was failing (`dorny/paths-filter` permissions issue), check current status before assuming |
+**Two workflows, both path-filtered via `dorny/paths-filter`.**
 
-> Note the `-rebased` twins: force-push was blocked in earlier sessions, so rebased history was pushed
-> under a new `-rebased` name — those are the current tips, the non-rebased originals are stale.
+`ci.yml` — merge gate. Runs on PRs to `main` and pushes to `main`/`feat/**`. Per changed package:
+`npm ci` → `npm run build` (this IS the typecheck gate) → `npm run lint` (**non-blocking**, apps carry
+eslint debt) → `npm test`. Redis 7 sidecar for every job. Node pinned to **20** to match the services'
+`node:20-alpine` runtime. A separate `gateway` job renders the real `docker-entrypoint.sh` across
+three env shapes and asserts nginx syntax.
 
-**This session's branch:** `feat/pod-email-smtp` — see `docs/tasks/feat-pod-email-smtp.md` for its
-task record (§0.4).
+`deploy.yml` — CD. Fires on push to `main`. Keyless WIF auth impersonating `bt-cicd-deployer@`.
 
-### 5.4 Known issues (re-verify — don't trust blindly past a couple of weeks)
+- **Services** → `gcloud builds submit --config cloudbuild.yaml` with the **REPO ROOT** as Docker
+  context, then `gcloud run deploy --image`. Root context is **required**: `bt-booking-service` and
+  `bt-tracking-service` depend on `file:../packages/shared`, which cannot resolve inside a
+  single-service context. Each Dockerfile recreates the repo layout inside the image
+  (`/repo/packages/shared` + `/repo/<svc>`); `.npmrc` `install-links=true` then COPIES shared into
+  `node_modules` so its transitive deps hoist. `.gcloudignore` keeps the upload to ~3.7 MiB.
+- **Apps** → `docker build` on the runner with `NEXT_PUBLIC_*` as `--build-arg` (they are inlined at
+  BUILD time — runtime env cannot work), push to AR repo `bt`, then deploy by SHA tag.
+- **Env is never set by CD, by design** — an image deploy preserves existing env/SA/port/scaling. A
+  new env var is a one-time manual `gcloud run services update`. **Corollary: a service that does not
+  exist yet gets CREATED by CD with an EMPTY environment and crash-loops.** Seed it first.
+- `--allow-unauthenticated` on both lanes — a brand-new Cloud Run service defaults to requiring IAM
+  auth and will serve **403 to everyone** (exactly how `bt-fleet-console` first shipped).
+- **Concurrency:** `max-parallel: 3` within a run **and** a workflow-level `concurrency: deploy-main`
+  group. Both are needed — Cloud Build allows only **60 operation-GET requests/min per project**, and
+  `gcloud builds submit` polls while waiting. Two runs overlapping (two PRs merged a minute apart)
+  produced 6 concurrent builds and killed one service in each run.
 
-**Resolved since last written up (don't re-report these as new):**
-- Shipper live map — was broken (wrong/leaked key baked in, no Map ID), **fixed and verified live
-  2026-07-19**.
-- Pricing/payment/cargo-ledger 503s — **fixed 2026-07-20** (blank env + cargo's manual-scaling-pinned-
-  to-0 double bug, §7.2).
-- Shipper Quotes panel rendering unconditionally on `direct` bookings — **fixed**, gated on
-  `booking_type`.
+**Repair scripts** (idempotent, in `scripts/deploy/`): `wire-cicd.sh` (WIF trust + deployer roles +
+seed `bt-fleet-service` env + gateway wiring) · `fix-empty-env.sh` (repairs empty env values).
+
+### 5.4 Known issues
+
+**Resolved 2026-07-28 — do NOT re-report these:**
+- CD failing on every push (WIF trust never migrated) — **fixed**, 12/12 green.
+- `bt-booking-service`/`bt-tracking-service` unable to build (`file:` shared dep) — **fixed** via
+  root-context builds.
+- **Gateway failed CLOSED**: `envsubst` turned an unset `*_SERVICE_URL` into `set $x ;` — invalid
+  nginx — so one missing var took **every app** down. Entrypoint now defaults each URL to an
+  unroutable address (degrades to a 502 on that one route). CI pins it across three env shapes.
+- **`bt-payment-service` + `bt-pricing-service` had FOUR env vars set to the EMPTY STRING**
+  (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `JWT_SECRET`, `INTERNAL_SERVICE_SECRET`). Names
+  present, values blank — so any "is it set?" check that tests the NAME passes. Both also referenced a
+  **mutable image tag** while running an older pinned digest, so any config change silently rolled the
+  image forward onto a build with a hard `INTERNAL_SERVICE_SECRET must be set` guard.
+- **`@supabase/supabase-js` 2.110.x is FATAL on Node 20** — it constructs a RealtimeClient inside
+  `createClient()`, which needs native WebSocket (Node 22+). Verified: 2.110.2 and 2.110.8 throw,
+  2.100.1 does not. Caused by lockfile drift from a `^2.43.4` caret. **All six services + shared are
+  now pinned to 2.100.1 exactly.**
+- Nine test files never ran in CI (no `test` script) — **fixed**, all now run.
+- `POD_OTP_PEPPER` unset in prod — **set 2026-07-28**.
 
 **Still open:**
-1. **`LiveTrackMap.tsx` only degrades gracefully on a *missing* key, not an *invalid* one** — a
-   present-but-rejected key renders Google's raw error modal instead of the app's placeholder. Small
-   resilience gap, unfixed.
-2. **Driver's active-trip/GPS screen has never been visually verified live** — `demo-driver` has no
-   seeded assigned trip. Functionally complete by code review (`ActiveTripSection`), not yet confirmed
-   in-browser.
-3. **Driver's full onboarding wizard is built but unreachable** from any in-app link — post-login
-   always goes to `/available`, the reachable "Profile" tab is a shallower form. No live path today for
-   a real driver to enter insurance/bank-account info, which the payout path needs.
-   `feat/driver-onboarding-live-rebased` (§5.3) fixes it, not yet merged.
-4. **Shipper has no PWA manifest/service worker** (driver has both). Low priority — shipper doesn't
-   need Wake Lock — but the installable-PWA gap remains.
-5. **Gateway 301-redirects `/api/bookings` (no trailing slash) to `http://`** — a scheme downgrade
-   (nginx `absolute_redirect` default behind Cloud Run's TLS terminator). Not user-visible today (all
-   three apps call with the trailing slash) but a client that omits it gets bounced to plaintext, and
-   browsers cache the 301 permanently. Founder/infra fix: `absolute_redirect off;` or
-   `port_in_redirect off;` on the server block.
-6. **Direct bookings are invisible to the assigned driver** (found 2026-07-20, DB usability review —
-   highest-impact open item). The whole driver flow is quote-based (Browse/My-Quotes/booking-detail
-   branches on `myQuote ? ... : ...`); a direct booking has no quote row, so it never appears in any
-   driver-side list and opening it by URL shows "Submit Your Quote" instead of the active-trip view.
-   Fix: render the active-trip section for any booking where `driver_id` is you and status is
-   accepted/in_transit, independent of a quote row; add a driver-side "My Trips" list.
-7. **RLS is enabled on every table but unpoliced on most** (`quotes`, `negotiations`,
-   `location_history`, `payments`, `payouts`, `pod_receipts`, `ops_overrides` have zero policies). Not
-   a live hole today — backend services connect via `service_role`, which bypasses RLS — but it's an
-   undecided story: either accept app-code-as-the-real-boundary and stop half-writing policies, or
-   finish them. Will bite the day anyone points the anon/publishable key at the DB directly.
-8. **Dead tables + a stray PostGIS extension** in the live schema (`trips`, `trip_locations`,
-   `trip_events`-family duplicates, `booking_responses`, `saved_lanes`, `driver_reviews`,
-   `support_tickets`, `eway_bills`, `fuel_estimates`, `messages`, `user_settings`, `kyc_documents`, plus
-   an unused `spatial_ref_sys`/PostGIS extension contradicting the frozen no-PostGIS decision). Safe to
-   drop after a glance — but `DROP TABLE`/`DROP EXTENSION` is prod DDL, needs the founder or an
-   allow-rule.
-9. **Minor schema nits:** `negotiations.booking_id`/`quote_id` have no index despite being the
-   per-booking-chat read pattern; `quotes.status` is free `text` with no CHECK/enum, unlike
-   `bookings.status`.
-10. **POD receiver-OTP email was never actually reaching the receiver in production** — the live
-    `bt-cargo-ledger` has no `RESEND_API_KEY` provisioned (never was), so the sender silently fell back
-    to console-logging the OTP to Cloud Run stdout instead of emailing it — POD looked wired up but
-    wasn't deliverable. Root cause + fix (switch to SMTP, the same transport `bt-auth-service` already
-    uses for every other transactional email) is code-complete on `feat/pod-email-smtp` — see
-    `docs/tasks/feat-pod-email-smtp.md` for status. **Not yet merged or deployed** — until it lands
-    *and* the new `SMTP_*` env vars are set on the live `bt-cargo-ledger`, POD OTPs are still
-    undeliverable in production.
+1. **The driver app's UI is the weakest surface in the product.** Measured 2026-07-28: server-side is
+   fine (55 ms warm TTFB) but the initial payload is **710 KB**. Shipper is 708 KB and the fleet
+   console 719 KB — so the driver is *not* uniquely bloated; it is the same Next 16 / React 19
+   baseline. What differs is the **user**: the driver app is the only one running on a cheap Android
+   on Indian mobile data. Same payload, very different felt cost. Also, **all three apps have
+   `min-instances` unset** (backend services use `minScale: 1`), so they cold-start.
+2. **PRs #2 (`driver/frontend-revamp`) and #3 (`shipper/frontend-revamp`) are stalled and unsafe to
+   merge as-is** — opened 2026-07-15, **30 commits behind `main`**, CI red at the first job (never
+   built), description "new frontend design". **#2 deletes `driver/src/lib/nav.ts` with no
+   replacement** — that file powers `handleNavigate()`, the Google-Maps deep-link handoff, which is a
+   FROZEN Maps contract item. A driver on that build cannot start navigation. Decide: rebase +
+   restore nav, or close and re-apply the visual changes onto current `main`.
+3. **Direct bookings are invisible to the assigned driver** (from 2026-07-20, still open, highest
+   product impact). The driver flow is quote-based throughout; a direct booking has no quote row, so
+   it never appears in any driver list.
+4. **Driver's onboarding wizard is built but unreachable** — no in-app link. Blocks a real driver
+   entering insurance/bank details, which the payout path needs.
+5. **`bt-ops-web` auth and data are still stubbed.**
+6. **The rate card is roughly a third of market.** `RATE_PER_KM.hcv` is ₹22/km against a computed
+   operating cost of ₹36.71/km and a real fr8.in market rate of ₹58–60/km (32ft MXL; published band
+   ₹45–85/km; Mumbai–Delhi ₹83,500 / 1414 km). The cost engine is right; the rate card is wrong.
+   Every fleet owner onboarded will see negative margins on paper until this is addressed.
+7. **The deployer SA still trusts 14 RETIRED repos**, none archived on GitHub — any of them can still
+   mint a token and deploy to production. Remove those principalSets and/or archive the repos.
+8. **RLS enabled but unpoliced on most tables** — not a live hole (services use `service_role`, which
+   bypasses RLS) but undecided.
+9. Gateway 301-redirects `/api/bookings` (no trailing slash) to `http://` — scheme downgrade.
+10. `LiveTrackMap.tsx` degrades gracefully on a *missing* key but not an *invalid* one.
+11. Shipper has no PWA manifest/service worker (driver has both).
+12. Dead tables + stray PostGIS extension in the live schema.
+13. Leftover `:rootctx-test` image tags in Artifact Registry from CD verification builds.
 
 ### 5.5 Open founder decisions
 
-- **Escrow/RL scope reversal needs re-confirmation** — see §2's banner. Don't build either until the
-  founder explicitly re-confirms current scope.
-- **The kartik decision** (payment + pricing, Appendix D): recommendation is to keep the CTO's live TS
-  services as the MVP anchor, harvest kartik's real pricing constants into the TS engine, and park his
-  LinUCB RL + Razorpay/escrow skeleton on `feat/python-engines` as post-feasibility upgrades. Founder
-  confirmation pending as of the last check — reconcile against the scope-reversal note above, they're
-  the same underlying question.
-- **Notification channel** (SMS vs WhatsApp vs FCM) — still undecided. WhatsApp Business onboarding can
-  take weeks; decide before the pilot week that needs it (§2.4).
-- **Registered entity** for Surepass (real KYC) + Razorpay (real payments) onboarding — blocks both
-  until provided.
-- **The PMO tool's GitHub autotrack is stale** (found this session, not yet raised with the founder):
-  `pmo_services.sync` still points at the 11 **retired** standalone repos
-  (`Entropy-LLP/bt-booking-service` etc.), frozen at their 2026-07-02 pre-monorepo commits — not
-  `Entropy-LLP/bharattruck`, this repo's actual remote. The sync job still runs (last synced
-  2026-07-19) but is reporting three-week-stale data as current. This is the PMO app's own config, not
-  something to fix from inside this repo — flag it to whoever administers `entropy-pmo.netlify.app`.
+- **Escrow/RL scope reversal needs re-confirmation** — see §2's banner.
+- **The kartik decision** (payment + pricing, Appendix D) — pending.
+- **The rate card** (§5.4 item 6) — needs a number from the founder.
+- **Notification channel** (SMS vs WhatsApp vs FCM) — undecided.
+- **Registered entity** for Surepass (real KYC) + Razorpay — blocks both.
+- **PMO tool's GitHub autotrack is stale** — points at the 11 retired standalone repos.
+
+### 5.6 Honest progress assessment (2026-07-28) — READ BEFORE PLANNING
+
+**The North Star is one shipper → one driver → one tracked, proven, PAID interstate trip.**
+Measured against that, here is the evidence from the live DB, not an opinion:
+
+| Table | Rows | What it means |
+|---|---|---|
+| `bookings` | 673 | 621 `paid` — but backdated Jan–Jul 2026 by the fleet demo seed |
+| `vehicle_assignments` | 620 | seeded |
+| `payouts` | 617 | seeded — written directly, **not** via the payment service |
+| **`payments`** | **0** | **`settle()` has NEVER run in production** |
+| **`pod_receipts`** | **0** | **POD-OTP has NEVER completed a delivery in production** |
+| **`trip_events`** | **0** | lifecycle event log empty |
+| **`kyc_documents`** / `driver_licenses` | **0** / **0** | KYC never exercised |
+| `location_history` | 126 | some real GPS breadcrumbs, from testing |
+
+**So: not one trip has ever traversed the real production path.** Every "paid" booking is seeded data
+written straight to the DB, bypassing POD and payment entirely.
+
+**How to read that.** "Infra wired, three personas set, just the finals remaining" is right about the
+first two and optimistic about the third. What is genuinely done is real and was hard: CD works,
+twelve targets deploy on merge, three personas exist as deployed UIs, the schema is live, and the
+fleet P&L is modelled off real cost data. That is a substantial base.
+
+But the remaining work is **not** finishing touches. The gap between "every service is code-complete
+and deploys" and "a trip completes end-to-end" is exactly where MVPs die, because it is where all the
+integration faults surface — and this session is the evidence: the code had been correct for weeks
+while *four separate production faults* (dead CD, blank env vars, a Node-fatal dependency, a
+fail-closed gateway) sat undetected, because nothing had ever actually run the path.
+
+A fair characterisation: **the platform is built; the product has never been used once.** The single
+highest-value next action is not a feature — it is to drive **one** real booking through the live
+stack by hand (shipper posts → driver quotes → award → start → GPS → POD-OTP email → verify → settle)
+and fix whatever breaks. Expect it to break in several places. Until `payments` and `pod_receipts`
+have at least one row each, the MVP is unproven regardless of how much code exists.
+
+Second priority is the driver app (§5.4 items 1–4) — it is the persona with the worst UI, the
+heaviest relative payload, the stalled PR, and two known flow-level holes.
 
 ---
 
@@ -1632,14 +1696,53 @@ To refresh the URL table (services get added/removed): `gcloud run services list
 
 ### 6.4 Demo credentials
 
-Login screens default to **Phone** — switch to **Email** (phone OTP is a dead end, see 6.3). Password
-pattern: `demo-<role>-2026`.
+Login screens default to **Phone** — switch to **Email** (phone OTP is a dead end, see 6.3).
+**Password pattern for every seeded account: `<firstname>-2026`** (the three `demo-*` accounts use
+`demo-<role>-2026`). All verified present in the live DB with a password hash set, 2026-07-28.
+
+**Core demo accounts**
 
 | App | Email | Password | Notes |
 |---|---|---|---|
-| Shipper | `demo-shipper@bharattruck.dev` | `demo-shipper-2026` | Has one seeded booking, `55555555-5555-5555-5555-555555555555`, `in_transit` |
-| Driver | `demo-driver@bharattruck.dev` | `demo-driver-2026` | No assigned trips, no truck on profile as of the last check — see §5.4 item 2 |
-| Ops | `demo-ops@bharattruck.dev` | `demo-ops-2026` | — |
+| Shipper | `demo-shipper@bharattruck.dev` | `demo-shipper-2026` | Seeded booking `55555555-5555-5555-5555-555555555555`, Mumbai→Nagpur, `in_transit` |
+| Driver | `demo-driver@bharattruck.dev` | `demo-driver-2026` | No assigned trips / no truck on profile — see §5.4 |
+| Ops | `demo-ops@bharattruck.dev` | `demo-ops-2026` | role in DB is **`admin`** — there is no `ops` role value |
+
+**Fleet owner** — `bt-fleet-console`
+
+| Email | Password | Company |
+|---|---|---|
+| `balaji@bharattruck.in` | `balaji-2026` | Shree Balaji Roadlines Pvt Ltd — 12 trucks, 8 drivers, 620 seeded assignments |
+
+**Fleet drivers** (all affiliated with Shree Balaji Roadlines; log in via the **driver** app). The
+last two are the interesting ones — they exercise the affiliation edges.
+
+| Driver | Email | Password | Affiliation |
+|---|---|---|---|
+| Vikram Rathod | `vikram@bharattruck.in` | `vikram-2026` | active |
+| Sanjay Kamble | `sanjay@bharattruck.in` | `sanjay-2026` | active |
+| Imran Sheikh | `imran@bharattruck.in` | `imran-2026` | active |
+| Gurpreet Singh | `gurpreet@bharattruck.in` | `gurpreet-2026` | active |
+| Mahesh Pawar | `mahesh@bharattruck.in` | `mahesh-2026` | active |
+| Dinesh Chauhan | `dinesh@bharattruck.in` | `dinesh-2026` | active |
+| Arjun Nair | `arjun@bharattruck.in` | `arjun-2026` | **pending invite** — tests the driver-consent accept flow |
+| Kailash Meena | `kailash@bharattruck.in` | `kailash-2026` | **left fleet** — tests access revocation |
+
+**Shippers that post loads to this fleet**
+
+| Email | Password |
+|---|---|
+| `anand.textiles@bharattruck.in` | `anand-2026` |
+| `deccan.steels@bharattruck.in` | `deccan-2026` |
+
+> Of 48 users in the live DB, **21 have no password hash at all** (mostly `@example.com` rows from
+> early fixtures). They cannot log in — ignore them when testing.
+
+> **QA shortcut — minting a token instead of logging in.** For scripted checks you can mint an HS256
+> JWT with the project's own `JWT_SECRET` (read it from `bt-booking-service`'s Cloud Run env) and
+> inject it into `localStorage` under the app's token key (`bt_fleet_token`, `bt_driver_token`,
+> `bt_token`). Payload: `{ userId, role, email, iat, exp }` where `userId` is `users.id`. This avoids
+> typing passwords into forms and is how the fleet console was verified on 2026-07-28.
 
 ### 6.5 Local dev reference
 
