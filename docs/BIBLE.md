@@ -1561,10 +1561,31 @@ seed `bt-fleet-service` env + gateway wiring) · `fix-empty-env.sh` (repairs emp
 - **Registered entity** for Surepass (real KYC) + Razorpay — blocks both.
 - **PMO tool's GitHub autotrack is stale** — points at the 11 retired standalone repos.
 
-### 5.6 Honest progress assessment (2026-07-28) — READ BEFORE PLANNING
+### 5.6 Honest progress assessment — READ BEFORE PLANNING
+
+> **UPDATE 2026-07-28 (later same day): the first real trip HAS now run end-to-end.** A booking was
+> driven through the live gateway entirely by REST — shipper posts → driver bids → shipper awards →
+> driver starts → GPS → POD-OTP **emailed and verified** → **settled**. Booking
+> `01ae9190-f2be-49a0-b6c7-5deaa77f5253` now has a `pod_receipts` row, a `payments` row
+> (status `settled`, ₹36,483, cash) and status `paid`. **`payments` and `pod_receipts` are no longer
+> zero.** Getting there required fixing a blocking bug the churn had planted (see below) and adding
+> forgot-password. The reusable harness is `scripts/qa/trip-e2e.mjs`. The original day-1 assessment
+> below is kept for context; the headline "the product has never been used once" is now **false** —
+> it has been used once, on purpose, and the path works. What remains is hardening + volume, not
+> first-proof.
+>
+> **The blocking bug (why `payments` was zero):** `settle()` inserted `payments.status='recorded'`,
+> but the live table's `payments_status_check` only allows `pending|captured|settled|failed|refunded`
+> — so EVERY cash settlement 500'd on the insert. Not "never run", but "would always fail". The
+> `payouts` table used a laxer status vocabulary that accepted `'recorded'`, so the payout wrote and
+> the payment did not — a per-table drift straight out of the schema churn this section warns about.
+> Fixed (status `'settled'`) + a test assertion pinning the payment status to the DB-allowed set,
+> because the Map-backed test fake never enforced the CHECK (the same blind spot that hid the earlier
+> payout-wire-shape bug). This is the exact class of fault the day-1 note predicted the manual run
+> would surface.
 
 **The North Star is one shipper → one driver → one tracked, proven, PAID interstate trip.**
-Measured against that, here is the evidence from the live DB, not an opinion:
+Day-1 (morning) evidence from the live DB, kept for the record:
 
 | Table | Rows | What it means |
 |---|---|---|
@@ -1591,14 +1612,32 @@ integration faults surface — and this session is the evidence: the code had be
 while *four separate production faults* (dead CD, blank env vars, a Node-fatal dependency, a
 fail-closed gateway) sat undetected, because nothing had ever actually run the path.
 
-A fair characterisation: **the platform is built; the product has never been used once.** The single
-highest-value next action is not a feature — it is to drive **one** real booking through the live
-stack by hand (shipper posts → driver quotes → award → start → GPS → POD-OTP email → verify → settle)
-and fix whatever breaks. Expect it to break in several places. Until `payments` and `pod_receipts`
-have at least one row each, the MVP is unproven regardless of how much code exists.
+Day-1 characterisation was: *the platform is built; the product has never been used once.* As of the
+update box at the top of this section, **it has now been used once, end-to-end, and the path works.**
+The next priorities shift from "prove it runs" to "make it safe + real":
 
-Second priority is the driver app (§5.4 items 1–4) — it is the persona with the worst UI, the
-heaviest relative payload, the stalled PR, and two known flow-level holes.
+1. **DB health (audited 2026-07-28 via the Supabase MCP — reassuring):** referential integrity is
+   intact (**zero orphaned FKs** across the whole DB); anon reads **zero rows** from every sensitive
+   table (RLS-enabled-no-policy is deny-by-default, and no app ships the anon key), so the "unpoliced
+   RLS" worry is safe-by-accident, not a hole. Real cleanup items, all the user's DDL call:
+   `trips` (21 rows) + `trip_locations` (76) are **dead legacy** (data but zero code refs); ~14 empty
+   unreferenced tables; the stray PostGIS extension; and **3 hot FK columns lack an index**
+   (`negotiations.booking_id`, `negotiations.quote_id`, `quotes.driver_id`) — worth adding before
+   pilot volume. Blank-column scan found only benign nullable-optional columns (KYC/photos
+   unexercised); `vehicles.driver_id` all-NULL is BY DESIGN (fleet model). The one real schema trap
+   was `payments_status_check` (fixed above).
+2. **Auth hardening (from a full surface audit).** forgot-password/reset now shipped + verified live.
+   Still open and real: **no brute-force lockout / rate-limit on `/email/login`** (credential-stuffing
+   open); **phone-OTP has no real SMS** (console.log only — and phone is the primary login for Indian
+   drivers); no global rate-limit on register/magic-link (SMTP-quota drain); refresh tokens never
+   rotate; `/auth/register` lets a user self-assign their own role; password policy has no max length
+   (bcrypt silently truncates >72 bytes).
+3. **A money-integrity gap the run exposed:** `settle()` takes `amount` fully from the caller and
+   never reconciles it against the booking's agreed `quoted_price` — a shipper could settle ₹1 on a
+   ₹36,483 trip. Not a crash; a real correctness hole to close before real money moves.
+4. **The driver app (§5.4 items 1–4)** — worst UI, heaviest relative payload, stalled PR that deletes
+   the Maps nav handoff, and two flow-level holes (direct bookings invisible to the driver; unreachable
+   onboarding that gates payout).
 
 ---
 
@@ -1727,6 +1766,14 @@ last two are the interesting ones — they exercise the affiliation edges.
 | Dinesh Chauhan | `dinesh@bharattruck.in` | `dinesh-2026` | active |
 | Arjun Nair | `arjun@bharattruck.in` | `arjun-2026` | **pending invite** — tests the driver-consent accept flow |
 | Kailash Meena | `kailash@bharattruck.in` | `kailash-2026` | **left fleet** — tests access revocation |
+
+> **Password caveat (verified 2026-07-28):** the fleet-driver logins DO work with `<firstname>-2026`
+> (vikram-2026 confirmed via real login). The two `@bharattruck.in` shipper logins
+> `anand.textiles`/`deccan.steels` returned 401 for `anand-2026`/`deccan-2026` — their real passwords
+> differ from the doc. For a guaranteed shipper+driver login use the demo accounts
+> (`demo-shipper@bharattruck.dev` / `demo-shipper-2026`, `demo-driver@bharattruck.dev` /
+> `demo-driver-2026`) — both confirmed working in the e2e run. `demo-driver` is INDEPENDENT (not
+> fleet-affiliated), so it can bid directly; a fleet driver is correctly 403'd from direct bidding.
 
 **Shippers that post loads to this fleet**
 
