@@ -147,6 +147,15 @@ async function main() {
   check('response status paid', r.json().data?.status === 'paid', JSON.stringify(r.json().data?.status))
   check('booking flipped completed→paid (cross-service)', bStatus(B1) === 'paid', `(got ${bStatus(B1)})`)
   check('payment recorded', !!(await fakeStore.getPayment(B1)), '')
+  // The live payments table has CHECK (status IN ('pending','captured','settled','failed',
+  // 'refunded')). The Map-backed fake store does NOT enforce it, so a status the DB rejects
+  // (e.g. the old 'recorded') passes here silently and only 500s in production. Pin the value
+  // to the DB-allowed set so a future drift is caught in CI, not by a failed real settlement.
+  {
+    const DB_ALLOWED = ['pending', 'captured', 'settled', 'failed', 'refunded']
+    const pStatus = (await fakeStore.getPayment(B1))?.status
+    check('payment status is a DB-allowed value (payments_status_check)', DB_ALLOWED.includes(pStatus as string), `(got ${pStatus})`)
+  }
   check('payout recorded (amount+mode+recorded_by)', (await fakeStore.getPayout(B1))?.status === 'recorded' && (await fakeStore.getPayout(B1))?.amount === 5000, JSON.stringify(await fakeStore.getPayout(B1)))
 
   console.log('\n── idempotent double-settle ──')
