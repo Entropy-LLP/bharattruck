@@ -13,6 +13,7 @@ const ACCESS_TTL_S  = 15 * 60         // 15 minutes
 const REFRESH_TTL_S = 7 * 24 * 3600   // 7 days
 const OTP_TTL_S     = 600             // 10 minutes
 const MAGIC_TTL_S   = 900             // 15 minutes
+const PWRESET_TTL_S = 30 * 60         // 30 minutes — password-reset link validity
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -66,6 +67,23 @@ async function sendMagicLinkEmail(email: string, link: string) {
     subject: 'BharatTruck — Sign in link',
     text: `Sign in to BharatTruck: ${link}\n\nExpires in 15 minutes.`,
     html: `<p>Click to sign in to BharatTruck: <a href="${link}">${link}</a></p><p>Expires in 15 minutes.</p>`,
+  })
+}
+
+async function sendPasswordResetEmail(email: string, link: string) {
+  if (process.env.EMAIL_DEV_MODE === 'true' || !process.env.SMTP_USER) {
+    console.log(`[DEV] Password reset link for ${email}: ${link}`)
+    return
+  }
+  const mailer = getMailer()
+  await mailer.sendMail({
+    from: process.env.SMTP_FROM ?? process.env.SMTP_USER,
+    to: email,
+    subject: 'BharatTruck — Reset your password',
+    text: `We received a request to reset your BharatTruck password.\n\nReset it here: ${link}\n\nThis link expires in 30 minutes. If you did not request this, ignore this email — your password is unchanged.`,
+    html: `<p>We received a request to reset your BharatTruck password.</p>` +
+      `<p><a href="${link}">Reset your password</a> (expires in 30 minutes).</p>` +
+      `<p>If you did not request this, ignore this email — your password is unchanged.</p>`,
   })
 }
 
@@ -154,6 +172,8 @@ const MagicLinkSendBody  = z.object({
 })
 const GoogleSignInBody   = z.object({ id_token: z.string(), role: z.enum(['shipper', 'driver', 'fleet_owner']).default('shipper') })
 const RefreshBody        = z.object({ refresh_token: z.string() })
+const ForgotPasswordBody = z.object({ email: z.string().email(), callback_url: z.string().url().optional() })
+const ResetPasswordBody  = z.object({ token: z.string().min(1), password: z.string().min(8, 'Password must be at least 8 characters') })
 const RegisterProfileBody = z.object({
   full_name:    z.string().min(2).max(100),
   role:         z.enum(['shipper', 'driver', 'fleet_owner']),
@@ -524,6 +544,98 @@ export async function authRoutes(app: FastifyInstance) {
         user: userProfile(user),
       },
     })
+  })
+
+  // ── POST /auth/forgot-password ───────────────────────────────────────────────
+  // Emails a single-use reset LINK (never a password). Enumeration-safe: the same
+  // generic success is returned whether or not the email exists. Rate-limited per
+  // email (5/hour) to stop the endpoint being used as an email bomb / probe.
+  app.post('/forgot-password', async (req, reply) => {
+    const body = ForgotPasswordBody.safeParse(req.body)
+    if (!body.success) {
+      return reply.status(400).send({ success: false, error: body.error.errors[0].message })
+    }
+    const { email, callback_url } = body.data
+    const generic = { success: true, data: { message: 'If an account exists for that email, a reset link has been sent.' } }
+
+    const rateKey = `pwreset_rate:${email}`
+    const attempts = await app.redis.incr(rateKey)
+    if (attempts === 1) await app.redis.expire(rateKey, 3600)
+    if (attempts > 5) return reply.send(generic) // silently absorb — do not reveal the cap
+
+    const { data: user } = await app.supabase
+      .from('users')
+      .select('id, role, password_hash')
+      .eq('email', email)
+      .maybeSingle()
+
+    // Only email a real link to an account that can actually log in with a password.
+    // Passwordless-only accounts (magic-link/OTP) have no password to reset.
+    if (user && user.password_hash) {
+      const resetToken = jwt.sign(
+        { userId: user.id, type: 'pwreset' },
+        process.env.JWT_SECRET!,
+        { expiresIn: PWRESET_TTL_S },
+      )
+      // Single-use: reset-password checks this key matches AND deletes it, so a token
+      // cannot be replayed and a second request invalidates the first.
+      await app.redis.set(`pwreset:${user.id}`, resetToken, 'EX', PWRESET_TTL_S)
+      const base = callback_url
+        ?? (user.role === 'driver'
+              ? (process.env.DRIVER_RESET_PASSWORD_URL ?? process.env.DRIVER_MAGIC_LINK_URL ?? 'http://localhost:3002/auth/reset')
+              : (process.env.SHIPPER_RESET_PASSWORD_URL ?? process.env.SHIPPER_MAGIC_LINK_URL ?? 'http://localhost:3000/auth/reset'))
+      const link = `${base}?token=${encodeURIComponent(resetToken)}`
+      try {
+        await sendPasswordResetEmail(email, link)
+      } catch (err) {
+        req.log?.error({ err }, 'password reset email failed to send')
+        // Still return generic success — do not leak send failures to the caller.
+      }
+    }
+
+    return reply.send(generic)
+  })
+
+  // ── POST /auth/reset-password ────────────────────────────────────────────────
+  // Consumes a reset token, sets a new bcrypt password, and revokes existing
+  // refresh tokens so any session opened with the old password is killed.
+  app.post('/reset-password', async (req, reply) => {
+    const body = ResetPasswordBody.safeParse(req.body)
+    if (!body.success) {
+      return reply.status(400).send({ success: false, error: body.error.errors[0].message })
+    }
+    const { token, password } = body.data
+
+    let decoded: { userId: string; type?: string }
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET!) as { userId: string; type?: string }
+    } catch {
+      return reply.status(400).send({ success: false, error: 'Reset link is invalid or has expired', code: 'INVALID_RESET_TOKEN' })
+    }
+    if (decoded.type !== 'pwreset' || !decoded.userId) {
+      return reply.status(400).send({ success: false, error: 'Reset link is invalid', code: 'INVALID_RESET_TOKEN' })
+    }
+
+    // Single-use check: the token must match the one still in Redis.
+    const stored = await app.redis.get(`pwreset:${decoded.userId}`)
+    if (!stored || stored !== token) {
+      return reply.status(400).send({ success: false, error: 'Reset link is invalid or already used', code: 'INVALID_RESET_TOKEN' })
+    }
+
+    const password_hash = await bcrypt.hash(password, 12)
+    const { error } = await app.supabase
+      .from('users')
+      .update({ password_hash })
+      .eq('id', decoded.userId)
+    if (error) {
+      return reply.status(500).send({ success: false, error: 'Could not update password' })
+    }
+
+    // Burn the reset token + revoke sessions opened under the old password.
+    await app.redis.del(`pwreset:${decoded.userId}`)
+    await app.redis.del(`refresh:${decoded.userId}`)
+
+    return reply.send({ success: true, data: { message: 'Password updated. Please sign in with your new password.' } })
   })
 
   // ── POST /auth/google ────────────────────────────────────────────────────────
