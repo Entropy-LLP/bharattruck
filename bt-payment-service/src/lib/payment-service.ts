@@ -100,7 +100,16 @@ export async function settle(args: SettleArgs, actor: AuthenticatedUser, bearer:
       mode: args.mode,
       reference: args.reference,
       recorded_by: actor.userId,
-      status: 'recorded',
+      // 'settled' — NOT 'recorded'. The live payments table carries
+      // CHECK (status IN ('pending','captured','settled','failed','refunded'))
+      // from its original gateway-style schema; 'recorded' violated it and every
+      // cash settlement 500'd on the payments insert (payments_status_check),
+      // which is why payments has zero rows in prod. The payouts table uses a
+      // different vocabulary that DOES allow 'recorded', so the payout wrote and
+      // the payment did not — the drift is per-table. 'settled' is the terminal
+      // state in the payments vocabulary. (The Map-backed test fake never enforced
+      // the CHECK, so this passed CI — see the added assertion in payment.e2e.mts.)
+      status: 'settled',
     })
   }
 

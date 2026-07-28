@@ -10,13 +10,19 @@ import { getSupabase } from './supabase.js'
 
 export type PaymentMode = 'cash' | 'upi' | 'direct'
 
+// status MUST be a value the live payments_status_check allows
+// (pending|captured|settled|failed|refunded). A cash settlement is terminal, so
+// 'settled'. It is NOT 'recorded' — that violated the constraint and 500'd every
+// settlement (payouts use a separate, laxer status vocabulary; see payment-service.ts).
+export const PAYMENT_STATUS_SETTLED = 'settled' as const
+
 export type PaymentRecord = {
   booking_id: string
   amount: number
   mode: PaymentMode
   reference: string | null
   recorded_by: string
-  status: 'recorded'
+  status: 'settled'
 }
 
 // The payout goes to WHOEVER MADE THE WINNING BID (founder Q15): a solo
