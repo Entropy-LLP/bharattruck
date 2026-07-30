@@ -14,15 +14,18 @@ import {
   getPodContext,
   requestPodOtp,
   pushLocation,
+  getRoute,
   ApiError,
 } from '@/lib/api'
 import { buildNavDeepLink } from '@/lib/nav'
-import type { PodContext } from '@/lib/api'
+import type { PodContext, RouteData, PetrolPump } from '@/lib/api'
 import type { Booking, Quote, NegotiationEntry } from '@/lib/types'
 import { formatPrice, formatDate, formatDateTime, relativeTime, getCountdown } from '@/lib/utils'
 import { quoteStatusConfig } from '@/lib/status'
 import { useScreenWakeLock } from '@/lib/use-wake-lock'
 import Spinner from '@/components/spinner'
+import LiveTrackMap from '@/components/maps/LiveTrackMap'
+import TripInsights from '@/components/trip-insights'
 
 export default function BookingDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params)
@@ -784,6 +787,21 @@ function ActiveTripSection({
   const [elapsed, setElapsed] = useState('')
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
+  // The driver's OWN position, kept locally for the map.
+  //
+  // The GPS watch below already runs for ingestion; until now it pushed each fix to the
+  // server and threw it away. Holding it in state costs nothing and is strictly better than
+  // reading our own position back out of /tracking/track: no round trip, no Cloud Run cost,
+  // and it keeps updating through the network dead zones where a driver most needs the map.
+  const [selfPos, setSelfPos] = useState<{ lat: number; lng: number } | null>(null)
+  const [heading, setHeading] = useState<number | null>(null)
+
+  // The lane's road geometry. Fetched ONCE per trip — the polyline is fixed for the booking
+  // and bt-tracking-service caches it for 6h (D-006), so polling it would burn the Routes
+  // quota to redraw an identical line.
+  const [route, setRoute] = useState<RouteData | null>(null)
+  const [pumpMarkers, setPumpMarkers] = useState<PetrolPump[]>([])
+
   // Keep the screen awake for the whole in-transit trip so the OS doesn't
   // throttle background GPS (frozen D-008). This section only renders while
   // in_transit, so the lock is scoped to the active trip.
@@ -813,6 +831,9 @@ function ActiveTripSection({
         clearTimeout(timeoutId)
         setGpsActive(true)
         setGpsError(null)
+        // Draw locally first — the map must not wait on the network round trip below.
+        setSelfPos({ lat: position.coords.latitude, lng: position.coords.longitude })
+        setHeading(position.coords.heading ?? null)
         pushLocation({
           lat: position.coords.latitude,
           lng: position.coords.longitude,
@@ -838,6 +859,25 @@ function ActiveTripSection({
     return () => {
       clearTimeout(timeoutId)
       navigator.geolocation.clearWatch(watchId)
+    }
+  }, [booking.id])
+
+  // Road geometry for the map — one call per trip, best-effort.
+  //
+  // A failure here leaves `route` null, which the map handles by drawing pickup, drop and
+  // the truck without the road line. That is a degraded map, not a broken trip, so it is
+  // deliberately not surfaced as an error.
+  useEffect(() => {
+    let cancelled = false
+    getRoute(booking.id)
+      .then((r) => {
+        if (!cancelled) setRoute(r)
+      })
+      .catch(() => {
+        // silent — the map degrades to markers-only and the trip is unaffected
+      })
+    return () => {
+      cancelled = true
     }
   }, [booking.id])
 
@@ -943,8 +983,34 @@ function ActiveTripSection({
 
   const receiverEmail = podContext?.receiver_email ?? null
 
+  // `Booking` types these as required numbers, but the guard is a runtime check on the API,
+  // not on the type: this repo has a documented history of types drifting from what the DB
+  // actually returns, and a null slipping through here would render a map at (0, 0) — the
+  // Gulf of Guinea — which looks like a working map showing the wrong thing. Far worse than
+  // no map.
+  const hasCoords =
+    Number.isFinite(booking.source_lat) &&
+    Number.isFinite(booking.source_lng) &&
+    Number.isFinite(booking.dest_lat) &&
+    Number.isFinite(booking.dest_lng)
+
   return (
     <div className="space-y-4">
+      {/* The map sits ABOVE the trip card, not inside it: it is the thing a driver glances at
+          while moving, and it must never push the Mark-as-Delivered button off screen. A
+          booking without coordinates (older rows) simply renders no map. */}
+      {hasCoords && (
+        <LiveTrackMap
+          origin={{ lat: booking.source_lat, lng: booking.source_lng }}
+          dest={{ lat: booking.dest_lat, lng: booking.dest_lng }}
+          encodedPolyline={route?.polyline}
+          bounds={route?.bounds}
+          self={selfPos}
+          heading={heading}
+          pumps={pumpMarkers}
+        />
+      )}
+
       <div className="bg-purple-500/10 rounded-2xl border-2 border-purple-400 p-5 shadow-sm">
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-lg font-bold text-purple-300">Trip In Progress</h3>
@@ -1047,6 +1113,10 @@ function ActiveTripSection({
       </div>
 
       <NavigateButton booking={booking} />
+
+      {/* Pumps / fuel / alerts. Below the trip controls by design — useful, never in the way
+          of the action that gets the driver paid. */}
+      <TripInsights bookingId={booking.id} onPumpsLoaded={setPumpMarkers} />
     </div>
   )
 }

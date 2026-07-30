@@ -587,3 +587,106 @@ export function respondToFleetInvite(
     body: JSON.stringify({ action }),
   })
 }
+
+// ── Maps & tracking (bt-tracking-service, via the gateway) ────
+//
+// COST DISCIPLINE — read before adding anything here. The driver app is the ONE client
+// that must not poll /tracking/track: the driver IS the truck, so their position comes
+// from navigator.geolocation locally, for free and with no latency. Round-tripping it
+// through Cloud Run to draw it on their own screen would cost money for worse data.
+//
+// So: the route is fetched ONCE per trip (server-cached 6h, D-006), pumps and fuel are
+// fetched ON DEMAND when the driver asks, and only alerts poll — and those are a plain
+// Postgres read with no Google call behind them.
+
+export interface RouteData {
+  polyline: string
+  distance_m: number
+  static_duration_s: number
+  bounds: { ne_lat: number; ne_lng: number; sw_lat: number; sw_lng: number }
+  cached: boolean
+}
+
+/** Cached base polyline for the lane. One call per trip — never per GPS tick. */
+export function getRoute(bookingId: string) {
+  return request<RouteData>(`/tracking/route/${bookingId}`)
+}
+
+export interface PetrolPump {
+  place_id: string
+  name: string
+  lat: number
+  lng: number
+  distance_m: number
+  address: string | null
+  brand: string | null
+}
+
+export interface PumpsData {
+  booking_id: string
+  origin: { lat: number; lng: number }
+  /** Which position the search was anchored at, so the UI can say so honestly. */
+  origin_source: 'live_position' | 'last_breadcrumb' | 'pickup_point'
+  limit: number
+  radius_m: number
+  pump_count: number
+  pumps: PetrolPump[]
+  cached: boolean
+}
+
+/** Top-8 nearest pumps (D-011). ON DEMAND ONLY — this is a billed Places call. */
+export function getPumps(bookingId: string) {
+  return request<PumpsData>(`/tracking/pumps/${bookingId}`)
+}
+
+export interface FuelData {
+  booking_id: string
+  vehicle_id: string | null
+  distance_basis: 'override' | 'driven' | 'planned' | 'unknown'
+  distance_note: string
+  distance_km: number
+  mileage_kmpl: number
+  diesel_price_inr: number
+  litres_required: number
+  diesel_cost_inr: number
+  def_cost_inr: number
+  estimated_fuel_cost_inr: number
+  vehicle_class: string | null
+  basis: 'vehicle_norms' | 'vehicle_class' | 'default'
+  /** Plain-language provenance — render it, never present an estimate as measured. */
+  basis_note: string
+  inputs_overridden: string[]
+}
+
+/** Fuel + DEF estimate. Pure arithmetic server-side, no Google call (D-009/D-015). */
+export function getFuel(bookingId: string, opts?: { diesel_price?: number; mileage_kmpl?: number }) {
+  const qs = new URLSearchParams()
+  if (opts?.diesel_price !== undefined) qs.set('diesel_price', String(opts.diesel_price))
+  if (opts?.mileage_kmpl !== undefined) qs.set('mileage_kmpl', String(opts.mileage_kmpl))
+  const suffix = qs.toString() ? `?${qs}` : ''
+  return request<FuelData>(`/tracking/fuel/${bookingId}${suffix}`)
+}
+
+export interface TripAlert {
+  id: string
+  type: string
+  message: string | null
+  severity: 'info' | 'warning' | 'critical'
+  acknowledged: boolean
+  resolved_at: string | null
+  created_at: string
+}
+
+export interface AlertsData {
+  booking_id: string
+  evaluated_at: string
+  thresholds: { off_route_m: number; idle_seconds: number; near_drop_m: number; speeding_kmh: number }
+  current_location: { deviation_m: number | null; off_route: boolean | null; distance_to_drop_m: number } | null
+  open_count: number
+  alerts: TripAlert[]
+}
+
+/** Route alerts (D-012 thresholds). DB read only — safe to poll. */
+export function getTripAlerts(bookingId: string) {
+  return request<AlertsData>(`/tracking/alerts/${bookingId}`)
+}

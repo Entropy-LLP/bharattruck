@@ -901,7 +901,7 @@ were all confirmed together on **2026-06-18**._
   driver. Also forces the map to be non-load-bearing: `components/map-guard.tsx` keeps a Maps
   rejection from taking the dashboard down with it (see §5.4 item 10).
 
-**Next D-number: D-019** _(D-017 and D-018 are the pinned-value rows in §3.3's playbook table —
+**Next D-number: D-020** _(D-017 and D-018 are the pinned-value rows in §3.3's playbook table —
 the D-series is a single global sequence across both logs, never two independent counters.)_
 
 ### 3.3 — SESSIONS: build playbook (phases 0-6)
@@ -954,15 +954,18 @@ END RITUAL:
 | 2 | `/route` + `/eta` with Redis caching | ✅ | live |
 | 3 | migration 009 `location_history` + `/history` read | ✅ | 2026-07-31 — `/history` built; write side was already live |
 | 4 | shipper `<LiveTrackMap/>` + `GET /api/tracking/track/:bookingId` + deep-link helper | ✅ | live |
-| 5 | driver nav view + `/pumps` + `/fuel` + `/alerts` | 🟡 | 2026-07-31 — all 3 ENDPOINTS built + verified; **driver UI not started** |
+| 5 | driver nav view + `/pumps` + `/fuel` + `/alerts` | ✅ | 2026-07-31 — endpoints + driver map/insights UI, verified against live data |
 | 6 | PWA manifest + service worker + wake lock + route-replay GPS simulator + drive-test checklist | 🟡 | driver PWA + wake lock exist; simulator is `scripts/qa/drive-gps.mjs` |
 
-> **Board reconciled 2026-07-31** (it had every phase at ⛔ while most were shipped). Phase 5 is
-> deliberately 🟡 not ✅: `/pumps`, `/fuel` and `/alerts` are built, tested and verified against the
-> live DB, but the **driver-facing UI for them does not exist** — the driver app still has no map at
-> all. Phase 5's DoD is not met until that lands. Work outside the 0-6 plan also shipped on
-> 2026-07-31 (the D-014 evaluator, geofencing, trip telemetry, and the D-016 fleet board); it does
-> not belong to a phase and is tracked in §5.2 instead.
+> **Board reconciled 2026-07-31** (it had every phase at ⛔ while most were shipped). Phase 5 closed
+> later the same day when the driver map + insights landed (D-019). Work outside the 0-6 plan also
+> shipped on 2026-07-31 — the D-014 evaluator, geofencing, trip telemetry, and the D-016 fleet
+> board; it does not belong to a phase and is tracked in §5.2 instead.
+>
+> **Stale branch warning:** `feat/driver-live-map` @ `8f5f54f` (worktree `bt-wt-frontend`) contains
+> an EARLIER, unmerged driver map. It is ~53 commits behind, its `page.tsx` hunk is pre-dark-theme
+> and would regress the driver UI, and it adds a second `NavigateButton`. It is superseded by
+> D-019 — close it rather than rebasing it.
 
 **Decisions log (D-xxx) for this playbook** — every time an `(INFERRED — confirm)` value is pinned, or
 any new call is made that §3.1 doesn't already lock, add a row here **and** edit §3.1's line.
@@ -975,6 +978,7 @@ Format: `D-xxx | date | phase | what changed | from → to`.
 | D-015 | 2026-07-31 | 5 | Mileage pinned to `vehicle_cost_norms`; DEF costed | MCV 6.0 / HCV 3.5 *(INFERRED)* → per-model, 3-tier fallback |
 | D-016 | 2026-07-31 | — | Vehicle-centric fleet board with stated reasons for absent data | driver-keyed `/fleet/live` → vehicle-keyed `/tracking/fleet/overview` |
 | D-017 | 2026-07-31 | 3 | `/history` limits pinned | default 500 / max 2000 *(INFERRED)* → confirmed as-is |
+| D-019 | 2026-07-31 | 5 | Driver map draws own position from LOCAL GPS, never from `/track` | shipper model (poll server) → device geolocation, so it is free, instant and survives no-signal |
 | D-018 | 2026-07-31 | 5 | `/pumps` cached on the ROUNDED ANCHOR, not the booking | `trk:pumps:{id}` → `trk:pumps:{id}:{lat2dp,lng2dp}:{limit}:{radius}` — a booking-keyed cache hands a truck at 60 km/h pumps it passed 5 min ago |
 
 **Pre-seeded pin checklist** (each becomes a `D-xxx` when confirmed): TTLs (route 24h · eta 60s ·
@@ -1521,6 +1525,12 @@ All twelve green. Re-run the sweep in §6.2 before trusting this table more than
   **Caveat:** the evaluator is inert in prod until `TRACKING_SERVICE_URL` is set on
   `bt-booking-service` and `INTERNAL_SERVICE_SECRET` on `bt-tracking-service` (§5.3 — CD never
   sets env). Until then ingestion behaves exactly as before, which is the intended failure mode.
+- **Driver map + insights** (D-019, NEW): the driver app had GPS ingestion and a deep-link but
+  **no map at all**. It now renders a follow-the-truck map on the active trip, plus nearest-pump
+  search, a fuel/DEF card with an editable diesel price, and route-alert banners. The driver's own
+  position is drawn from `navigator.geolocation` LOCALLY — it never polls `/tracking/track`, since
+  round-tripping their own fix through Cloud Run costs money for worse, slower data and stops
+  working in exactly the dead zones where the map matters most.
 - **Fleet live board** (D-016, NEW): `GET /api/tracking/fleet/overview` + the rebuilt
   `fleet/` **Live Fleet** page — every truck the owner has, not just the ones with a driver
   attached, each with live position, current trip, telemetry, per-model fuel cost and open
@@ -1633,8 +1643,9 @@ seed `bt-fleet-service` env + gateway wiring) · `fix-empty-env.sh` (repairs emp
 10. **Maps failure handling — fixed in `fleet/`, still open in `shipper/` and (when built)
     `driver/`.** The fleet console now has `fleet/src/components/map-guard.tsx`: a render
     watchdog plus an error boundary, so a rejected key costs the map and nothing else.
-    `shipper/src/components/maps/LiveTrackMap.tsx` still handles only a *missing* key —
-    **copy the guard across** (D-013: copy per app, no shared package). Three things learned
+    `driver/` now carries a copy too (D-019). `shipper/src/components/maps/LiveTrackMap.tsx` is
+    the LAST one still handling only a *missing* key — **copy the guard across** (D-013: copy per
+    app, no shared package). Three things learned
     building it, all verified 2026-07-31, all worth not rediscovering:
     - A Maps rejection **crashed the whole React tree** ("This page couldn't load"), taking the
       truck list with it. The list needs no Google at all; it must never depend on the map.
