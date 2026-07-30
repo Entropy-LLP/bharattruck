@@ -180,3 +180,32 @@ export interface OnboardingStatus {
   verification_badge: VerificationBadge
   checklist: OnboardingChecklist
 }
+
+// ── Fleet affiliation ─────────────────────────────────────────
+
+export type FleetDriverStatus = 'pending' | 'active' | 'rejected' | 'suspended' | 'left'
+
+/**
+ * A row of `fleet_drivers` as the DRIVER sees it — `GET /fleet/drivers/invites/mine`
+ * returns only `status='pending'` rows, joined with the inviting fleet's name/city.
+ *
+ * Accepting is consequential and irreversible from this screen: an active
+ * affiliation means the owner bids on the driver's behalf and is paid instead of
+ * them, and `stripCommercialFields` then masks every money field the driver sees
+ * (see the note on `Booking.quoted_price`). The UI must say so before asking.
+ */
+export interface FleetInvite {
+  id: string
+  fleet_owner_id: string
+  driver_id: string
+  status: FleetDriverStatus
+  monthly_salary_inr: number | null
+  invited_by: string | null
+  invited_at: string
+  responded_at: string | null
+  left_at: string | null
+  created_at: string
+  updated_at: string
+  company_name: string | null
+  fleet_city: string | null
+}

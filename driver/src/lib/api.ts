@@ -11,6 +11,7 @@ import type {
   OnboardingStatus,
   VehicleBodyType,
   VehicleAxleConfig,
+  FleetInvite,
 } from './types'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
@@ -315,6 +316,9 @@ export interface CreateVehicleInput {
   rc_expiry?: string
 }
 
+/** Mirrors the server's `CreateVehicleBody.partial()`. */
+export type UpdateVehicleInput = Partial<CreateVehicleInput>
+
 export interface SubmitLicenseInput {
   dl_number: string
   dl_storage_path?: string
@@ -365,6 +369,20 @@ export function createVehicle(
 ): Promise<{ vehicle: Vehicle }> {
   return request<{ vehicle: Vehicle }>('/onboarding/vehicle', {
     method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+/**
+ * Partial update. The server rejects an empty body ('No fields to update') and
+ * 409s if `rc_number` collides with another vehicle, so send only what changed.
+ */
+export function updateVehicle(
+  vehicleId: string,
+  body: UpdateVehicleInput,
+): Promise<{ vehicle: Vehicle }> {
+  return request<{ vehicle: Vehicle }>(`/onboarding/vehicle/${vehicleId}`, {
+    method: 'PUT',
     body: JSON.stringify(body),
   })
 }
@@ -526,4 +544,46 @@ export function registerProfile(body: {
 
 export function authLogout() {
   return authRequest<{ message: string }>('/auth/logout', { method: 'POST' })
+}
+
+/**
+ * Always resolves with the same generic message whether or not the address is
+ * on file — the server refuses to confirm an account exists, and silently
+ * absorbs its own rate limit. The UI must not imply an account was found.
+ */
+export function forgotPassword(email: string, callbackUrl?: string) {
+  return authRequest<{ message: string }>('/auth/forgot-password', {
+    method: 'POST',
+    body: JSON.stringify({ email, ...(callbackUrl ? { callback_url: callbackUrl } : {}) }),
+  })
+}
+
+/** Single-use token from the emailed link; also revokes every existing session. */
+export function resetPassword(token: string, password: string) {
+  return authRequest<{ message: string }>('/auth/reset-password', {
+    method: 'POST',
+    body: JSON.stringify({ token, password }),
+  })
+}
+
+// ── Fleet affiliation (driver side) ───────────────────────────
+
+/** Pending invitations only — the server filters to `status='pending'`. */
+export function listMyFleetInvites(): Promise<FleetInvite[]> {
+  return request<FleetInvite[]>('/fleet/drivers/invites/mine')
+}
+
+/**
+ * The consent gate: only the driver can move an invitation off 'pending'. A
+ * second response 409s with INVALID_TRANSITION, which the caller should treat
+ * as "already handled" and refresh rather than as a failure.
+ */
+export function respondToFleetInvite(
+  inviteId: string,
+  action: 'accept' | 'reject',
+): Promise<FleetInvite> {
+  return request<FleetInvite>(`/fleet/drivers/invites/${inviteId}/respond`, {
+    method: 'POST',
+    body: JSON.stringify({ action }),
+  })
 }
