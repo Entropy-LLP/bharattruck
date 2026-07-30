@@ -1,9 +1,10 @@
 'use client'
 
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
 import Link from 'next/link'
 import { useAuth } from '@/lib/auth'
+import { listMyFleetInvites } from '@/lib/api'
 
 const NAV_ITEMS = [
   {
@@ -25,6 +26,18 @@ const NAV_ITEMS = [
     ),
   },
   {
+    href: '/invites',
+    label: 'Invites',
+    // Badged: an invitation is dead until the driver acts on it, so it has to be
+    // visible from anywhere in the shell rather than only on its own tab.
+    badged: true,
+    icon: (
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+      </svg>
+    ),
+  },
+  {
     href: '/profile',
     label: 'Profile',
     icon: (
@@ -39,12 +52,26 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const { token, isReady, logout } = useAuth()
   const router = useRouter()
   const pathname = usePathname()
+  const [inviteCount, setInviteCount] = useState(0)
 
   useEffect(() => {
     if (isReady && !token) {
       router.replace('/login')
     }
   }, [isReady, token, router])
+
+  // Re-read on navigation so the badge clears as soon as the driver responds,
+  // without a store or a polling timer. The endpoint returns pending rows only,
+  // and a solo driver simply gets []. Failures stay silent — a nav badge is not
+  // worth a toast, and drivers with no fleet involvement would see it forever.
+  useEffect(() => {
+    if (!isReady || !token) return
+    let cancelled = false
+    listMyFleetInvites()
+      .then(list => { if (!cancelled) setInviteCount(list.length) })
+      .catch(() => { if (!cancelled) setInviteCount(0) })
+    return () => { cancelled = true }
+  }, [isReady, token, pathname])
 
   if (!isReady) {
     return (
@@ -143,12 +170,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   <span className="absolute top-1 w-1 h-1 rounded-full bg-primary nav-active-glow" />
                 )}
                 {/* Icon container */}
-                <div className={`p-1.5 rounded-xl transition-all duration-200 ${
+                <div className={`relative p-1.5 rounded-xl transition-all duration-200 ${
                   isActive
                     ? 'bg-primary/12 scale-110 nav-active-glow'
                     : 'hover:bg-secondary'
                 }`}>
                   {item.icon}
+                  {item.badged && inviteCount > 0 && (
+                    <span
+                      aria-label={`${inviteCount} pending invitation${inviteCount !== 1 ? 's' : ''}`}
+                      className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-amber-500 border-2 border-card flex items-center justify-center text-[9px] font-black text-white leading-none"
+                    >
+                      {inviteCount > 9 ? '9+' : inviteCount}
+                    </span>
+                  )}
                 </div>
                 <span className={`text-[9.5px] mt-1 font-bold tracking-wider uppercase transition-all ${
                   isActive ? 'text-primary' : ''

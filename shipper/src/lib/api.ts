@@ -587,3 +587,23 @@ export function registerProfile(body: { full_name: string; role: string; email?:
 export function authLogout() {
   return authRequest<{ message: string }>('/auth/logout', { method: 'POST' })
 }
+
+/**
+ * Always resolves with the same generic message whether or not the address is
+ * on file — the server refuses to confirm an account exists, and silently
+ * absorbs its own rate limit. The UI must not imply an account was found.
+ */
+export function forgotPassword(email: string, callbackUrl?: string) {
+  return authRequest<{ message: string }>('/auth/forgot-password', {
+    method: 'POST',
+    body: JSON.stringify({ email, ...(callbackUrl ? { callback_url: callbackUrl } : {}) }),
+  })
+}
+
+/** Single-use token from the emailed link; also revokes every existing session. */
+export function resetPassword(token: string, password: string) {
+  return authRequest<{ message: string }>('/auth/reset-password', {
+    method: 'POST',
+    body: JSON.stringify({ token, password }),
+  })
+}

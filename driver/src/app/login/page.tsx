@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 import Script from 'next/script'
 import { toast } from 'sonner'
 import { useAuth } from '@/lib/auth'
@@ -19,22 +20,14 @@ import {
   ApiError,
   type AuthUser,
 } from '@/lib/api'
+import { LABEL, FIELD, FIELD_OTP, BTN_PRIMARY, BTN_QUIET, BTN_LINK, HINT } from '@/lib/auth-ui'
 
 const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || ''
 const APP_ROLE = 'driver'
 const POST_LOGIN_PATH = '/available'
 
-// Shared control styles. `blue-*` is the app's accent token — remapped to the
-// BharatTruck orange in globals.css, so it reads orange here.
-const LABEL = 'block text-sm font-medium text-foreground/75 mb-2'
-const FIELD =
-  'w-full h-12 rounded-xl border border-border bg-secondary px-4 text-sm text-foreground placeholder:text-muted-foreground/60 outline-none transition focus:border-blue-600 focus:ring-2 focus:ring-blue-600/25'
-const FIELD_OTP = `${FIELD} text-center text-lg font-mono tracking-[0.4em]`
-const BTN_PRIMARY =
-  'w-full h-12 rounded-xl bg-blue-600 text-sm font-semibold text-white transition hover:bg-blue-700 active:scale-[0.99] disabled:pointer-events-none disabled:opacity-35'
-const BTN_QUIET = 'w-full text-sm text-muted-foreground transition hover:text-foreground'
-const BTN_LINK = 'w-full text-sm font-medium text-blue-600 transition hover:text-blue-500'
-const HINT = 'text-sm leading-relaxed text-muted-foreground'
+// Control styles live in lib/auth-ui so the password-reset screens render the
+// same card as this one instead of drifting from a copy.
 
 type Tab = 'phone' | 'google' | 'email' | 'magic-link'
 type LoginHandler = (at: string, rt: string, u?: AuthUser) => void
@@ -503,7 +496,17 @@ function EmailAuthForm({ onLogin }: { onLogin: LoginHandler }) {
         />
       </div>
       <div>
-        <label className={LABEL}>Password</label>
+        <div className="flex items-baseline justify-between">
+          <label className={LABEL}>Password</label>
+          {/* Sits on the field it rescues, which is where someone looks the
+              moment their password fails — not buried under the submit button. */}
+          <Link
+            href="/auth/forgot"
+            className="mb-2 text-xs font-medium text-blue-600 transition hover:text-blue-500"
+          >
+            Forgot password?
+          </Link>
+        </div>
         <input
           type="password"
           value={password}
