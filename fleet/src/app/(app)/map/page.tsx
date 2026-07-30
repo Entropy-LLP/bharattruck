@@ -1,169 +1,94 @@
 'use client'
 
 /**
- * Live Map — every truck in the fleet on one canvas.
+ * Live Fleet — every truck the owner has, on one canvas and in one list.
  *
- * COST RULE (bt-fleet-service/src/routes/assignment.ts, GET /fleet/live):
- * this page makes exactly ONE request per tick. The service answers it from a
- * single Redis SMEMBERS + one MGET, which is the entire reason that endpoint
- * exists. Never fan out to a per-vehicle position or /tracking/* route from
- * here — at 1000 trucks on a 10s poll that is 100 req/s and it would burn the
- * Maps quota. Route/ETA stay lazy and out of this screen.
+ * WHY THIS IS VEHICLE-CENTRIC (and the previous version was not): the earlier board read
+ * bt-fleet-service's GET /fleet/live, which iterates the fleet's DRIVER set. A truck with
+ * nobody assigned to it therefore never appeared at all — so a yard full of idle trucks
+ * rendered as an empty, calm-looking map. For an owner that is exactly backwards: the assets
+ * earning nothing are the ones costing money.
  *
- * WIRE-SHAPE NOTE: `getLivePositions()` is typed as `LivePosition[]`, but the
- * service currently answers with an envelope
- * `{ driver_count, online_count, on_trip_count, positions: [...] }` whose rows
- * carry `updated_at` / `is_online` instead of `recorded_at` / `stale`, and
- * `lat`/`lng` that are null for a driver whose 30s location key has lapsed.
- * Rather than edit the shared client (not this page's to own) the payload is
- * normalised below and both shapes are accepted, so the page renders correctly
- * whichever side lands first.
+ * This reads bt-tracking-service's GET /api/tracking/fleet/overview instead, which starts
+ * from `vehicles`. Every truck is always a row. A truck with no driver, no trip, or no GPS
+ * fix still appears, carrying an explicit status and a plain-language REASON — because on a
+ * logistics dashboard "no data" is worse than useless: the owner cannot tell whether the
+ * driver forgot to open the app, the truck is legitimately parked, or the platform is broken.
+ *
+ * COST RULE (unchanged, and it still binds): ONE request per tick for the whole fleet. The
+ * service answers from a single Redis MGET plus bounded Postgres reads and makes NO Google
+ * call. Never fan out to a per-vehicle /tracking/route or /tracking/eta from this screen —
+ * at 1000 trucks on a 10s poll that is 100 req/s straight into the Maps bill. Route and ETA
+ * stay lazy, one selected truck at a time.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { APIProvider, Map as GoogleMap, AdvancedMarker, useMap } from '@vis.gl/react-google-maps'
-import { Map as MapIcon, Truck, X } from 'lucide-react'
+import {
+  AlertTriangle, Fuel, Gauge, MapPin, Moon, Radio, Route as RouteIcon, Truck, X,
+} from 'lucide-react'
 import { PageHeader } from '@/components/app-shell'
-import { Card, Empty, ErrorNote, Loading } from '@/components/stat'
-import { ApiError, getLivePositions } from '@/lib/api'
+import { Card, Empty, ErrorNote, Loading, Stat } from '@/components/stat'
+import { ApiError, getFleetOverview } from '@/lib/api'
 import { GOOGLE_MAPS_BROWSER_KEY, GOOGLE_MAPS_MAP_ID } from '@/lib/maps'
-import { dateTime, timeAgo } from '@/lib/format'
+import { MapBoundary, useMapsAuthFailed, useMapRenderWatchdog } from '@/components/map-guard'
+import { timeAgo } from '@/lib/format'
+import type { FleetOverview, TrackedVehicle, VehicleStatus } from '@/lib/types'
 
 /** Fallback centre when nothing is reporting — roughly the centre of the network. */
 const NAGPUR = { lat: 21.1458, lng: 79.0882 }
 const POLL_MS = 10_000
-/** Above this the truck is rolling; below it, GPS jitter at a dhaba. */
-const MOVING_KMH = 5
-/** Location keys carry a 30s TTL; two minutes without a fix is a stale pin. */
-const STALE_AFTER_MS = 2 * 60 * 1000
 const FOCUS_ZOOM = 12
 
-type Tone = 'moving' | 'idle' | 'stale'
+// ── Status presentation ───────────────────────────────────────
+//
+// One table, so the pin colour, the chip and the filter can never disagree about what a
+// status means. `pin` is null for statuses that by definition have no position to draw.
 
-const PIN_COLOR: Record<Tone, string> = {
-  moving: '#2563eb', // blue-600
-  idle: '#6b7280',   // gray-500
-  stale: '#f59e0b',  // amber-500
+const STATUS: Record<
+  VehicleStatus,
+  { label: string; pin: string | null; chip: string; dot: string; order: number }
+> = {
+  moving:               { label: 'Moving',   pin: '#2563eb', chip: 'bg-blue-50 text-blue-700 border-blue-200',       dot: 'bg-blue-500',  order: 0 },
+  idle:                 { label: 'Stopped',  pin: '#6b7280', chip: 'bg-gray-100 text-gray-700 border-gray-200',      dot: 'bg-gray-500',  order: 1 },
+  no_signal:            { label: 'No signal',pin: null,      chip: 'bg-amber-50 text-amber-800 border-amber-200',    dot: 'bg-amber-500', order: 2 },
+  assigned_not_started: { label: 'Assigned', pin: null,      chip: 'bg-violet-50 text-violet-700 border-violet-200', dot: 'bg-violet-500',order: 3 },
+  parked:               { label: 'Parked',   pin: null,      chip: 'bg-slate-50 text-slate-600 border-slate-200',    dot: 'bg-slate-400', order: 4 },
+  inactive:             { label: 'Inactive', pin: null,      chip: 'bg-slate-50 text-slate-400 border-slate-200',    dot: 'bg-slate-300', order: 5 },
 }
 
-/** One plottable truck. Rows without a fix are dropped before this point. */
-type LiveRow = {
-  driver_id: string
-  vehicle_id: string | null
-  rc_number: string | null
-  driver_name: string | null
-  booking_id: string | null
-  lat: number
-  lng: number
-  heading: number | null
-  speed_kmh: number | null
-  recorded_at: string | null
-  stale: boolean
-}
+const FILTERS: { key: 'all' | VehicleStatus; label: string }[] = [
+  { key: 'all', label: 'All' },
+  { key: 'moving', label: 'Moving' },
+  { key: 'idle', label: 'Stopped' },
+  { key: 'no_signal', label: 'No signal' },
+  { key: 'parked', label: 'Parked' },
+]
 
-type Snapshot = {
-  rows: LiveRow[]
-  /** Drivers the service returned, including those with no fix to plot. */
-  total: number
-}
+const inr = (n: number) =>
+  `₹${n.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`
 
-// ── Payload normalisation ─────────────────────────────────────
-
-function asRecord(v: unknown): Record<string, unknown> | null {
-  return typeof v === 'object' && v !== null ? (v as Record<string, unknown>) : null
-}
-function num(v: unknown): number | null {
-  return typeof v === 'number' && Number.isFinite(v) ? v : null
-}
-function str(v: unknown): string | null {
-  return typeof v === 'string' && v.length > 0 ? v : null
-}
-function bool(v: unknown): boolean | null {
-  return typeof v === 'boolean' ? v : null
-}
-
-function rowsOf(payload: unknown): unknown[] {
-  if (Array.isArray(payload)) return payload
-  const positions = asRecord(payload)?.positions
-  return Array.isArray(positions) ? positions : []
-}
-
-function ageMs(iso: string | null): number {
-  if (!iso) return Number.POSITIVE_INFINITY
-  const t = new Date(iso).getTime()
-  return Number.isFinite(t) ? Date.now() - t : Number.POSITIVE_INFINITY
-}
-
-function toRow(raw: unknown): LiveRow | null {
-  const r = asRecord(raw)
-  if (!r) return null
-
-  const driverId = str(r.driver_id)
-  const lat = num(r.lat)
-  const lng = num(r.lng)
-  // No id or no fix means nothing to draw: the driver is offline, not lost.
-  if (!driverId || lat === null || lng === null) return null
-
-  const recordedAt = str(r.recorded_at) ?? str(r.updated_at)
-  // `stale` when the service sends it; otherwise derived from the fix's own age
-  // (and from is_online, which is the envelope's way of saying the key lapsed).
-  const declaredStale = bool(r.stale)
-  const online = bool(r.is_online)
-  const stale = declaredStale ?? (online === false || ageMs(recordedAt) > STALE_AFTER_MS)
-
-  return {
-    driver_id: driverId,
-    vehicle_id: str(r.vehicle_id),
-    rc_number: str(r.rc_number),
-    driver_name: str(r.driver_name),
-    booking_id: str(r.booking_id),
-    lat,
-    lng,
-    heading: num(r.heading),
-    speed_kmh: num(r.speed_kmh),
-    recorded_at: recordedAt,
-    stale,
-  }
-}
-
-function normalize(payload: unknown): Snapshot {
-  const raw = rowsOf(payload)
-  const rows: LiveRow[] = []
-  for (const item of raw) {
-    const row = toRow(item)
-    if (row) rows.push(row)
-  }
-  return { rows, total: raw.length }
-}
-
-function toneOf(row: LiveRow): Tone {
-  if (row.stale) return 'stale'
-  return (row.speed_kmh ?? 0) > MOVING_KMH ? 'moving' : 'idle'
-}
-
-function speedLabel(kmh: number | null): string {
-  return kmh === null ? '—' : `${Math.round(kmh)} km/h`
-}
+const truckName = (v: TrackedVehicle) => v.rc_number ?? v.maker_model ?? 'Unregistered truck'
 
 // ── Page ──────────────────────────────────────────────────────
 
-export default function LiveMapPage() {
-  const [snap, setSnap] = useState<Snapshot | null>(null)
+export default function LiveFleetPage() {
+  const [data, setData] = useState<FleetOverview | null>(null)
   const [err, setErr] = useState<string | null>(null)
-  const [updatedAt, setUpdatedAt] = useState<string | null>(null)
+  const [fetchedAt, setFetchedAt] = useState<string | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [filter, setFilter] = useState<'all' | VehicleStatus>('all')
   const mapRef = useRef<google.maps.Map | null>(null)
 
-  // ONE call per tick, cleared on unmount.
   useEffect(() => {
     let cancelled = false
 
     async function load() {
       try {
-        const payload: unknown = await getLivePositions()
+        const payload = await getFleetOverview()
         if (cancelled) return
-        setSnap(normalize(payload))
-        setUpdatedAt(new Date().toISOString())
+        setData(payload)
+        setFetchedAt(new Date().toISOString())
         setErr(null)
       } catch (e) {
         if (cancelled) return
@@ -179,395 +104,530 @@ export default function LiveMapPage() {
     }
   }, [])
 
-  const rows = useMemo(() => snap?.rows ?? [], [snap])
+  const vehicles = useMemo(() => {
+    const list = data?.vehicles ?? []
+    // Sort by how much the owner needs to look at it: alerts first, then trucks that
+    // should be reporting and are not, then the normal on-road statuses, parked last.
+    return [...list].sort((a, b) => {
+      if (a.alerts.length !== b.alerts.length) return b.alerts.length - a.alerts.length
+      const byStatus = STATUS[a.status].order - STATUS[b.status].order
+      if (byStatus !== 0) return byStatus
+      return truckName(a).localeCompare(truckName(b))
+    })
+  }, [data])
 
-  const counts = useMemo(() => {
-    let moving = 0
-    let idle = 0
-    let stale = 0
-    for (const row of rows) {
-      const tone = toneOf(row)
-      if (tone === 'moving') moving++
-      else if (tone === 'idle') idle++
-      else stale++
-    }
-    return { moving, idle, stale }
-  }, [rows])
+  const shown = useMemo(
+    () => (filter === 'all' ? vehicles : vehicles.filter((v) => v.status === filter)),
+    [vehicles, filter],
+  )
 
-  // Read once, when the map first mounts — recomputing it every poll would drag
+  const plotted = useMemo(() => vehicles.filter((v) => v.position !== null), [vehicles])
+
+  // Computed once from the first payload that has pins. Recomputing every poll would drag
   // the camera out from under the owner mid-look.
-  const center = useMemo(() => {
-    if (rows.length === 0) return NAGPUR
-    const sum = rows.reduce(
-      (acc, r) => ({ lat: acc.lat + r.lat, lng: acc.lng + r.lng }),
+  const centerRef = useRef<{ lat: number; lng: number } | null>(null)
+  if (centerRef.current === null && plotted.length > 0) {
+    const sum = plotted.reduce(
+      (acc, v) => ({ lat: acc.lat + v.position!.lat, lng: acc.lng + v.position!.lng }),
       { lat: 0, lng: 0 },
     )
-    return { lat: sum.lat / rows.length, lng: sum.lng / rows.length }
-  }, [rows])
+    centerRef.current = { lat: sum.lat / plotted.length, lng: sum.lng / plotted.length }
+  }
 
   const selected = useMemo(
-    () => rows.find(r => r.driver_id === selectedId) ?? null,
-    [rows, selectedId],
+    () => vehicles.find((v) => v.vehicle_id === selectedId) ?? null,
+    [vehicles, selectedId],
   )
 
   const holdMap = useCallback((map: google.maps.Map | null) => {
     mapRef.current = map
   }, [])
 
-  const focusOn = useCallback((row: LiveRow) => {
-    setSelectedId(row.driver_id)
+  const focusOn = useCallback((v: TrackedVehicle) => {
+    setSelectedId(v.vehicle_id)
     const map = mapRef.current
-    if (!map) return
-    map.panTo({ lat: row.lat, lng: row.lng })
+    if (!map || !v.position) return
+    map.panTo({ lat: v.position.lat, lng: v.position.lng })
     if ((map.getZoom() ?? 0) < FOCUS_ZOOM) map.setZoom(FOCUS_ZOOM)
   }, [])
 
-  const loading = snap === null && err === null
+  const s = data?.summary
+  const loading = data === null && err === null
   /** An error with nothing to fall back on — the very first poll failed. */
-  const coldError = snap === null ? err : null
+  const coldError = data === null ? err : null
 
-  const subtitle = snap === null
-    ? 'Locating trucks…'
-    : `${rows.length} of ${snap.total} ${snap.total === 1 ? 'truck' : 'trucks'} reporting`
-      + ` · updated ${timeAgo(updatedAt)}`
+  const subtitle = data
+    ? `${s!.vehicle_count} ${s!.vehicle_count === 1 ? 'truck' : 'trucks'} · ${plotted.length} reporting · updated ${timeAgo(fetchedAt)}`
+    : 'Loading your fleet…'
 
   return (
-    <div className="h-[calc(100vh-3.5rem)] lg:h-screen flex flex-col bg-gray-50">
-      {/* Header strip: the fleet at a glance, before any pin is read. */}
+    <div className="min-h-[calc(100vh-3.5rem)] lg:min-h-screen flex flex-col bg-gray-50">
       <div className="shrink-0 bg-white border-b border-gray-200 px-4 lg:px-6 pt-4">
-        <PageHeader
-          title="Live Map"
-          subtitle={subtitle}
-          actions={
-            <div className="flex flex-wrap items-center justify-end gap-2">
-              <CountPill dot="bg-blue-500" label="moving" n={counts.moving} />
-              <CountPill dot="bg-gray-400" label="idle" n={counts.idle} />
-              <CountPill dot="bg-amber-500" label="stale" n={counts.stale} />
-            </div>
-          }
-        />
+        <PageHeader title="Live Fleet" subtitle={subtitle} />
       </div>
 
-      {/* A failed poll after a good one keeps the last known pins on screen. */}
-      {err && snap && (
+      {/* A failed poll AFTER a good one keeps the last known board on screen — a blank
+          dashboard during a transient network blip is worse than slightly stale numbers. */}
+      {err && data && (
         <div className="shrink-0 px-4 lg:px-6 pt-3">
-          <ErrorNote message={`${err} — showing the last known positions.`} />
+          <ErrorNote message={`${err} — showing the last successful update (${timeAgo(fetchedAt)}).`} />
         </div>
       )}
 
-      <div className="flex-1 min-h-0 flex flex-col lg:flex-row">
-        {/* List panel */}
-        <aside className="order-2 lg:order-1 w-full lg:w-80 xl:w-96 lg:shrink-0 flex-1 lg:flex-none lg:h-full min-h-0 overflow-y-auto bg-white border-t lg:border-t-0 lg:border-r border-gray-200">
-          {loading && <Loading label="Locating trucks" />}
+      {coldError && (
+        <div className="px-4 lg:px-6 py-6">
+          <ErrorNote message={coldError} />
+        </div>
+      )}
 
-          {coldError && (
-            <div className="p-3">
-              <ErrorNote message={coldError} />
-            </div>
-          )}
+      {loading && <Loading label="Locating your trucks" />}
 
-          {snap && rows.length === 0 && (
-            <Empty
-              title="No trucks reporting"
-              hint="Positions appear here as soon as a driver's app is online and sending its location."
+      {data && (
+        <>
+          {/* The fleet at a glance, before any pin is read. */}
+          <div className="shrink-0 px-4 lg:px-6 py-4 grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-3">
+            <Stat label="Trucks" value={s!.vehicle_count} sub={`${s!.on_trip} on a trip`} icon={<Truck className="w-4 h-4" />} />
+            <Stat label="Moving" value={s!.moving} tone={s!.moving > 0 ? 'good' : 'neutral'} icon={<Gauge className="w-4 h-4" />} />
+            <Stat label="Stopped" value={s!.idle} icon={<MapPin className="w-4 h-4" />} />
+            <Stat
+              label="No signal"
+              value={s!.no_signal}
+              tone={s!.no_signal > 0 ? 'warn' : 'neutral'}
+              sub={s!.no_signal > 0 ? 'Should be reporting' : 'All reporting'}
+              icon={<Radio className="w-4 h-4" />}
             />
-          )}
+            <Stat
+              label="Open alerts"
+              value={s!.alert_count}
+              tone={s!.alert_count > 0 ? 'bad' : 'good'}
+              icon={<AlertTriangle className="w-4 h-4" />}
+            />
+            <Stat
+              label="Fuel on road"
+              value={inr(s!.trip_fuel_cost_inr)}
+              sub={`${s!.driven_km.toLocaleString('en-IN')} km driven`}
+              icon={<Fuel className="w-4 h-4" />}
+            />
+          </div>
 
-          {rows.length > 0 && (
-            <div className="p-3 space-y-2">
-              {rows.map(row => (
-                <VehicleCard
-                  key={row.driver_id}
-                  row={row}
-                  selected={row.driver_id === selectedId}
-                  onSelect={() => focusOn(row)}
+          {s!.vehicle_count === 0 ? (
+            <div className="px-4 lg:px-6 pb-6">
+              <Card>
+                <Empty
+                  title="No trucks in your fleet yet"
+                  hint="Add a truck under Trucks, then assign it to a driver and a booking to see it here."
                 />
-              ))}
-            </div>
-          )}
-        </aside>
-
-        {/* Map pane */}
-        <div className="order-1 lg:order-2 relative w-full h-[45vh] shrink-0 lg:h-full lg:flex-1 lg:shrink lg:min-w-0 bg-gray-100">
-          {!GOOGLE_MAPS_BROWSER_KEY ? (
-            <MapKeyMissing />
-          ) : loading ? (
-            <div className="h-full flex items-center justify-center">
-              <Loading label="Loading map" />
-            </div>
-          ) : coldError ? (
-            <div className="h-full flex items-center justify-center p-6">
-              <div className="max-w-sm w-full">
-                <ErrorNote message={coldError} />
-              </div>
+              </Card>
             </div>
           ) : (
-            <APIProvider apiKey={GOOGLE_MAPS_BROWSER_KEY}>
-              <GoogleMap
-                defaultCenter={center}
-                defaultZoom={5}
-                mapId={GOOGLE_MAPS_MAP_ID || undefined}
-                gestureHandling="greedy"
-                disableDefaultUI
-                zoomControl
-                clickableIcons={false}
-                style={{ width: '100%', height: '100%' }}
-              >
-                <MapHandle onMap={holdMap} />
-                {rows.map(row => (
-                  <AdvancedMarker
-                    key={row.driver_id}
-                    position={{ lat: row.lat, lng: row.lng }}
-                    title={row.rc_number ?? row.driver_name ?? 'Truck'}
-                    zIndex={row.driver_id === selectedId ? 2 : 1}
-                    onClick={() => focusOn(row)}
-                    // The pin is a dot, not a teardrop: sit it ON the fix rather
-                    // than the default bottom-centre anchor.
-                    anchorLeft="-50%"
-                    anchorTop="-50%"
-                  >
-                    <TruckPin
-                      tone={toneOf(row)}
-                      heading={row.heading}
-                      selected={row.driver_id === selectedId}
-                    />
-                  </AdvancedMarker>
-                ))}
-              </GoogleMap>
-            </APIProvider>
-          )}
+            <div className="flex-1 min-h-0 flex flex-col lg:flex-row gap-4 px-4 lg:px-6 pb-6">
+              {/* ── The list. Every truck, always. ── */}
+              <div className="lg:w-[26rem] shrink-0 flex flex-col min-h-0">
+                <div className="flex flex-wrap gap-1.5 mb-3">
+                  {FILTERS.map((f) => {
+                    const n = f.key === 'all' ? vehicles.length : vehicles.filter((v) => v.status === f.key).length
+                    const active = filter === f.key
+                    return (
+                      <button
+                        key={f.key}
+                        type="button"
+                        onClick={() => setFilter(f.key)}
+                        className={`text-xs font-medium px-2.5 py-1 rounded-full border transition-colors ${
+                          active
+                            ? 'bg-gray-900 text-white border-gray-900'
+                            : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'
+                        }`}
+                      >
+                        {f.label} <span className="tabular-nums opacity-70">{n}</span>
+                      </button>
+                    )
+                  })}
+                </div>
 
-          {/* Advanced markers need a vector map id; without one the canvas draws
-              but every pin is silently dropped, so say so rather than show an
-              empty map. */}
-          {GOOGLE_MAPS_BROWSER_KEY && !GOOGLE_MAPS_MAP_ID && (
-            <div className="absolute top-3 left-3 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-800 shadow-sm">
-              Map ID not configured — pins may not render
+                <Card className="flex-1 min-h-0 overflow-y-auto divide-y divide-gray-100">
+                  {shown.length === 0 ? (
+                    <Empty title="No trucks match this filter" hint="Clear the filter to see the whole fleet." />
+                  ) : (
+                    shown.map((v) => (
+                      <VehicleRow
+                        key={v.vehicle_id}
+                        vehicle={v}
+                        selected={v.vehicle_id === selectedId}
+                        onSelect={() => focusOn(v)}
+                      />
+                    ))
+                  )}
+                </Card>
+              </div>
+
+              {/* ── The map. ── */}
+              <div className="flex-1 min-h-[24rem] lg:min-h-0 relative">
+                <FleetMap vehicles={plotted} selectedId={selectedId} onHoldMap={holdMap} onSelect={focusOn} />
+
+                {selected && (
+                  <div className="absolute top-3 right-3 w-full max-w-sm">
+                    <VehicleDetail vehicle={selected} onClose={() => setSelectedId(null)} />
+                  </div>
+                )}
+
+                {/* Trucks that cannot be drawn are still accounted for, right on the map,
+                    so the pin count never silently under-reports the fleet. */}
+                {plotted.length < vehicles.length && (
+                  <div className="absolute bottom-3 left-3 rounded-lg bg-white/95 border border-gray-200 shadow-sm px-3 py-2 text-xs text-gray-600">
+                    {vehicles.length - plotted.length} of {vehicles.length} trucks have no live
+                    position — see the list for why.
+                  </div>
+                )}
+              </div>
             </div>
           )}
-
-          {selected && (
-            <SelectedCard row={selected} onClose={() => setSelectedId(null)} />
-          )}
-        </div>
-      </div>
+        </>
+      )}
     </div>
   )
 }
 
-// ── Pieces ────────────────────────────────────────────────────
+// ── List row ──────────────────────────────────────────────────
 
-function CountPill({ dot, label, n }: { dot: string; label: string; n: number }) {
-  return (
-    <span className="inline-flex items-center gap-1.5 rounded-full border border-gray-200 bg-white px-2.5 py-1 text-xs">
-      <span className={`w-2 h-2 rounded-full ${dot}`} />
-      <span className="font-semibold text-gray-900 tabular-nums">{n}</span>
-      <span className="text-gray-500">{label}</span>
-    </span>
-  )
-}
-
-function StaleBadge() {
-  return (
-    <span className="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">
-      Stale
-    </span>
-  )
-}
-
-function VehicleCard({
-  row, selected, onSelect,
+function VehicleRow({
+  vehicle, selected, onSelect,
 }: {
-  row: LiveRow
+  vehicle: TrackedVehicle
   selected: boolean
   onSelect: () => void
 }) {
-  const tone = toneOf(row)
-  const speedTone =
-    tone === 'moving' ? 'text-blue-700'
-    : tone === 'stale' ? 'text-amber-700'
-    : 'text-gray-500'
+  const st = STATUS[vehicle.status]
+  const worst = vehicle.alerts.find((a) => a.severity === 'critical') ?? vehicle.alerts[0] ?? null
 
   return (
     <button
       type="button"
       onClick={onSelect}
-      className={`w-full text-left rounded-xl border p-3 transition-colors ${
-        selected
-          ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-500'
-          : 'border-gray-200 bg-white hover:bg-gray-50'
+      className={`w-full text-left px-4 py-3 transition-colors ${
+        selected ? 'bg-blue-50' : 'hover:bg-gray-50'
       }`}
     >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <div className="text-sm font-semibold text-gray-900 truncate">
-            {row.rc_number ?? 'Truck not assigned'}
+          <div className="flex items-center gap-2">
+            <span className={`w-2 h-2 rounded-full shrink-0 ${st.dot}`} />
+            <span className="font-semibold text-sm text-gray-900 truncate">{truckName(vehicle)}</span>
           </div>
-          <div className="text-xs text-gray-500 truncate">
-            {row.driver_name ?? 'Driver unnamed'}
-          </div>
+          <p className="text-xs text-gray-500 mt-0.5 truncate">
+            {vehicle.maker_model ?? 'Model not recorded'}
+            {vehicle.driver?.name ? ` · ${vehicle.driver.name}` : ''}
+          </p>
         </div>
-        {row.stale && <StaleBadge />}
+        <span className={`shrink-0 text-[11px] font-medium px-2 py-0.5 rounded-full border ${st.chip}`}>
+          {vehicle.status_label}
+        </span>
       </div>
 
-      <div className="mt-2 flex items-center justify-between gap-2 text-xs">
-        <span className={`inline-flex items-center gap-1.5 font-medium tabular-nums ${speedTone}`}>
-          <span
-            className="w-1.5 h-1.5 rounded-full"
-            style={{ background: PIN_COLOR[tone] }}
-          />
-          {speedLabel(row.speed_kmh)}
-        </span>
-        <span className="text-gray-400">{timeAgo(row.recorded_at)}</span>
+      {/* The reason line. This is the row's real payload for anything not simply "moving":
+          it turns a blank cell into something the owner can act on. */}
+      {vehicle.data_health.level !== 'ok' && (
+        <p className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded-md px-2 py-1.5">
+          {vehicle.data_health.reason}
+        </p>
+      )}
+
+      {vehicle.booking && (
+        <p className="mt-2 text-xs text-gray-600 truncate">
+          <RouteIcon className="w-3 h-3 inline mr-1 -mt-0.5 text-gray-400" />
+          {vehicle.booking.source_address ?? 'Pickup'} → {vehicle.booking.dest_address ?? 'Drop'}
+        </p>
+      )}
+
+      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-500 tabular-nums">
+        {vehicle.position && (
+          <span>{Math.round(vehicle.position.speed_kmh ?? 0)} km/h</span>
+        )}
+        {vehicle.trip && <span>{vehicle.trip.driven_km} km driven</span>}
+        {vehicle.fuel.trip && <span>{inr(vehicle.fuel.trip.total_cost_inr)} fuel</span>}
+        {!vehicle.trip && !vehicle.position && (
+          <span>{vehicle.fuel.mileage_kmpl} kmpl rated</span>
+        )}
       </div>
+
+      {worst && (
+        <p className={`mt-2 text-xs px-2 py-1.5 rounded-md border ${
+          worst.severity === 'critical'
+            ? 'bg-red-50 border-red-100 text-red-800'
+            : 'bg-orange-50 border-orange-100 text-orange-800'
+        }`}>
+          <AlertTriangle className="w-3 h-3 inline mr-1 -mt-0.5" />
+          {worst.message ?? worst.type}
+          {vehicle.alerts.length > 1 && ` (+${vehicle.alerts.length - 1} more)`}
+        </p>
+      )}
     </button>
   )
 }
 
-/** Detail for the selected truck, floated over the map. */
-function SelectedCard({ row, onClose }: { row: LiveRow; onClose: () => void }) {
-  const tone = toneOf(row)
+// ── Detail panel ──────────────────────────────────────────────
+
+function VehicleDetail({ vehicle, onClose }: { vehicle: TrackedVehicle; onClose: () => void }) {
+  const t = vehicle.trip
+  const f = vehicle.fuel
+
   return (
-    <div className="absolute bottom-3 left-3 right-3 sm:right-auto sm:w-72">
-      <Card className="p-3">
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0">
-            <div className="text-sm font-semibold text-gray-900 truncate">
-              {row.rc_number ?? 'Truck not assigned'}
-            </div>
-            <div className="text-xs text-gray-500 truncate">
-              {row.driver_name ?? 'Driver unnamed'}
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-            className="shrink-0 -mr-1 -mt-1 p-1 text-gray-400 hover:text-gray-700 transition-colors"
-          >
-            <X className="w-4 h-4" />
-          </button>
+    <Card className="shadow-lg">
+      <div className="flex items-start justify-between gap-2 px-4 py-3 border-b border-gray-100">
+        <div className="min-w-0">
+          <h2 className="text-sm font-semibold text-gray-900 truncate">{truckName(vehicle)}</h2>
+          <p className="text-xs text-gray-500 truncate">
+            {vehicle.maker_model ?? 'Model not recorded'}
+            {vehicle.emission_norm ? ` · ${vehicle.emission_norm}` : ''}
+          </p>
         </div>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close truck details"
+          className="shrink-0 text-gray-400 hover:text-gray-600"
+        >
+          <X className="w-4 h-4" />
+        </button>
+      </div>
 
-        <div className="mt-3 grid grid-cols-2 gap-3">
-          <div>
-            <div className="text-xs text-gray-400 uppercase tracking-wide">Speed</div>
-            <div className="mt-0.5 text-sm font-semibold text-gray-900 tabular-nums">
-              {speedLabel(row.speed_kmh)}
-            </div>
-          </div>
-          <div>
-            <div className="text-xs text-gray-400 uppercase tracking-wide">Last seen</div>
-            <div className="mt-0.5 text-sm font-semibold text-gray-900">
-              {timeAgo(row.recorded_at)}
-            </div>
-          </div>
-        </div>
+      <div className="px-4 py-3 space-y-3 max-h-[60vh] overflow-y-auto">
+        <p className="text-xs text-gray-600">{vehicle.data_health.reason}</p>
 
-        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-gray-100 pt-2.5">
-          <span
-            className="inline-flex items-center gap-1.5 text-xs font-medium capitalize"
-            style={{ color: PIN_COLOR[tone] }}
-          >
-            <span className="w-1.5 h-1.5 rounded-full" style={{ background: PIN_COLOR[tone] }} />
-            {tone}
-          </span>
-          {row.booking_id && (
-            <span className="rounded-full bg-purple-100 px-2 py-0.5 text-xs font-medium text-purple-800">
-              On a trip
-            </span>
+        {vehicle.driver && (
+          <div className="text-xs">
+            <span className="text-gray-400">Driver</span>
+            <p className="text-gray-900 font-medium">
+              {vehicle.driver.name ?? 'Name not on file'}
+              {vehicle.driver.phone && (
+                <a href={`tel:${vehicle.driver.phone}`} className="ml-2 text-blue-600 hover:underline font-normal">
+                  {vehicle.driver.phone}
+                </a>
+              )}
+            </p>
+          </div>
+        )}
+
+        {t ? (
+          <div className="grid grid-cols-2 gap-2">
+            <Metric label="Driven" value={`${t.driven_km} km`} />
+            <Metric label="Moving" value={`${t.moving_hours} h`} />
+            <Metric label="Idle" value={`${t.idle_hours} h`} />
+            <Metric
+              label="Avg speed"
+              value={t.avg_moving_speed_kmh === null ? '—' : `${t.avg_moving_speed_kmh} km/h`}
+            />
+            <Metric label="Top speed" value={`${t.max_speed_kmh} km/h`} />
+            <Metric label="Stops" value={String(t.stop_count)} />
+            {t.night_hours > 0 && (
+              <Metric label="Night driving" value={`${t.night_hours} h`} icon={<Moon className="w-3 h-3" />} />
+            )}
+            {t.max_deviation_m > 0 && (
+              <Metric label="Max off-route" value={`${t.max_deviation_m} m`} />
+            )}
+          </div>
+        ) : (
+          <p className="text-xs text-gray-500">
+            No trip telemetry yet. Distance, idle time and fuel start accruing once the driver
+            begins sending location.
+          </p>
+        )}
+
+        {/* Fuel is shown for EVERY truck — the rated figure is a property of the asset, not
+            of the trip — with the basis stated so a class average never masquerades as
+            measured data. */}
+        <div className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2">
+          <div className="flex items-center gap-1.5 text-xs font-medium text-gray-700">
+            <Fuel className="w-3.5 h-3.5 text-gray-400" />
+            Fuel
+          </div>
+          {f.trip ? (
+            <p className="mt-1 text-sm font-semibold text-gray-900 tabular-nums">
+              {inr(f.trip.total_cost_inr)}
+              <span className="ml-1.5 text-xs font-normal text-gray-500">
+                {f.trip.litres} L over {f.trip.distance_km} km
+              </span>
+            </p>
+          ) : (
+            <p className="mt-1 text-sm text-gray-500">Not on a running trip.</p>
           )}
-          <span className="ml-auto text-xs text-gray-400">{dateTime(row.recorded_at)}</span>
+          <p className="mt-1 text-[11px] text-gray-500">
+            {f.mileage_kmpl} kmpl · {f.basis_note}
+          </p>
         </div>
-      </Card>
+
+        {vehicle.alerts.length > 0 && (
+          <div className="space-y-1.5">
+            {vehicle.alerts.map((a) => (
+              <p
+                key={a.id}
+                className={`text-xs px-2 py-1.5 rounded-md border ${
+                  a.severity === 'critical'
+                    ? 'bg-red-50 border-red-100 text-red-800'
+                    : a.severity === 'warning'
+                      ? 'bg-orange-50 border-orange-100 text-orange-800'
+                      : 'bg-blue-50 border-blue-100 text-blue-800'
+                }`}
+              >
+                {a.message ?? a.type}
+                <span className="opacity-60"> · {timeAgo(a.created_at)}</span>
+              </p>
+            ))}
+          </div>
+        )}
+      </div>
+    </Card>
+  )
+}
+
+function Metric({ label, value, icon }: { label: string; value: string; icon?: React.ReactNode }) {
+  return (
+    <div>
+      <span className="text-[11px] text-gray-400 flex items-center gap-1">{icon}{label}</span>
+      <p className="text-sm font-semibold text-gray-900 tabular-nums">{value}</p>
     </div>
   )
 }
 
-/** Hands the map instance up so a card click can pan imperatively. */
-function MapHandle({ onMap }: { onMap: (map: google.maps.Map | null) => void }) {
+// ── Map ───────────────────────────────────────────────────────
+
+function MapUnavailable({ detail }: { detail: string }) {
+  return (
+    <div className="h-full w-full rounded-xl border border-gray-200 bg-white flex items-center justify-center p-6 text-center">
+      <div className="max-w-xs">
+        <MapPin className="w-6 h-6 text-gray-300 mx-auto mb-2" />
+        <p className="text-sm font-medium text-gray-900">Map unavailable</p>
+        <p className="text-xs text-gray-500 mt-1">{detail}</p>
+        <p className="text-xs text-gray-400 mt-2">
+          Truck status, telemetry and alerts on the left are unaffected.
+        </p>
+      </div>
+    </div>
+  )
+}
+
+function FleetMap({
+  vehicles, selectedId, onHoldMap, onSelect,
+}: {
+  vehicles: TrackedVehicle[]
+  selectedId: string | null
+  onHoldMap: (map: google.maps.Map | null) => void
+  onSelect: (v: TrackedVehicle) => void
+}) {
+  // Three independent detectors, because a Maps failure surfaces differently depending on
+  // the cause: gm_authFailure (no throw), a thrown render error (the boundary), and — the
+  // only one that catches everything — whether tiles ever actually painted.
+  const authFailed = useMapsAuthFailed()
+  const { timedOut, onReady } = useMapRenderWatchdog()
+
+  // A missing browser key must degrade to a usable page, not a crash — the list beside
+  // this map is fully functional without any map at all.
+  if (!GOOGLE_MAPS_BROWSER_KEY) {
+    return <MapUnavailable detail="NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY is not configured for this deployment." />
+  }
+
+  if (authFailed || timedOut) {
+    return (
+      <MapUnavailable detail="Google rejected the map key for this site. It is usually the key's allowed-referrer list, an unactivated API, or an exhausted quota." />
+    )
+  }
+
+  const center = vehicles[0]?.position
+    ? { lat: vehicles[0].position.lat, lng: vehicles[0].position.lng }
+    : NAGPUR
+
+  return (
+    <div className="h-full w-full rounded-xl overflow-hidden border border-gray-200">
+      <MapBoundary fallback={<MapUnavailable detail="The live map could not be drawn. This is a display problem only." />}>
+        <APIProvider apiKey={GOOGLE_MAPS_BROWSER_KEY}>
+          <GoogleMap
+            defaultCenter={center}
+            defaultZoom={vehicles.length ? 6 : 5}
+            mapId={GOOGLE_MAPS_MAP_ID || undefined}
+            gestureHandling="greedy"
+            disableDefaultUI
+            style={{ width: '100%', height: '100%' }}
+          >
+            <MapHandle onHoldMap={onHoldMap} onReady={onReady} />
+            {vehicles.map((v) => (
+              <AdvancedMarker
+                key={v.vehicle_id}
+                position={{ lat: v.position!.lat, lng: v.position!.lng }}
+                title={`${truckName(v)} — ${v.status_label}`}
+                onClick={() => onSelect(v)}
+              >
+                <TruckPin vehicle={v} selected={v.vehicle_id === selectedId} />
+              </AdvancedMarker>
+            ))}
+          </GoogleMap>
+        </APIProvider>
+      </MapBoundary>
+    </div>
+  )
+}
+
+/**
+ * Hands the imperative map instance up so the list can pan to a truck, and reports the
+ * first real paint so the watchdog can stand down.
+ *
+ * `tilesloaded` rather than the map instance merely existing: `useMap()` returns an object
+ * even when Google has refused the key and will never draw a thing.
+ */
+function MapHandle({
+  onHoldMap, onReady,
+}: {
+  onHoldMap: (m: google.maps.Map | null) => void
+  onReady: () => void
+}) {
   const map = useMap()
+
   useEffect(() => {
-    onMap(map)
-    return () => onMap(null)
-  }, [map, onMap])
+    onHoldMap(map)
+    return () => onHoldMap(null)
+  }, [map, onHoldMap])
+
+  useEffect(() => {
+    if (!map) return
+    const listener = map.addListener('tilesloaded', onReady)
+    return () => listener.remove()
+  }, [map, onReady])
+
   return null
 }
 
-function TruckPin({
-  tone, heading, selected,
-}: {
-  tone: Tone
-  heading: number | null
-  selected: boolean
-}) {
-  const color = PIN_COLOR[tone]
-  const size = selected ? 34 : 26
+function TruckPin({ vehicle, selected }: { vehicle: TrackedVehicle; selected: boolean }) {
+  const colour = STATUS[vehicle.status].pin ?? '#f59e0b'
+  const hasAlert = vehicle.alerts.length > 0
+  // Rotate to heading when the device reported one. Cheap Android GPS often omits heading
+  // while stationary, so an upright pin is the honest default rather than a stale angle.
+  const heading = vehicle.position?.heading ?? null
 
   return (
-    <div
-      style={{
-        position: 'relative',
-        width: size,
-        height: size,
-        borderRadius: '9999px',
-        background: color,
-        border: '2px solid #ffffff',
-        boxShadow: selected
-          ? '0 0 0 4px rgba(37, 99, 235, 0.25), 0 2px 6px rgba(0, 0, 0, 0.35)'
-          : '0 1px 4px rgba(0, 0, 0, 0.35)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-      }}
-    >
-      <Truck size={selected ? 18 : 14} color="#ffffff" strokeWidth={2.2} />
-
-      {/* Heading flag: a zero-size pivot at the pin centre, rotated, with the
-          arrow parked above it — so the triangle both orbits and turns. */}
-      {tone === 'moving' && heading !== null && (
+    <div className="relative" style={{ width: 28, height: 28 }}>
+      <div
+        style={{
+          width: 28,
+          height: 28,
+          borderRadius: '50%',
+          background: colour,
+          border: selected ? '3px solid #111827' : '2px solid white',
+          boxShadow: '0 1px 5px rgba(0,0,0,0.35)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          transform: heading === null ? undefined : `rotate(${heading}deg)`,
+        }}
+      >
+        <Truck className="w-3.5 h-3.5 text-white" />
+      </div>
+      {hasAlert && (
         <span
           style={{
-            position: 'absolute',
-            left: '50%',
-            top: '50%',
-            width: 0,
-            height: 0,
-            transform: `rotate(${heading}deg)`,
+            position: 'absolute', top: -2, right: -2,
+            width: 10, height: 10, borderRadius: '50%',
+            background: '#dc2626', border: '2px solid white',
           }}
-        >
-          <span
-            style={{
-              position: 'absolute',
-              left: -4,
-              top: -(size / 2 + 8),
-              width: 0,
-              height: 0,
-              borderLeft: '4px solid transparent',
-              borderRight: '4px solid transparent',
-              borderBottom: `6px solid ${color}`,
-            }}
-          />
-        </span>
+        />
       )}
-    </div>
-  )
-}
-
-function MapKeyMissing() {
-  return (
-    <div className="h-full flex items-center justify-center p-6">
-      <Card className="max-w-sm w-full p-6 text-center">
-        <div className="mx-auto w-10 h-10 rounded-xl bg-gray-100 flex items-center justify-center">
-          <MapIcon className="w-5 h-5 text-gray-400" strokeWidth={1.9} />
-        </div>
-        <p className="mt-3 text-sm font-medium text-gray-900">Map key not configured</p>
-        <p className="mt-1 text-xs text-gray-500">
-          Set <code className="font-mono">NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY</code> (and{' '}
-          <code className="font-mono">NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID</code>) to draw the map.
-          Live positions are still listed alongside.
-        </p>
-      </Card>
     </div>
   )
 }
