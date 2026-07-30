@@ -1,9 +1,9 @@
 'use client'
 
-import { useState, useEffect, FormEvent } from 'react'
+import { useState, useEffect, useRef, FormEvent } from 'react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
-import { getVehicles, createVehicle, updateVehicle, ApiError } from '@/lib/api'
+import { getVehicles, createVehicle, updateVehicle, deleteVehicle, ApiError } from '@/lib/api'
 import type { CreateVehicleInput, UpdateVehicleInput } from '@/lib/api'
 import type { Vehicle } from '@/lib/types'
 import Spinner from '@/components/spinner'
@@ -46,12 +46,114 @@ function toDateInput(value: string | null): string {
   return value ? value.slice(0, 10) : ''
 }
 
+/**
+ * The armed confirmation for one vehicle card.
+ *
+ * Its own component so the focus move can be a mount effect. Tapping Remove
+ * unmounts the trigger, which drops focus to <body> with nothing announced —
+ * on the destructive path that is the worst place to go quiet. As an
+ * alertdialog described by its own copy, with focus landing on the safe
+ * control, the consequence is read out before anything can be confirmed.
+ */
+function RemoveConfirm({
+  vehicle,
+  pending,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  vehicle: Vehicle
+  /** This vehicle's DELETE is the one in flight — show the spinner here. */
+  pending: boolean
+  /** A removal or a save is in flight — nothing here may be actioned. */
+  busy: boolean
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  const goBackRef = useRef<HTMLButtonElement>(null)
+  const descriptionId = `remove-vehicle-${vehicle.id}-description`
+
+  useEffect(() => {
+    goBackRef.current?.focus()
+  }, [])
+
+  /**
+   * Park focus on 'Go back' before the request starts. It is the one control
+   * here that stays focusable while inert, so focus survives the whole DELETE
+   * however the confirm was reached — including a keyboard user activating the
+   * destructive button, which is about to be disabled under them.
+   */
+  function handleConfirm() {
+    goBackRef.current?.focus()
+    onConfirm()
+  }
+
+  return (
+    <div
+      role="alertdialog"
+      aria-label={`Remove vehicle ${vehicle.rc_number}`}
+      aria-describedby={descriptionId}
+      className="mt-3 pt-3 border-t border-border/50 flex flex-col gap-3"
+    >
+      {/* Only consequences the code actually produces: the verification badge
+          recomputes from active vehicles and is persisted, and a revived truck
+          comes back unverified. Nothing here claims per-vehicle load matching —
+          a solo driver's trips name the driver, never the truck. */}
+      <p id={descriptionId} className="text-xs font-semibold text-foreground">
+        Remove {vehicle.rc_number}? It comes out of your garage, and if it is your only verified
+        truck your profile drops back to pending. Trips it has already run keep their record. You
+        can add it back later with the same RC number — it will need verifying again.
+      </p>
+      {/* Focus is parked on an inert button for the length of the request and
+          the only other signal is a spinner — say what is happening out loud. */}
+      <p aria-live="polite" className="sr-only">
+        {pending ? `Removing ${vehicle.rc_number}…` : ''}
+      </p>
+      <div className="flex gap-2">
+        <button
+          ref={goBackRef}
+          type="button"
+          // Inert rather than `disabled`: browsers blur a focused element the
+          // moment it is disabled, and this one holds focus for the whole
+          // removal — disabling it would drop focus to <body> mid-request.
+          aria-disabled={busy}
+          onClick={() => {
+            if (busy) return
+            onCancel()
+          }}
+          className={`flex-1 h-11 rounded-xl border border-border bg-card text-xs font-bold text-foreground transition-all ${
+            busy ? 'opacity-40' : 'active:scale-95'
+          }`}
+        >
+          Go back
+        </button>
+        <button
+          type="button"
+          onClick={handleConfirm}
+          disabled={busy}
+          className="flex-1 h-11 rounded-xl bg-red-500 text-white text-xs font-bold shadow-sm shadow-red-500/25 hover:bg-red-500/90 transition-all active:scale-95 disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+        >
+          {pending ? <><Spinner className="h-3.5 w-3.5" /> Removing…</> : 'Remove'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export default function VehicleStep() {
   const router = useRouter()
 
   const [vehicles, setVehicles] = useState<Vehicle[]>([])
   const [loading, setLoading] = useState(true)
   const [mode, setMode] = useState<FormMode>({ kind: 'closed' })
+  /** id of the vehicle whose removal is in flight — freezes the page while set. */
+  const [removingId, setRemovingId] = useState<string | null>(null)
+  /** id awaiting remove confirmation; removal is destructive, so never one-tap. */
+  const [confirmingId, setConfirmingId] = useState<string | null>(null)
+  /** Remove triggers by vehicle id, so focus can be handed back to the one that opened the confirm. */
+  const removeTriggers = useRef(new Map<string, HTMLButtonElement | null>())
+  /** Vehicle whose Remove trigger takes focus back once the confirm is gone. */
+  const refocusRef = useRef<string | null>(null)
 
   // Form state
   const [rcNumber, setRcNumber] = useState('')
@@ -62,6 +164,33 @@ export default function VehicleStep() {
   const [fuelType, setFuelType] = useState('')
   const [rcExpiry, setRcExpiry] = useState('')
   const [submitting, setSubmitting] = useState(false)
+
+  /**
+   * Mirrors of the two pieces of state the removal handler has to read *after*
+   * its await. The click-time closure is a snapshot of a page the driver may
+   * have moved on from, and acting on it either drops a vehicle registered in
+   * the meantime or closes a form opened in the meantime.
+   */
+  const vehiclesRef = useRef<Vehicle[]>(vehicles)
+  const modeRef = useRef<FormMode>(mode)
+  useEffect(() => {
+    vehiclesRef.current = vehicles
+    modeRef.current = mode
+  }, [vehicles, mode])
+
+  /**
+   * Closing the confirm unmounts the button holding focus. An alertdialog owes
+   * focus back to the control that opened it, so the trigger — remounted in the
+   * same commit that cleared `confirmingId` — takes it back here. Only the two
+   * paths that close WITHOUT removing arm this; on a successful removal there
+   * is no card, and no trigger, left to return to.
+   */
+  useEffect(() => {
+    const id = refocusRef.current
+    if (id === null) return
+    refocusRef.current = null
+    removeTriggers.current.get(id)?.focus()
+  }, [confirmingId])
 
   useEffect(() => {
     async function load() {
@@ -88,12 +217,26 @@ export default function VehicleStep() {
     setRcExpiry('')
   }
 
+  /**
+   * Dismissing an armed confirm unmounts the button holding focus. Neither of these
+   * paths autofocuses a form field, so without this focus would fall to <body> — the
+   * same drop the confirm's own focus handling exists to avoid. Hand it back to the
+   * trigger the prompt was armed from.
+   */
+  function dismissConfirm() {
+    if (confirmingId) refocusRef.current = confirmingId
+    setConfirmingId(null)
+  }
+
   function openCreate() {
     resetForm()
+    dismissConfirm()
     setMode({ kind: 'create' })
   }
 
   function openEdit(vehicle: Vehicle) {
+    // Only one destructive prompt at a time — opening the form dismisses it.
+    dismissConfirm()
     setRcNumber(vehicle.rc_number)
     setCapacityTons(vehicle.capacity_tons != null ? String(vehicle.capacity_tons) : '')
     setBodyType((vehicle.body_type as BodyType | null) ?? '')
@@ -185,6 +328,60 @@ export default function VehicleStep() {
     }
   }
 
+  /**
+   * Removal is a soft delete server-side (`is_active=false`), so the row is
+   * dropped locally instead of refetched — a removed vehicle simply stops
+   * coming back from `getVehicles`.
+   */
+  async function handleRemove(vehicle: Vehicle) {
+    setRemovingId(vehicle.id)
+    try {
+      await deleteVehicle(vehicle.id)
+
+      // Everything below runs after an await, so it reads the list and the form
+      // mode as they are NOW. Removing this one row is a functional update —
+      // writing back a filtered copy of the click-time array would silently
+      // delete anything registered while the request was in flight.
+      setVehicles(prev => prev.filter(v => v.id !== vehicle.id))
+      const remaining = vehiclesRef.current.filter(v => v.id !== vehicle.id)
+      const currentMode = modeRef.current
+      // Keep the mirror honest until the commit lands.
+      vehiclesRef.current = remaining
+
+      setConfirmingId(null)
+      toast.success(`${vehicle.rc_number} removed`)
+
+      if (remaining.length === 0 && currentMode.kind !== 'create') {
+        // Nothing left to list. Land on the same 'register your first vehicle'
+        // form the first load shows, rather than a bare page whose Next button
+        // can only refuse.
+        resetForm()
+        setMode({ kind: 'create' })
+      } else if (currentMode.kind === 'edit' && currentMode.vehicle.id === vehicle.id) {
+        // The form was bound to a vehicle that no longer exists. Only ever the
+        // removed one — a form the driver has since opened for a different
+        // truck still holds what they typed and is left alone.
+        closeForm()
+      }
+    } catch (err: unknown) {
+      // A truck mid-trip cannot be removed. The server's sentence explains why,
+      // so show it — this is a legitimate refusal, not a failed request.
+      if (err instanceof ApiError && err.code === 'VEHICLE_IN_USE') {
+        // The card survives a refusal, so the confirm closed without removing —
+        // focus goes back to the trigger rather than to <body>.
+        refocusRef.current = vehicle.id
+        setConfirmingId(null)
+        toast.error(err.message)
+        return
+      }
+      toast.error(
+        err instanceof ApiError || err instanceof Error ? err.message : 'Failed to remove vehicle',
+      )
+    } finally {
+      setRemovingId(null)
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20">
@@ -195,6 +392,21 @@ export default function VehicleStep() {
 
   const isEditing = mode.kind === 'edit'
   const formOpen = mode.kind !== 'closed'
+  /**
+   * A removal is in flight. The whole page freezes, not just its own card:
+   * Next in particular counts a list that is about to shrink, and would walk
+   * the driver on to the licence step moments before they have no vehicle at
+   * all. Back stays live so a hung request can never trap them here.
+   */
+  const removing = removingId !== null
+  /**
+   * Either mutation is in flight, and the freeze has to run both ways. A save
+   * already blocks on a removal; without the mirror image, Remove could be
+   * confirmed on the truck being saved — the shorter DELETE lands first, the
+   * list empties, and the PUT's own post-await cleanup then toasts success for
+   * a vehicle that is gone and closes the form over an empty page.
+   */
+  const mutating = removing || submitting
 
   return (
     <div className="px-4 py-6 flex flex-col items-center">
@@ -216,6 +428,8 @@ export default function VehicleStep() {
           <div className="flex flex-col gap-3">
             {vehicles.map(v => {
               const beingEdited = isEditing && mode.vehicle.id === v.id
+              const isRemoving = removingId === v.id
+              const isConfirming = confirmingId === v.id
               return (
                 <div
                   key={v.id}
@@ -242,11 +456,34 @@ export default function VehicleStep() {
                       <button
                         type="button"
                         onClick={() => (beingEdited ? closeForm() : openEdit(v))}
+                        disabled={removing}
                         aria-label={`Edit vehicle ${v.rc_number}`}
-                        className="text-[11px] font-semibold text-primary hover:text-primary/80 px-2 py-1 rounded-lg hover:bg-primary/10 transition-colors active:scale-95"
+                        className="inline-flex items-center justify-center min-h-11 px-2.5 text-[11px] font-semibold text-primary hover:text-primary/80 rounded-lg hover:bg-primary/10 transition-colors active:scale-95 disabled:opacity-40 disabled:pointer-events-none"
                       >
                         {beingEdited ? 'Cancel' : 'Edit'}
                       </button>
+                      {/* Quiet until it is armed: a sold or written-off truck has
+                          to be removable, but it must never be the easy tap.
+                          Quiet is about colour, not size — the first tap is the
+                          one that gets mis-hit, so it is a full-height target
+                          set well clear of Edit rather than a sliver beside it. */}
+                      {!isConfirming && (
+                        <button
+                          ref={el => {
+                            removeTriggers.current.set(v.id, el)
+                            return () => {
+                              removeTriggers.current.delete(v.id)
+                            }
+                          }}
+                          type="button"
+                          onClick={() => setConfirmingId(v.id)}
+                          disabled={mutating}
+                          aria-label={`Remove vehicle ${v.rc_number}`}
+                          className="inline-flex items-center justify-center min-h-11 px-2.5 ml-2 text-[11px] font-semibold text-muted-foreground hover:text-red-500 rounded-lg hover:bg-red-500/10 transition-colors active:scale-95 disabled:opacity-40 disabled:pointer-events-none"
+                        >
+                          Remove
+                        </button>
+                      )}
                     </div>
                   </div>
                   <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
@@ -256,6 +493,22 @@ export default function VehicleStep() {
                     {v.maker_model && <span>{v.maker_model}</span>}
                     {v.fuel_type && <span className="capitalize">{v.fuel_type}</span>}
                   </div>
+
+                  {/* Two-step confirm, inline in the card — same shape and the
+                      same touch targets as the fleet-invite accept. No dialog
+                      primitive exists here. */}
+                  {isConfirming && (
+                    <RemoveConfirm
+                      vehicle={v}
+                      pending={isRemoving}
+                      busy={mutating}
+                      onCancel={() => {
+                        refocusRef.current = v.id
+                        setConfirmingId(null)
+                      }}
+                      onConfirm={() => handleRemove(v)}
+                    />
+                  )}
                 </div>
               )
             })}
@@ -267,7 +520,8 @@ export default function VehicleStep() {
           <button
             type="button"
             onClick={openCreate}
-            className="w-full rounded-xl border-2 border-dashed border-border px-4 py-3 text-sm font-medium text-muted-foreground hover:border-primary/50 hover:text-primary transition-colors flex items-center justify-center gap-2"
+            disabled={removing}
+            className="w-full rounded-xl border-2 border-dashed border-border px-4 py-3 text-sm font-medium text-muted-foreground hover:border-primary/50 hover:text-primary transition-colors flex items-center justify-center gap-2 disabled:opacity-40 disabled:pointer-events-none"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
@@ -289,7 +543,8 @@ export default function VehicleStep() {
                 <button
                   type="button"
                   onClick={closeForm}
-                  className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                  disabled={removing}
+                  className="text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40 disabled:pointer-events-none"
                 >
                   Cancel
                 </button>
@@ -406,7 +661,7 @@ export default function VehicleStep() {
 
               <button
                 type="submit"
-                disabled={submitting}
+                disabled={submitting || removing}
                 className="w-full rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-primary-foreground hover:bg-primary/90 active:scale-[0.98] disabled:opacity-60 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
               >
                 {submitting
@@ -435,7 +690,8 @@ export default function VehicleStep() {
               }
               router.push('/onboarding/license')
             }}
-            className="flex-1 rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-primary-foreground hover:bg-primary/90 active:scale-[0.98] transition-all"
+            disabled={removing}
+            className="flex-1 rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-primary-foreground hover:bg-primary/90 active:scale-[0.98] transition-all disabled:opacity-60 disabled:cursor-not-allowed"
           >
             Next
           </button>

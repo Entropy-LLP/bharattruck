@@ -24,7 +24,7 @@
     changed on 2026-07-28 (CD went from silently dead to green); §5.6 is the evidence-based answer to
     "how far along are we really" — the short version is that the platform is built but no trip has
     ever traversed the real production path.
-- [§6 — Claude Browser QA harness](#6--claude-browser-qa-harness)
+- [§6 — Browser QA harness](#6--browser-qa-harness)
 - [§7 — Runbooks](#7--runbooks)
 - [Appendix A — Audit trail & rulings](#appendix-a--audit-trail--rulings)
 - [Appendix B — Engineer scorecard](#appendix-b--engineer-scorecard)
@@ -67,7 +67,7 @@ file documents:
    file's "current branches" table into a fifth handoff-chain document.
 
 A stale Bible costs the next session more tokens re-discovering context than the two minutes it takes
-to add a line. This is the same rule `docs/CLAUDE_BROWSER_HARNESS.md` used to enforce on its own (much
+to add a line. This is the same rule the old browser-harness document used to enforce on its own (much
 narrower) scope — it's now just enforced here, for everything.
 
 ### 0.3 Why this file exists (so nobody re-litigates the consolidation)
@@ -455,7 +455,7 @@ merged to `main`, CI green, reachable + demoable through the UI, no stub left be
 
 > **Before touching any tracking/maps code:** read §3.1 in full. §3.1 is **FROZEN** and wins over §3.3
 > and everything else on tracking/maps specifics. Never silently fork a decision — to change anything
-> locked in §3.1, append a new `D-xxx` to §3.2. Follow §3.3: one phase per Claude session, phases 0-6,
+> locked in §3.1, append a new `D-xxx` to §3.2. Follow §3.3: one phase per working session, phases 0-6,
 > strictly sequential. Phase 0 is a hard gate before any map code.
 
 ### Frozen facts (quick reference — full detail in §3.1-3.2)
@@ -844,7 +844,7 @@ were all confirmed together on **2026-06-18**._
 ### 3.3 — SESSIONS: build playbook (phases 0-6)
 
 _Source: `docs/MAPS_TRACKING_SESSIONS.md`. A per-phase, copy-paste session playbook for building the
-Maps & Tracking feature **ONE phase per Claude session**, phases **0 → 6, strictly sequential**. §3.1
+Maps & Tracking feature **ONE phase per working session**, phases **0 → 6, strictly sequential**. §3.1
 (CONTRACT) is FROZEN and wins on any conflict with this playbook — this section is operational (how to
 run each session), §3.1 is normative (what is locked)._
 
@@ -1641,17 +1641,17 @@ The next priorities shift from "prove it runs" to "make it safe + real":
 
 ---
 
-## §6 — Claude Browser QA harness
+## §6 — Browser QA harness
 
-_Sources: `docs/CLAUDE_BROWSER_HARNESS.md` + `docs/CLAUDE_BROWSER_CREDS.md`, originally created
-2026-07-18. Standing process — still self-iterating per §0.2. **For current known bugs, see §5.4** —
+_Originally created 2026-07-18 from two separate harness documents, folded in here on 2026-07-20
+and since removed. Standing process — still self-iterating per §0.2. **For current known bugs, see §5.4** —
 they used to live here; keeping one list instead of two avoids exactly the drift this whole
 consolidation exists to fix. This section stays focused on *methodology and tool gotchas*, which don't
 go stale the same way a bug list does._
 
 ### 6.1 Aim & scope
 
-The recurring job this harness supports: **open the shipper and/or driver app in Claude Browser and
+The recurring job this harness supports: **open the shipper and/or driver app in the browser harness and
 verify the UI actually works** — renders, connects to the backend, and the *core* features function —
 not just that `next build` succeeds or an endpoint returns 200. Definition of done for a pass: every
 core screen loads without a blank/broken render, console errors are triaged (infra vs. real bug), and
@@ -1700,7 +1700,7 @@ done
 To refresh the URL table (services get added/removed): `gcloud run services list --region=asia-south1
 --project=project-aa0faf06-c115-438a-a36` (read-only).
 
-### 6.3 Claude Browser tool gotchas (learned the hard way)
+### 6.3 Browser tool gotchas (learned the hard way)
 
 - **`tabId` is not optional in practice.** Call `tabs_context` right after `preview_start` to get the
   real `tabId` and pass it on every subsequent call — the first `computer`/`read_console_messages` call
@@ -1727,7 +1727,7 @@ To refresh the URL table (services get added/removed): `gcloud run services list
   desktop-only pass misses real bugs.
 - **Geolocation can't be exercised through these tools.** The driver app's GPS push calls
   `navigator.geolocation.watchPosition`; there's no way to grant/mock browser geolocation permission
-  via Claude Browser. Treat this as a hard coverage limitation, not a bug, when you can't verify a GPS
+  via the browser harness. Treat this as a hard coverage limitation, not a bug, when you can't verify a GPS
   feature end-to-end — say so explicitly rather than guessing.
 - **Demo data is asymmetric — verify before assuming a shipper-side booking has a matching driver-side
   view.** As of the last check, `demo-driver` has no quotes/assigned trips at all — don't assume the

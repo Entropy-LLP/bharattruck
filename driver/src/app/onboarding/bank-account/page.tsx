@@ -9,6 +9,10 @@ import Spinner from '@/components/spinner'
 
 const IFSC_REGEX = /^[A-Z]{4}0[A-Z0-9]{6}$/
 
+const FIELD =
+  'w-full rounded-xl border border-border bg-secondary px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground/60 outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/25'
+const FIELD_LABEL = 'text-sm font-medium text-foreground/75'
+
 export default function BankAccountStep() {
   const router = useRouter()
 
@@ -117,12 +121,12 @@ export default function BankAccountStep() {
 
         {/* Header */}
         <div className="text-center mb-2">
-          <div className="w-12 h-12 rounded-full bg-blue-50 flex items-center justify-center mx-auto mb-2">
-            <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <div className="w-12 h-12 rounded-full bg-primary/12 flex items-center justify-center mx-auto mb-2">
+            <svg className="w-6 h-6 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
             </svg>
           </div>
-          <p className="text-xs text-gray-400">Step 5 — Bank account for payouts</p>
+          <p className="text-xs text-muted-foreground">Step 5 — Bank account for payouts</p>
         </div>
 
         {/* Existing accounts */}
@@ -131,15 +135,15 @@ export default function BankAccountStep() {
             {accounts.map(acc => (
               <div
                 key={acc.id}
-                className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm"
+                className="bg-card rounded-2xl border border-border/60 p-4 shadow-sm"
               >
                 <div className="flex items-center justify-between mb-1">
                   <div className="flex items-center gap-2">
-                    <span className="font-semibold text-gray-900 text-sm">
+                    <span className="font-semibold text-foreground text-sm">
                       ●●●● {acc.account_number_last4}
                     </span>
                     {acc.is_primary && (
-                      <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-50 text-blue-600">
+                      <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-primary/12 text-primary">
                         Primary
                       </span>
                     )}
@@ -148,12 +152,12 @@ export default function BankAccountStep() {
                     type="button"
                     onClick={() => handleDelete(acc.id)}
                     disabled={deleting === acc.id}
-                    className="text-xs text-red-500 hover:text-red-700 disabled:opacity-50"
+                    className="text-xs text-red-500 hover:text-red-400 disabled:opacity-50"
                   >
                     {deleting === acc.id ? 'Removing…' : 'Remove'}
                   </button>
                 </div>
-                <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500">
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
                   <span>{acc.account_holder_name}</span>
                   <span>IFSC: {acc.ifsc}</span>
                   {acc.bank_name && <span>{acc.bank_name}</span>}
@@ -168,7 +172,7 @@ export default function BankAccountStep() {
           <button
             type="button"
             onClick={() => setShowForm(true)}
-            className="w-full rounded-xl border-2 border-dashed border-gray-300 px-4 py-3 text-sm font-medium text-gray-500 hover:border-blue-400 hover:text-blue-600 transition-colors flex items-center justify-center gap-2"
+            className="w-full rounded-xl border-2 border-dashed border-border px-4 py-3 text-sm font-medium text-muted-foreground hover:border-primary/50 hover:text-primary transition-colors flex items-center justify-center gap-2"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
@@ -179,16 +183,16 @@ export default function BankAccountStep() {
 
         {/* Bank account form */}
         {showForm && (
-          <div className="bg-white rounded-2xl border border-gray-200 p-5 shadow-sm">
+          <div className="bg-card rounded-2xl border border-border/60 p-5 shadow-sm">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-sm font-semibold text-gray-900">
+              <h3 className="text-sm font-semibold text-foreground">
                 {accounts.length === 0 ? 'Link Bank Account' : 'Add Account'}
               </h3>
               {accounts.length > 0 && (
                 <button
                   type="button"
                   onClick={() => { setShowForm(false); resetForm() }}
-                  className="text-xs text-gray-400 hover:text-gray-600"
+                  className="text-xs text-muted-foreground hover:text-foreground"
                 >
                   Cancel
                 </button>
@@ -199,8 +203,8 @@ export default function BankAccountStep() {
 
               {/* Account holder name */}
               <div className="flex flex-col gap-1.5">
-                <label htmlFor="holder-name" className="text-sm font-medium text-gray-700">
-                  Account Holder Name <span className="text-blue-600">*</span>
+                <label htmlFor="holder-name" className={FIELD_LABEL}>
+                  Account Holder Name <span className="text-primary">*</span>
                 </label>
                 <input
                   id="holder-name"
@@ -209,14 +213,14 @@ export default function BankAccountStep() {
                   onChange={e => setHolderName(e.target.value)}
                   placeholder="Name as on bank account"
                   required
-                  className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent transition-shadow"
+                  className={FIELD}
                 />
               </div>
 
               {/* Account number */}
               <div className="flex flex-col gap-1.5">
-                <label htmlFor="account-number" className="text-sm font-medium text-gray-700">
-                  Account Number <span className="text-blue-600">*</span>
+                <label htmlFor="account-number" className={FIELD_LABEL}>
+                  Account Number <span className="text-primary">*</span>
                 </label>
                 <input
                   id="account-number"
@@ -227,14 +231,14 @@ export default function BankAccountStep() {
                   placeholder="Enter account number"
                   required
                   autoComplete="off"
-                  className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent transition-shadow"
+                  className={FIELD}
                 />
               </div>
 
               {/* Confirm account number */}
               <div className="flex flex-col gap-1.5">
-                <label htmlFor="confirm-account" className="text-sm font-medium text-gray-700">
-                  Confirm Account Number <span className="text-blue-600">*</span>
+                <label htmlFor="confirm-account" className={FIELD_LABEL}>
+                  Confirm Account Number <span className="text-primary">*</span>
                 </label>
                 <input
                   id="confirm-account"
@@ -245,10 +249,10 @@ export default function BankAccountStep() {
                   placeholder="Re-enter account number"
                   required
                   autoComplete="off"
-                  className={`w-full rounded-xl border bg-gray-50 px-3 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent transition-shadow ${
+                  className={`w-full rounded-xl border bg-secondary px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground/60 outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/25 ${
                     confirmAccountNumber && confirmAccountNumber !== accountNumber
-                      ? 'border-red-300'
-                      : 'border-gray-200'
+                      ? 'border-red-500/60'
+                      : 'border-border'
                   }`}
                 />
                 {confirmAccountNumber && confirmAccountNumber !== accountNumber && (
@@ -259,8 +263,8 @@ export default function BankAccountStep() {
               {/* IFSC + Bank name row */}
               <div className="grid grid-cols-2 gap-3">
                 <div className="flex flex-col gap-1.5">
-                  <label htmlFor="ifsc" className="text-sm font-medium text-gray-700">
-                    IFSC Code <span className="text-blue-600">*</span>
+                  <label htmlFor="ifsc" className={FIELD_LABEL}>
+                    IFSC Code <span className="text-primary">*</span>
                   </label>
                   <input
                     id="ifsc"
@@ -271,18 +275,18 @@ export default function BankAccountStep() {
                     required
                     maxLength={11}
                     autoCapitalize="characters"
-                    className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent transition-shadow uppercase"
+                    className={`${FIELD} uppercase`}
                   />
                 </div>
                 <div className="flex flex-col gap-1.5">
-                  <label htmlFor="bank-name" className="text-sm font-medium text-gray-700">Bank Name</label>
+                  <label htmlFor="bank-name" className={FIELD_LABEL}>Bank Name</label>
                   <input
                     id="bank-name"
                     type="text"
                     value={bankName}
                     onChange={e => setBankName(e.target.value)}
                     placeholder="e.g. SBI, HDFC"
-                    className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent transition-shadow"
+                    className={FIELD}
                   />
                 </div>
               </div>
@@ -290,7 +294,7 @@ export default function BankAccountStep() {
               <button
                 type="submit"
                 disabled={submitting}
-                className="w-full rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-700 active:scale-[0.98] disabled:opacity-60 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
+                className="w-full rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-primary-foreground hover:bg-primary/90 active:scale-[0.98] disabled:opacity-60 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
               >
                 {submitting ? <><Spinner className="h-4 w-4" /> Saving…</> : 'Link Account'}
               </button>
@@ -303,14 +307,14 @@ export default function BankAccountStep() {
           <button
             type="button"
             onClick={() => router.push('/onboarding/insurance')}
-            className="flex-1 rounded-xl border border-gray-200 px-4 py-3 text-sm font-medium text-gray-500 hover:bg-gray-50 transition-colors"
+            className="flex-1 rounded-xl border border-border px-4 py-3 text-sm font-medium text-muted-foreground hover:bg-secondary transition-colors"
           >
             Back
           </button>
           <button
             type="button"
             onClick={() => router.push('/onboarding/review')}
-            className="flex-1 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-700 active:scale-[0.98] transition-all"
+            className="flex-1 rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-primary-foreground hover:bg-primary/90 active:scale-[0.98] transition-all"
           >
             {accounts.length > 0 ? 'Next' : 'Skip for now'}
           </button>
