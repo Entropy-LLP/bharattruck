@@ -387,6 +387,18 @@ export function updateVehicle(
   })
 }
 
+/**
+ * Soft delete — the server only flips `is_active` to false, so the row survives
+ * and the trips it already ran keep their vehicle. Idempotent: removing an
+ * already-removed vehicle still 200s. 409s with `VEHICLE_IN_USE` while the
+ * truck is on a live trip.
+ */
+export function deleteVehicle(vehicleId: string): Promise<{ message: string }> {
+  return request<{ message: string }>(`/onboarding/vehicle/${vehicleId}`, {
+    method: 'DELETE',
+  })
+}
+
 export function submitLicense(
   body: SubmitLicenseInput,
 ): Promise<{ license: License }> {

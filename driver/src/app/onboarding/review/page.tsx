@@ -17,14 +17,14 @@ function CheckIcon({ done }: { done: boolean }) {
     )
   }
   return (
-    <div className="w-5 h-5 rounded-full border-2 border-gray-300 shrink-0" />
+    <div className="w-5 h-5 rounded-full border-2 border-border shrink-0" />
   )
 }
 
 const BADGE_CONFIG = {
-  pending: { bg: 'bg-yellow-50', border: 'border-yellow-300', text: 'text-yellow-700', label: 'Pending' },
-  verified: { bg: 'bg-green-50', border: 'border-green-300', text: 'text-green-700', label: 'Verified' },
-  premium: { bg: 'bg-blue-50', border: 'border-blue-300', text: 'text-blue-700', label: 'Premium' },
+  pending: { bg: 'bg-amber-500/12', border: 'border-amber-500/25', text: 'text-amber-600 dark:text-amber-400', label: 'Pending' },
+  verified: { bg: 'bg-emerald-500/12', border: 'border-emerald-500/25', text: 'text-emerald-600 dark:text-emerald-400', label: 'Verified' },
+  premium: { bg: 'bg-primary/12', border: 'border-primary/25', text: 'text-primary', label: 'Premium' },
 } as const
 
 export default function ReviewStep() {
@@ -88,13 +88,13 @@ export default function ReviewStep() {
             )}
           </div>
           <h2 className={`text-lg font-bold ${badgeStyle.text}`}>{badgeStyle.label}</h2>
-          <p className="text-xs text-gray-400 mt-1">
+          <p className="text-xs text-muted-foreground mt-1">
             {completedCount} of {totalItems} items completed
           </p>
         </div>
 
         {/* Progress bar */}
-        <div className="w-full bg-gray-200 rounded-full h-2">
+        <div className="w-full bg-secondary rounded-full h-2">
           <div
             className="bg-green-500 h-2 rounded-full transition-all duration-500"
             style={{ width: `${(completedCount / totalItems) * 100}%` }}
@@ -102,8 +102,8 @@ export default function ReviewStep() {
         </div>
 
         {/* Checklist */}
-        <div className="bg-white rounded-2xl border border-gray-200 p-5 shadow-sm">
-          <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-4">
+        <div className="bg-card rounded-2xl border border-border/60 p-5 shadow-sm">
+          <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-4">
             Verification Checklist
           </h3>
 
@@ -156,22 +156,22 @@ export default function ReviewStep() {
         </div>
 
         {/* Badge tier explanation */}
-        <div className="bg-white rounded-2xl border border-gray-200 p-5 shadow-sm">
-          <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">
+        <div className="bg-card rounded-2xl border border-border/60 p-5 shadow-sm">
+          <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
             Verification Tiers
           </h3>
           <div className="flex flex-col gap-2 text-xs">
             <div className="flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-yellow-400 shrink-0" />
-              <span className="text-gray-600"><span className="font-medium text-gray-800">Pending</span> — Complete your profile to start</span>
+              <span className="text-muted-foreground"><span className="font-medium text-foreground">Pending</span> — Complete your profile to start</span>
             </div>
             <div className="flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-green-500 shrink-0" />
-              <span className="text-gray-600"><span className="font-medium text-gray-800">Verified</span> — Profile + license + vehicle + bank linked</span>
+              <span className="text-muted-foreground"><span className="font-medium text-foreground">Verified</span> — Profile + license + vehicle + bank linked</span>
             </div>
             <div className="flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-blue-500 shrink-0" />
-              <span className="text-gray-600"><span className="font-medium text-gray-800">Premium</span> — Verified + insurance + KYC approved</span>
+              <span className="text-muted-foreground"><span className="font-medium text-foreground">Premium</span> — Verified + insurance + KYC approved</span>
             </div>
           </div>
         </div>
@@ -181,14 +181,14 @@ export default function ReviewStep() {
           <button
             type="button"
             onClick={() => router.push('/onboarding/bank-account')}
-            className="flex-1 rounded-xl border border-gray-200 px-4 py-3 text-sm font-medium text-gray-500 hover:bg-gray-50 transition-colors"
+            className="flex-1 rounded-xl border border-border px-4 py-3 text-sm font-medium text-muted-foreground hover:bg-secondary transition-colors"
           >
             Back
           </button>
           <button
             type="button"
             onClick={() => router.push('/available')}
-            className="flex-1 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-700 active:scale-[0.98] transition-all"
+            className="flex-1 rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-primary-foreground hover:bg-primary/90 active:scale-[0.98] transition-all"
           >
             Start Browsing Loads
           </button>
@@ -214,14 +214,14 @@ function ChecklistItem({
     <div className="flex items-center gap-3">
       <CheckIcon done={done} />
       <div className="flex-1 min-w-0">
-        <p className={`text-sm font-medium ${done ? 'text-gray-900' : 'text-gray-500'}`}>{label}</p>
-        <p className="text-xs text-gray-400 truncate">{detail}</p>
+        <p className={`text-sm font-medium ${done ? 'text-foreground' : 'text-muted-foreground'}`}>{label}</p>
+        <p className="text-xs text-muted-foreground truncate">{detail}</p>
       </div>
       {!done && onFix && (
         <button
           type="button"
           onClick={onFix}
-          className="text-xs text-blue-600 font-medium hover:text-blue-800 shrink-0"
+          className="text-xs text-primary font-medium hover:text-primary/80 shrink-0"
         >
           Fix
         </button>
