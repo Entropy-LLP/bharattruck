@@ -16,8 +16,15 @@ export interface Booking {
   dest_lng: number
   load_type: string
   weight_kg: number
-  quoted_price: number
-  final_price: number | null
+  /**
+   * Money fields. bt-booking-service STRIPS these keys (not nulls them) for a
+   * fleet-affiliated driver — their owner bid and their owner is paid, so an
+   * employed driver never sees the commercials (founder Q14/Q16; see
+   * `stripCommercialFields` in bt-booking-service/src/lib/fleet.ts). Optional
+   * here so the compiler forces every read to handle the masked payload.
+   */
+  quoted_price?: number
+  final_price?: number | null
   pickup_date: string
   pickup_time_slot: string | null
   status: BookingStatus

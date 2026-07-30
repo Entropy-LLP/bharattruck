@@ -31,13 +31,13 @@ export default function CounterModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4" onClick={onClose}>
       <div
-        className="bg-white rounded-xl shadow-xl w-full max-w-md p-6"
+        className="bg-card rounded-xl shadow-xl w-full max-w-md p-6"
         onClick={(e) => e.stopPropagation()}
       >
-        <h3 className="text-lg font-semibold text-gray-900 mb-4">Counter Offer</h3>
+        <h3 className="text-lg font-semibold text-foreground mb-4">Counter Offer</h3>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label htmlFor="counter-amount" className="block text-sm font-medium text-gray-700 mb-1">
+            <label htmlFor="counter-amount" className="block text-sm font-medium text-foreground/85 mb-1">
               Amount ({'\u20B9'})
             </label>
             <input
@@ -48,20 +48,20 @@ export default function CounterModal({
               required
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full rounded-lg border border-border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               placeholder="Enter your counter amount"
               autoFocus
             />
           </div>
           <div>
-            <label htmlFor="counter-message" className="block text-sm font-medium text-gray-700 mb-1">
+            <label htmlFor="counter-message" className="block text-sm font-medium text-foreground/85 mb-1">
               Message (optional)
             </label>
             <input
               id="counter-message"
               value={message}
               onChange={(e) => setMessage(e.target.value)}
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full rounded-lg border border-border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               placeholder="e.g. Can you do it for this price?"
             />
           </div>
@@ -69,7 +69,7 @@ export default function CounterModal({
             <button
               type="button"
               onClick={onClose}
-              className="flex-1 px-4 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+              className="flex-1 px-4 py-2 text-sm border border-border rounded-lg hover:bg-secondary transition-colors"
             >
               Cancel
             </button>

@@ -157,99 +157,135 @@ export default function TripsPage() {
 
   return (
     <div className="p-6 space-y-5 max-w-7xl mx-auto">
-      <div className="flex items-center justify-between flex-wrap gap-4">
+      {/* Header */}
+      <div className="flex items-center justify-between flex-wrap gap-4 animate-slide-up">
         <div>
-          <h1 className="text-2xl font-bold dark:text-white text-[#09090B]">Live Trips</h1>
-          <p className="text-sm dark:text-[#888] text-[#71717A] mt-1">
-            {loading ? 'Loading…' : `${active.length} active · ${liveCount} in transit`}
+          <div className="flex items-center gap-3 mb-1">
+            <h1 className="text-2xl font-black dark:text-white text-[#0F172A] tracking-tight">Live Trips</h1>
+            {liveCount > 0 && (
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl border"
+                style={{ background: 'rgba(34,197,94,0.06)', borderColor: 'rgba(34,197,94,0.2)' }}>
+                <div className="relative w-2 h-2">
+                  <span className="absolute inset-0 rounded-full bg-emerald-500 animate-ping opacity-60" />
+                  <span className="absolute inset-0 rounded-full bg-emerald-500" />
+                </div>
+                <span className="text-xs font-bold text-emerald-500">{liveCount} tracking live</span>
+              </div>
+            )}
+          </div>
+          <p className="text-sm dark:text-[#8892A4] text-[#64748B]">
+            {loading ? 'Loading…' : (
+              <><span className="dark:text-white text-[#0F172A] font-semibold">{active.length}</span> active · <span className="dark:text-white text-[#0F172A] font-semibold">{liveCount}</span> in transit</>
+            )}
           </p>
         </div>
-        <div className="flex items-center gap-3">
-          {liveCount > 0 && (
-            <div className="flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-[#22C55E] animate-pulse" />
-              <span className="text-sm font-medium text-[#22C55E]">Live tracking active</span>
-            </div>
-          )}
-          <Button variant="outline" size="sm" onClick={() => load()}>
-            <RefreshCw size={14} /> Refresh
-          </Button>
-        </div>
+        <Button
+          variant="outline" size="sm"
+          onClick={() => load()}
+          className="flex items-center gap-1.5 dark:border-[#1E2535] dark:text-[#8892A4] dark:hover:text-white dark:hover:bg-[#161B25]"
+        >
+          <RefreshCw size={13} /> Refresh
+        </Button>
       </div>
 
+      {/* Error */}
       {error && (
-        <div className="flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-500">
-          <AlertTriangle size={15} /> {error}
+        <div className="flex items-center gap-2.5 rounded-xl border border-red-500/20 bg-red-500/8 px-4 py-3 text-sm text-red-400 animate-slide-up">
+          <AlertTriangle size={14} className="shrink-0" /> {error}
         </div>
       )}
 
       {loading ? (
-        <div className="flex items-center justify-center py-20">
-          <Loader2 className="h-6 w-6 animate-spin text-[#F97316]" />
+        <div className="flex flex-col items-center justify-center py-20 gap-4">
+          <div className="w-12 h-12 rounded-xl flex items-center justify-center"
+            style={{ background: 'rgba(255,122,0,0.08)', border: '1px solid rgba(255,122,0,0.15)' }}>
+            <Loader2 className="h-6 w-6 animate-spin text-[#FF7A00]" />
+          </div>
+          <p className="text-sm dark:text-[#8892A4] text-[#64748B] font-medium animate-pulse">Loading trips…</p>
         </div>
       ) : active.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-20 text-center">
-          <Truck size={28} className="text-[#F97316] mb-3" />
-          <p className="text-sm dark:text-white text-[#09090B] font-medium">No active trips</p>
-          <p className="text-xs dark:text-[#888] text-[#71717A] mt-1">Trips appear here once a booking is placed.</p>
+          <div className="w-14 h-14 rounded-2xl flex items-center justify-center mb-4"
+            style={{ background: 'rgba(255,122,0,0.08)', border: '1px solid rgba(255,122,0,0.15)' }}>
+            <Truck size={24} className="text-[#FF7A00]" />
+          </div>
+          <p className="text-sm dark:text-white text-[#0F172A] font-bold">No active trips</p>
+          <p className="text-xs dark:text-[#8892A4] text-[#64748B] mt-1.5 max-w-xs">Trips appear here once a booking is placed and accepted by a driver.</p>
         </div>
       ) : (
-        <div className="rounded-2xl border dark:border-[#2A2A2A] border-[#E4E4E7] overflow-hidden dark:bg-[#111111] bg-white">
+        <div className="rounded-2xl border overflow-hidden dark:border-[#1E2535] border-[#E2E8F0] dark:bg-[#0E1117] bg-white animate-fade-in">
           <Table>
             <TableHeader>
-              <TableRow>
-                <TableHead>Booking</TableHead>
-                <TableHead>Route</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Live position</TableHead>
-                <TableHead className="text-right">Override</TableHead>
+              <TableRow className="dark:border-[#1E2535] border-[#E2E8F0] dark:bg-[#080A0F]/50">
+                <TableHead className="font-black text-[10px] uppercase tracking-widest dark:text-[#434D5E] text-[#94A3B8] py-3">Booking</TableHead>
+                <TableHead className="font-black text-[10px] uppercase tracking-widest dark:text-[#434D5E] text-[#94A3B8]">Route</TableHead>
+                <TableHead className="font-black text-[10px] uppercase tracking-widest dark:text-[#434D5E] text-[#94A3B8]">Status</TableHead>
+                <TableHead className="font-black text-[10px] uppercase tracking-widest dark:text-[#434D5E] text-[#94A3B8]">GPS Position</TableHead>
+                <TableHead className="text-right font-black text-[10px] uppercase tracking-widest dark:text-[#434D5E] text-[#94A3B8]">Override</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {active.map((b) => {
+              {active.map((b, i) => {
                 const loc = locations[b.id]
                 const ageMs = loc ? Date.now() - new Date(loc.updated_at).getTime() : Infinity
                 const fresh = ageMs <= STALE_AFTER_MS
                 const badge = STATUS_BADGE[b.status]
                 return (
-                  <TableRow key={b.id}>
-                    <TableCell>
-                      <div className="flex items-center gap-2">
-                        <div className="w-8 h-8 rounded-lg bg-[#F97316]/10 flex items-center justify-center shrink-0">
-                          <Truck size={14} className="text-[#F97316]" />
+                  <TableRow
+                    key={b.id}
+                    className="dark:border-[#1E2535] border-[#F1F5F9] transition-colors dark:hover:bg-[#161B25]/60 hover:bg-[#F8FAFC] animate-fade-in"
+                    style={{ animationDelay: `${i * 40}ms` }}
+                  >
+                    <TableCell className="py-4">
+                      <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
+                          style={{ background: 'rgba(255,122,0,0.08)', border: '1px solid rgba(255,122,0,0.15)' }}>
+                          <Truck size={14} className="text-[#FF7A00]" />
                         </div>
                         <div className="min-w-0">
-                          <p className="font-mono text-xs dark:text-white text-[#09090B]">{b.id.slice(0, 8)}…</p>
-                          <p className="text-xs dark:text-[#888] text-[#71717A] truncate max-w-[160px]">{b.shipper_name}</p>
+                          <p className="font-mono text-xs font-semibold dark:text-white text-[#0F172A]">{b.id.slice(0, 8)}…</p>
+                          <p className="text-[11px] dark:text-[#8892A4] text-[#64748B] truncate max-w-[150px] mt-0.5">{b.shipper_name}</p>
                         </div>
                       </div>
                     </TableCell>
                     <TableCell>
-                      <div className="text-xs dark:text-[#CCC] text-[#3F3F46] max-w-[220px]">
-                        <p className="truncate">{b.source_address}</p>
-                        <p className="truncate dark:text-[#888] text-[#71717A]">→ {b.destination_address}</p>
+                      <div className="text-xs max-w-[220px] space-y-1">
+                        <div className="flex items-center gap-1.5">
+                          <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                          <p className="truncate dark:text-white/80 text-[#374151] font-medium">{b.source_address}</p>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <div className="w-1.5 h-1.5 rounded-full bg-rose-400 shrink-0" />
+                          <p className="truncate dark:text-[#8892A4] text-[#64748B]">{b.destination_address}</p>
+                        </div>
                       </div>
                     </TableCell>
                     <TableCell>
-                      <Badge variant="secondary" className={badge.className}>{badge.label}</Badge>
+                      <div className="flex items-center gap-1.5">
+                        <span className={`w-1.5 h-1.5 rounded-full ${badge.className.includes('F97316') || badge.className.includes('amber') ? 'bg-[#FF7A00]' : badge.className.includes('green') ? 'bg-emerald-500' : badge.className.includes('blue') ? 'bg-blue-400' : badge.className.includes('red') ? 'bg-red-500' : 'bg-zinc-500'} ${b.status === 'in_transit' ? 'animate-pulse' : ''}`} />
+                        <Badge variant="secondary" className={badge.className}>{badge.label}</Badge>
+                      </div>
                     </TableCell>
                     <TableCell>
                       {b.status === 'in_transit' ? (
                         loc ? (
-                          <div className="flex items-center gap-1.5 text-xs">
-                            <MapPin size={12} className={fresh ? 'text-[#22C55E]' : 'text-amber-500'} />
-                            <span className="dark:text-[#CCC] text-[#3F3F46] font-mono">
-                              {loc.lat.toFixed(3)}, {loc.lng.toFixed(3)}
-                            </span>
-                            <span className={fresh ? 'text-[#22C55E]' : 'text-amber-500'}>
-                              · {ageText(ageMs)}
-                            </span>
+                          <div className={`inline-flex items-center gap-1.5 text-[11px] px-2.5 py-1.5 rounded-lg font-mono border ${
+                            fresh
+                              ? 'bg-emerald-500/8 border-emerald-500/20 text-emerald-500'
+                              : 'bg-amber-500/8 border-amber-500/20 text-amber-500'
+                          }`}>
+                            <MapPin size={11} />
+                            {loc.lat.toFixed(3)}, {loc.lng.toFixed(3)}
+                            <span className="opacity-60">· {ageText(ageMs)}</span>
                           </div>
                         ) : (
-                          <span className="text-xs dark:text-[#888] text-[#71717A]">awaiting GPS…</span>
+                          <span className="inline-flex items-center gap-1.5 text-xs dark:text-[#434D5E] text-[#94A3B8] px-2 py-1 rounded-lg dark:bg-[#161B25] bg-[#F1F5F9]">
+                            <span className="w-1 h-1 rounded-full bg-current animate-pulse" />
+                            awaiting GPS
+                          </span>
                         )
                       ) : (
-                        <span className="text-xs dark:text-[#555] text-[#A1A1AA]">—</span>
+                        <span className="text-xs dark:text-[#2A3449] text-[#CBD5E1]">—</span>
                       )}
                     </TableCell>
                     <TableCell className="text-right">
@@ -258,14 +294,14 @@ export default function TripsPage() {
                         const canReassign = REASSIGNABLE.includes(b.status)
                         const canCancel = CANCELLABLE.includes(b.status)
                         if (!canForce && !canReassign && !canCancel) {
-                          return <span className="text-xs dark:text-[#555] text-[#A1A1AA]">—</span>
+                          return <span className="text-xs dark:text-[#2A3449] text-[#CBD5E1]">—</span>
                         }
                         return (
                           <div className="flex items-center justify-end gap-2">
                             {canForce && (
                               <Button
                                 variant="outline" size="sm"
-                                className="text-green-600 border-green-500/30 hover:bg-green-500/10"
+                                className="text-emerald-600 border-emerald-500/30 hover:bg-emerald-500/8 dark:border-emerald-500/25 text-xs font-semibold"
                                 onClick={() => setForceTarget(b)}
                               >
                                 Force-complete
@@ -274,6 +310,7 @@ export default function TripsPage() {
                             {canReassign && (
                               <Button
                                 variant="outline" size="sm"
+                                className="dark:border-[#1E2535] dark:text-[#8892A4] dark:hover:text-white dark:hover:bg-[#161B25] text-xs font-semibold"
                                 onClick={() => { setReassignDriverId(''); setReassignTarget(b) }}
                               >
                                 Reassign
@@ -282,7 +319,7 @@ export default function TripsPage() {
                             {canCancel && (
                               <Button
                                 variant="outline" size="sm"
-                                className="text-red-500 border-red-500/30 hover:bg-red-500/10"
+                                className="text-red-400 border-red-500/25 hover:bg-red-500/8 text-xs font-semibold"
                                 onClick={() => setCancelTarget(b)}
                               >
                                 Cancel
@@ -300,13 +337,16 @@ export default function TripsPage() {
         </div>
       )}
 
-      {/* Override capability note. */}
-      <p className="text-xs dark:text-[#555] text-[#A1A1AA]">
-        Ops overrides: <span className="font-medium">Cancel</span> (before pickup),
-        {' '}<span className="font-medium">Force-complete</span> and
-        {' '}<span className="font-medium">Reassign</span> (assigned / in transit) act on the
-        real trip via ops-only endpoints. Actions require an ops/admin session.
-      </p>
+      {/* Override capability note */}
+      <div className="flex items-start gap-2.5 px-4 py-3 rounded-xl dark:bg-[#0E1117] bg-[#F8FAFC] border dark:border-[#1E2535] border-[#E2E8F0]">
+        <div className="w-4 h-4 rounded-md flex items-center justify-center shrink-0 mt-0.5"
+          style={{ background: 'rgba(255,122,0,0.12)' }}>
+          <span className="text-[#FF7A00] text-[8px] font-black">i</span>
+        </div>
+        <p className="text-xs dark:text-[#434D5E] text-[#94A3B8] leading-relaxed">
+          Ops overrides: <span className="dark:text-[#8892A4] text-[#64748B] font-semibold">Cancel</span> (before pickup), <span className="dark:text-[#8892A4] text-[#64748B] font-semibold">Force-complete</span> and <span className="dark:text-[#8892A4] text-[#64748B] font-semibold">Reassign</span> (assigned / in transit) act on the real trip via ops-only endpoints. Actions require an ops/admin session.
+        </p>
+      </div>
 
       {/* Cancel */}
       <Dialog open={!!cancelTarget} onOpenChange={(open) => !open && setCancelTarget(null)}>

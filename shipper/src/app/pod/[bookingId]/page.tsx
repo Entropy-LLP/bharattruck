@@ -23,8 +23,8 @@ type Phase = 'entry' | 'confirmed' | 'already_confirmed'
 function BrandHeader() {
   return (
     <div className="flex items-center justify-center gap-2 mb-6">
-      <span className="text-lg font-extrabold tracking-tight text-gray-900">
-        Bharat<span className="text-emerald-600">Truck</span>
+      <span className="text-lg font-extrabold tracking-tight text-foreground">
+        Bharat<span className="text-emerald-400">Truck</span>
       </span>
     </div>
   )
@@ -104,28 +104,28 @@ export default function ReceiverPodPage({
         ? 'Thank you. The delivery has been recorded — you can close this page.'
         : 'This delivery has already been confirmed — thank you. You can close this page.'
     return (
-      <main className="min-h-dvh flex items-center justify-center bg-gray-50 px-4">
-        <div className="w-full max-w-sm bg-white rounded-2xl border border-gray-200 shadow-sm p-8 text-center">
+      <main className="min-h-dvh flex items-center justify-center bg-secondary px-4">
+        <div className="w-full max-w-sm bg-card rounded-2xl border border-border shadow-sm p-8 text-center">
           <BrandHeader />
-          <div className="w-14 h-14 rounded-full bg-emerald-100 flex items-center justify-center mx-auto mb-4">
-            <svg className="w-7 h-7 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <div className="w-14 h-14 rounded-full bg-emerald-500/15 flex items-center justify-center mx-auto mb-4">
+            <svg className="w-7 h-7 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
             </svg>
           </div>
-          <h1 className="text-xl font-bold text-emerald-800 mb-1">{heading}</h1>
-          <p className="text-sm text-gray-500">{body}</p>
+          <h1 className="text-xl font-bold text-emerald-300 mb-1">{heading}</h1>
+          <p className="text-sm text-muted-foreground">{body}</p>
         </div>
       </main>
     )
   }
 
   return (
-    <main className="min-h-dvh flex items-center justify-center bg-gray-50 px-4">
-      <div className="w-full max-w-sm bg-white rounded-2xl border border-gray-200 shadow-sm p-8">
+    <main className="min-h-dvh flex items-center justify-center bg-secondary px-4">
+      <div className="w-full max-w-sm bg-card rounded-2xl border border-border shadow-sm p-8">
         <BrandHeader />
         <div className="text-center mb-6">
-          <h1 className="text-xl font-bold text-gray-900 mb-1">Confirm your delivery</h1>
-          <p className="text-sm text-gray-500">
+          <h1 className="text-xl font-bold text-foreground mb-1">Confirm your delivery</h1>
+          <p className="text-sm text-muted-foreground">
             Enter the delivery code from your email to confirm you received this shipment.
           </p>
         </div>
@@ -143,11 +143,11 @@ export default function ReceiverPodPage({
             }}
             placeholder="••••••"
             autoFocus
-            className="w-full h-14 rounded-xl border border-gray-300 px-4 text-center text-2xl font-bold tracking-[0.4em] focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+            className="w-full h-14 rounded-xl border border-border px-4 text-center text-2xl font-bold tracking-[0.4em] focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
           />
 
           {error && (
-            <p className="text-sm text-red-600 text-center">{error}</p>
+            <p className="text-sm text-red-400 text-center">{error}</p>
           )}
 
           <button
@@ -163,7 +163,7 @@ export default function ReceiverPodPage({
           </button>
         </form>
 
-        <p className="text-xs text-gray-400 text-center mt-4">
+        <p className="text-xs text-muted-foreground/70 text-center mt-4">
           Didn&apos;t get a code? Ask the driver to resend.
         </p>
       </div>

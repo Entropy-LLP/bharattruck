@@ -129,7 +129,7 @@ export default function BookingDetailPage({
     return (
       <>
         <Navbar />
-        <div className="text-center py-20 text-gray-500">Booking not found</div>
+        <div className="text-center py-20 text-muted-foreground">Booking not found</div>
       </>
     )
   }
@@ -145,17 +145,17 @@ export default function BookingDetailPage({
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
             <div className="flex items-center gap-3">
-              <h1 className="text-xl font-bold text-gray-900">Booking Details</h1>
+              <h1 className="text-xl font-bold text-foreground">Booking Details</h1>
               <span className={`text-xs font-medium px-2.5 py-1 rounded-full ${status.color}`}>
                 {status.label}
               </span>
             </div>
-            <p className="text-xs text-gray-400 mt-1 font-mono">{booking.id}</p>
+            <p className="text-xs text-muted-foreground/70 mt-1 font-mono">{booking.id}</p>
           </div>
           {canCancel && (
             <button
               onClick={() => setShowCancelConfirm(true)}
-              className="text-sm text-red-600 hover:text-red-700 border border-red-200 px-4 py-2 rounded-lg hover:bg-red-50 transition-colors"
+              className="text-sm text-red-400 hover:text-red-400 border border-red-500/25 px-4 py-2 rounded-lg hover:bg-red-500/10 transition-colors"
             >
               Cancel Booking
             </button>
@@ -163,18 +163,18 @@ export default function BookingDetailPage({
         </div>
 
         {/* Booking Info */}
-        <div className="bg-white rounded-xl border border-gray-200 p-5">
+        <div className="bg-card rounded-xl border border-border p-5">
           <div className="grid sm:grid-cols-2 gap-6">
             <div>
-              <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Route</h3>
+              <h3 className="text-xs font-semibold text-muted-foreground/70 uppercase tracking-wide mb-3">Route</h3>
               <div className="space-y-2">
                 <div className="flex items-start gap-2">
                   <span className="w-2 h-2 rounded-full bg-green-500 mt-1.5 shrink-0" />
-                  <span className="text-sm text-gray-700">{booking.source_address}</span>
+                  <span className="text-sm text-foreground/85">{booking.source_address}</span>
                 </div>
                 <div className="flex items-start gap-2">
                   <span className="w-2 h-2 rounded-full bg-red-500 mt-1.5 shrink-0" />
-                  <span className="text-sm text-gray-700">{booking.destination_address}</span>
+                  <span className="text-sm text-foreground/85">{booking.destination_address}</span>
                 </div>
               </div>
             </div>
@@ -206,11 +206,11 @@ export default function BookingDetailPage({
             </div>
           </div>
           {booking.special_instructions && (
-            <div className="mt-4 pt-4 border-t border-gray-100">
-              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">
+            <div className="mt-4 pt-4 border-t border-border/60">
+              <p className="text-xs font-semibold text-muted-foreground/70 uppercase tracking-wide mb-1">
                 Special Instructions
               </p>
-              <p className="text-sm text-gray-700">{booking.special_instructions}</p>
+              <p className="text-sm text-foreground/85">{booking.special_instructions}</p>
             </div>
           )}
         </div>
@@ -227,18 +227,18 @@ export default function BookingDetailPage({
 
         {/* Quotes Panel — auction bookings only; a direct booking is a 1:1 contract, there is no bidding to show */}
         {booking.booking_type === 'auction' && (
-        <div className="bg-white rounded-xl border border-gray-200">
-          <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
-            <h2 className="font-semibold text-gray-900">
+        <div className="bg-card rounded-xl border border-border">
+          <div className="px-5 py-4 border-b border-border/60 flex items-center justify-between">
+            <h2 className="font-semibold text-foreground">
               Quotes ({quotes.length})
             </h2>
             {booking.status === 'pending' && (
-              <span className="text-xs text-gray-400">Auto-refreshing every 15s</span>
+              <span className="text-xs text-muted-foreground/70">Auto-refreshing every 15s</span>
             )}
           </div>
 
           {quotes.length === 0 ? (
-            <div className="text-center py-10 text-gray-400 text-sm">
+            <div className="text-center py-10 text-muted-foreground/70 text-sm">
               No quotes yet. Waiting for drivers to respond...
             </div>
           ) : (
@@ -253,26 +253,26 @@ export default function BookingDetailPage({
                     <div className="flex flex-col sm:flex-row sm:items-center gap-3">
                       <div className="flex-1 grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
                         <div>
-                          <p className="text-xs text-gray-400">Driver</p>
-                          <p className="font-mono text-gray-700" title={quote.driver_id}>
+                          <p className="text-xs text-muted-foreground/70">Driver</p>
+                          <p className="font-mono text-foreground/85" title={quote.driver_id}>
                             {quote.driver_id.slice(0, 8)}...
                           </p>
                         </div>
                         <div>
-                          <p className="text-xs text-gray-400">Amount</p>
-                          <p className="font-semibold text-gray-900">
+                          <p className="text-xs text-muted-foreground/70">Amount</p>
+                          <p className="font-semibold text-foreground">
                             {'\u20B9'}{quote.amount.toLocaleString('en-IN')}
                           </p>
                         </div>
                         <div>
-                          <p className="text-xs text-gray-400">Status</p>
+                          <p className="text-xs text-muted-foreground/70">Status</p>
                           <span className={`inline-block text-xs font-medium px-2 py-0.5 rounded-full ${qs.color}`}>
                             {quote.status === 'accepted' ? 'Awarded \u2713' : qs.label}
                           </span>
                         </div>
                         <div>
-                          <p className="text-xs text-gray-400">Submitted</p>
-                          <p className="text-gray-700">
+                          <p className="text-xs text-muted-foreground/70">Submitted</p>
+                          <p className="text-foreground/85">
                             {new Date(quote.submitted_at).toLocaleDateString('en-IN', {
                               day: 'numeric',
                               month: 'short',
@@ -299,7 +299,7 @@ export default function BookingDetailPage({
                           </button>
                           <button
                             onClick={() => handleReject(quote.id)}
-                            className="text-xs px-3 py-1.5 border border-red-300 text-red-600 rounded-lg hover:bg-red-50 transition-colors"
+                            className="text-xs px-3 py-1.5 border border-red-500/25 text-red-400 rounded-lg hover:bg-red-500/10 transition-colors"
                           >
                             Reject
                           </button>
@@ -310,13 +310,13 @@ export default function BookingDetailPage({
                     {/* Negotiation toggle */}
                     <button
                       onClick={() => setExpandedQuote(isExpanded ? null : quote.id)}
-                      className="text-xs text-blue-600 hover:text-blue-700 mt-2"
+                      className="text-xs text-primary hover:text-primary mt-2"
                     >
                       {isExpanded ? 'Hide' : 'View'} negotiation history
                     </button>
 
                     {isExpanded && (
-                      <div className="mt-3 border-t border-gray-100 pt-3">
+                      <div className="mt-3 border-t border-border/60 pt-3">
                         <NegotiationHistory bookingId={id} quoteId={quote.id} />
                       </div>
                     )}
@@ -340,15 +340,15 @@ export default function BookingDetailPage({
       {/* Cancel Confirmation */}
       {showCancelConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4" onClick={() => setShowCancelConfirm(false)}>
-          <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-lg font-semibold text-gray-900 mb-2">Cancel Booking?</h3>
-            <p className="text-sm text-gray-500 mb-6">
+          <div className="bg-card rounded-xl shadow-xl w-full max-w-sm p-6" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold text-foreground mb-2">Cancel Booking?</h3>
+            <p className="text-sm text-muted-foreground mb-6">
               This action cannot be undone. All pending quotes will be invalidated.
             </p>
             <div className="flex gap-3">
               <button
                 onClick={() => setShowCancelConfirm(false)}
-                className="flex-1 px-4 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                className="flex-1 px-4 py-2 text-sm border border-border rounded-lg hover:bg-secondary transition-colors"
               >
                 Keep Booking
               </button>
@@ -431,8 +431,8 @@ function TripTrackingSection({ booking }: { booking: Booking }) {
             const done = i <= currentIndex
             return (
               <div key={step.key} className="flex-1 flex flex-col items-center gap-1">
-                <div className={`h-1.5 w-full rounded-full ${done ? 'bg-green-500' : 'bg-gray-200'}`} />
-                <span className={`text-xs ${done ? 'text-green-700 font-medium' : 'text-gray-400'}`}>
+                <div className={`h-1.5 w-full rounded-full ${done ? 'bg-green-500' : 'bg-secondary'}`} />
+                <span className={`text-xs ${done ? 'text-emerald-400 font-medium' : 'text-muted-foreground/70'}`}>
                   {step.label}
                 </span>
               </div>
@@ -450,10 +450,10 @@ function TripTrackingSection({ booking }: { booking: Booking }) {
 // Status → shadcn Badge label + tint. Label text is the only user-facing copy
 // here and stays localizable (mapped, not baked into JSX).
 const TRIP_STATUS_BADGE: Record<string, { label: string; className: string }> = {
-  accepted:   { label: 'Driver Assigned', className: 'bg-blue-100 text-blue-700' },
-  in_transit: { label: 'In Transit',      className: 'bg-amber-100 text-amber-700' },
-  completed:  { label: 'Delivered',       className: 'bg-green-100 text-green-700' },
-  paid:       { label: 'Paid',            className: 'bg-emerald-100 text-emerald-700' },
+  accepted:   { label: 'Driver Assigned', className: 'bg-primary/15 text-primary' },
+  in_transit: { label: 'In Transit',      className: 'bg-amber-500/15 text-amber-400' },
+  completed:  { label: 'Delivered',       className: 'bg-emerald-500/15 text-emerald-400' },
+  paid:       { label: 'Paid',            className: 'bg-emerald-500/15 text-emerald-400' },
 }
 
 // --- Shipper live tracking panel (Phase 1: map + freshness caption) ---
@@ -543,7 +543,7 @@ function TrackCaption({
 }) {
   if (delivered) {
     return (
-      <p className="text-xs font-medium text-green-700">
+      <p className="text-xs font-medium text-emerald-400">
         {`Delivered ✓${
           completedAt
             ? ` · ${new Date(completedAt).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}`
@@ -556,7 +556,7 @@ function TrackCaption({
   // accepted, or in_transit before the first fix -> waiting for the driver.
   if (!location) {
     return (
-      <p className="text-xs text-gray-400">
+      <p className="text-xs text-muted-foreground/70">
         {pollError
           ? 'Could not fetch live tracking — retrying…'
           : status === 'accepted'
@@ -568,7 +568,7 @@ function TrackCaption({
 
   if (fresh) {
     return (
-      <p className="text-xs text-gray-500 flex items-center gap-1.5">
+      <p className="text-xs text-muted-foreground flex items-center gap-1.5">
         <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse inline-block" />
         {`Live · updated ${ageText(ageMs)}${location.speed_kmh !== null ? ` · ${Math.round(location.speed_kmh)} km/h` : ''}${etaSuffix(eta)}`}
       </p>
@@ -576,7 +576,7 @@ function TrackCaption({
   }
 
   return (
-    <p className="text-xs text-amber-600 flex items-center gap-1.5">
+    <p className="text-xs text-amber-400 flex items-center gap-1.5">
       <span className="w-2 h-2 rounded-full bg-amber-400 inline-block" />
       {`Driver offline — last seen ${ageText(ageMs)}${etaSuffix(eta)}`}
     </p>
@@ -634,11 +634,11 @@ function RecordSettlementPanel({ booking, onPaid }: { booking: Booking; onPaid: 
   }
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
-      <h2 className="font-semibold text-gray-900">Record settlement</h2>
-      <p className="text-sm text-gray-500">
+    <div className="bg-card rounded-xl border border-border p-5 space-y-4">
+      <h2 className="font-semibold text-foreground">Record settlement</h2>
+      <p className="text-sm text-muted-foreground">
         Cargo has been delivered. Record how payment of{' '}
-        <span className="font-semibold text-gray-900">
+        <span className="font-semibold text-foreground">
           {'\u20B9'}{prefill.toLocaleString('en-IN')}
         </span>{' '}
         was settled.
@@ -646,7 +646,7 @@ function RecordSettlementPanel({ booking, onPaid }: { booking: Booking; onPaid: 
 
       {/* Mode selector */}
       <div>
-        <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">
+        <label className="block text-xs font-semibold text-muted-foreground/70 uppercase tracking-wide mb-2">
           Payment method
         </label>
         <div className="grid grid-cols-3 gap-2">
@@ -657,12 +657,12 @@ function RecordSettlementPanel({ booking, onPaid }: { booking: Booking; onPaid: 
               onClick={() => setMode(m.value)}
               className={`rounded-lg border p-3 text-left transition-colors ${
                 mode === m.value
-                  ? 'border-emerald-400 bg-emerald-50 ring-1 ring-emerald-300'
-                  : 'border-gray-200 hover:bg-gray-50'
+                  ? 'border-emerald-400 bg-emerald-500/10 ring-1 ring-emerald-300'
+                  : 'border-border hover:bg-secondary'
               }`}
             >
-              <p className="text-sm font-medium text-gray-900">{m.label}</p>
-              <p className="text-xs text-gray-400">{m.hint}</p>
+              <p className="text-sm font-medium text-foreground">{m.label}</p>
+              <p className="text-xs text-muted-foreground/70">{m.hint}</p>
             </button>
           ))}
         </div>
@@ -670,7 +670,7 @@ function RecordSettlementPanel({ booking, onPaid }: { booking: Booking; onPaid: 
 
       {/* Amount */}
       <div>
-        <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">
+        <label className="block text-xs font-semibold text-muted-foreground/70 uppercase tracking-wide mb-1">
           Amount (&#8377;)
         </label>
         <input
@@ -679,14 +679,14 @@ function RecordSettlementPanel({ booking, onPaid }: { booking: Booking; onPaid: 
           onChange={(e) => setAmount(e.target.value)}
           min="1"
           step="1"
-          className="w-full h-11 rounded-lg border border-gray-300 px-3 text-base font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+          className="w-full h-11 rounded-lg border border-border px-3 text-base font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
         />
       </div>
 
       {/* Reference (optional) */}
       <div>
-        <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">
-          Reference <span className="normal-case font-normal text-gray-400">(optional)</span>
+        <label className="block text-xs font-semibold text-muted-foreground/70 uppercase tracking-wide mb-1">
+          Reference <span className="normal-case font-normal text-muted-foreground/70">(optional)</span>
         </label>
         <input
           type="text"
@@ -694,7 +694,7 @@ function RecordSettlementPanel({ booking, onPaid }: { booking: Booking; onPaid: 
           onChange={(e) => setReference(e.target.value)}
           placeholder="UPI txn ID / receipt no."
           maxLength={200}
-          className="w-full h-11 rounded-lg border border-gray-300 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+          className="w-full h-11 rounded-lg border border-border px-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
         />
       </div>
 
@@ -738,39 +738,39 @@ function SettledPaymentPanel({ booking }: { booking: Booking }) {
     : null
 
   return (
-    <div className="bg-emerald-50 rounded-xl border border-emerald-200 p-5 space-y-4">
+    <div className="bg-emerald-500/10 rounded-xl border border-emerald-200 p-5 space-y-4">
       <div className="flex items-center gap-4">
-        <div className="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center shrink-0">
-          <svg className="w-5 h-5 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <div className="w-10 h-10 rounded-full bg-emerald-500/15 flex items-center justify-center shrink-0">
+          <svg className="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
           </svg>
         </div>
         <div>
-          <p className="font-semibold text-emerald-800">Payment settled</p>
-          <p className="text-sm text-emerald-600">
+          <p className="font-semibold text-emerald-300">Payment settled</p>
+          <p className="text-sm text-emerald-400">
             {'\u20B9'}{(payment?.amount ?? booking.final_price ?? booking.quoted_price).toLocaleString('en-IN')} recorded
           </p>
         </div>
       </div>
 
       {loading ? (
-        <div className="flex items-center gap-2 text-sm text-emerald-700">
+        <div className="flex items-center gap-2 text-sm text-emerald-400">
           <Spinner className="h-4 w-4 border-emerald-600 border-t-transparent" />
           Loading settlement details…
         </div>
       ) : error ? (
-        <p className="text-sm text-emerald-700">
+        <p className="text-sm text-emerald-400">
           Payment is recorded. Settlement details are momentarily unavailable.
         </p>
       ) : (
-        <div className="grid grid-cols-2 gap-3 text-sm bg-white rounded-lg border border-emerald-100 p-4">
+        <div className="grid grid-cols-2 gap-3 text-sm bg-card rounded-lg border border-emerald-100 p-4">
           <div>
-            <p className="text-xs text-gray-400">Method</p>
-            <p className="text-gray-800 font-medium">{modeLabel ?? '\u2014'}</p>
+            <p className="text-xs text-muted-foreground/70">Method</p>
+            <p className="text-foreground font-medium">{modeLabel ?? '\u2014'}</p>
           </div>
           <div>
-            <p className="text-xs text-gray-400">Reference</p>
-            <p className="text-gray-800 font-medium break-all">{payment?.reference || '\u2014'}</p>
+            <p className="text-xs text-muted-foreground/70">Reference</p>
+            <p className="text-foreground font-medium break-all">{payment?.reference || '\u2014'}</p>
           </div>
         </div>
       )}
@@ -789,8 +789,8 @@ function Detail({
 }) {
   return (
     <div>
-      <p className="text-xs text-gray-400">{label}</p>
-      <p className={`text-gray-700 ${capitalize ? 'capitalize' : ''}`}>{value}</p>
+      <p className="text-xs text-muted-foreground/70">{label}</p>
+      <p className={`text-foreground/85 ${capitalize ? 'capitalize' : ''}`}>{value}</p>
     </div>
   )
 }

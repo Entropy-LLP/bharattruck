@@ -21,7 +21,12 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}>
+    // Dark-only by design, matching the driver app: there is no theme switcher,
+    // so the class is pinned rather than toggled. Without it the `:root` light
+    // palette wins and pages that use tokens render light while pages that
+    // hardcode dark colours stay dark — which is how this app got a dark
+    // dashboard next to a white new-booking form.
+    <html lang="en" className={`dark ${geistSans.variable} ${geistMono.variable} h-full antialiased`}>
       <head>
         <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
       </head>

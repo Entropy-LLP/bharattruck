@@ -39,7 +39,7 @@ export default function NegotiationHistory({
   }
 
   if (entries.length === 0) {
-    return <p className="text-sm text-gray-400 py-2">No negotiation history yet.</p>
+    return <p className="text-sm text-muted-foreground/70 py-2">No negotiation history yet.</p>
   }
 
   return (
@@ -55,7 +55,7 @@ export default function NegotiationHistory({
               className={`max-w-[75%] rounded-xl px-4 py-2.5 ${
                 isShipper
                   ? 'bg-blue-600 text-white rounded-br-sm'
-                  : 'bg-gray-100 text-gray-900 rounded-bl-sm'
+                  : 'bg-secondary text-foreground rounded-bl-sm'
               }`}
             >
               <p className="text-xs font-medium opacity-75 mb-0.5">
@@ -69,7 +69,7 @@ export default function NegotiationHistory({
               )}
               <p
                 className={`text-[10px] mt-1 ${
-                  isShipper ? 'text-blue-200' : 'text-gray-400'
+                  isShipper ? 'text-blue-200' : 'text-muted-foreground/70'
                 }`}
               >
                 {new Date(entry.created_at).toLocaleString('en-IN', {

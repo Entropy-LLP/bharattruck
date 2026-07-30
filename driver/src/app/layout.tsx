@@ -25,7 +25,7 @@ export const metadata: Metadata = {
 }
 
 export const viewport: Viewport = {
-  themeColor: '#2563eb',
+  themeColor: '#070A11',
   width: 'device-width',
   initialScale: 1,
   maximumScale: 1,
@@ -33,7 +33,10 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}>
+    // Dark-only by design: the login screen and the whole driver shell share one
+    // palette, and the app is read in a truck cab (often at night). There is no
+    // theme switcher, so the class is pinned rather than toggled.
+    <html lang="en" className={`dark ${geistSans.variable} ${geistMono.variable} h-full antialiased`}>
       <body className="h-full bg-background text-foreground">
         <AuthProvider>
           {children}

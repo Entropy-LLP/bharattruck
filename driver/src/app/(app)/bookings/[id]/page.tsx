@@ -85,11 +85,13 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
   }
 
   return (
-    <div className="px-4 py-4 space-y-4">
+    // A single booking is reading/form content, so it keeps a narrow measure
+    // even though the shell around it is wide.
+    <div className="mx-auto max-w-2xl px-4 py-4 space-y-4">
       {/* Back button */}
       <button
         onClick={() => router.back()}
-        className="flex items-center gap-1 text-sm text-gray-500 -ml-1"
+        className="flex items-center gap-1 text-sm text-muted-foreground -ml-1"
       >
         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
@@ -123,51 +125,55 @@ function BookingDetailsCard({ booking }: { booking: Booking }) {
   const countdown = booking.auction_deadline ? getCountdown(booking.auction_deadline) : null
 
   return (
-    <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm space-y-4">
+    <div className="bg-card rounded-2xl border border-border p-4 shadow-sm space-y-4">
       {/* Route */}
       <div className="flex items-start gap-3">
         <div className="flex flex-col items-center mt-1">
           <div className="w-2.5 h-2.5 rounded-full bg-green-500" />
-          <div className="w-0.5 h-10 bg-gray-200 my-0.5" />
+          <div className="w-0.5 h-10 bg-secondary my-0.5" />
           <div className="w-2.5 h-2.5 rounded-full bg-red-500" />
         </div>
         <div className="flex-1 min-w-0">
-          <p className="text-xs text-gray-400 uppercase tracking-wide">Pickup</p>
-          <p className="text-sm font-medium text-gray-900">{booking.source_address}</p>
+          <p className="text-xs text-muted-foreground/70 uppercase tracking-wide">Pickup</p>
+          <p className="text-sm font-medium text-foreground">{booking.source_address}</p>
           <div className="h-3" />
-          <p className="text-xs text-gray-400 uppercase tracking-wide">Delivery</p>
-          <p className="text-sm font-medium text-gray-900">{booking.destination_address}</p>
+          <p className="text-xs text-muted-foreground/70 uppercase tracking-wide">Delivery</p>
+          <p className="text-sm font-medium text-foreground">{booking.destination_address}</p>
         </div>
       </div>
 
       {/* Details grid */}
       <div className="grid grid-cols-2 gap-3 text-sm">
         <div>
-          <p className="text-xs text-gray-400 uppercase tracking-wide">Load Type</p>
-          <p className="text-sm font-medium text-gray-900 mt-0.5">{booking.load_type}</p>
+          <p className="text-xs text-muted-foreground/70 uppercase tracking-wide">Load Type</p>
+          <p className="text-sm font-medium text-foreground mt-0.5">{booking.load_type}</p>
         </div>
         <div>
-          <p className="text-xs text-gray-400 uppercase tracking-wide">Weight</p>
-          <p className="text-sm font-medium text-gray-900 mt-0.5">{booking.weight_kg.toLocaleString()} kg</p>
+          <p className="text-xs text-muted-foreground/70 uppercase tracking-wide">Weight</p>
+          <p className="text-sm font-medium text-foreground mt-0.5">{booking.weight_kg.toLocaleString()} kg</p>
         </div>
         <div>
-          <p className="text-xs text-gray-400 uppercase tracking-wide">Pickup Date</p>
-          <p className="text-sm font-medium text-gray-900 mt-0.5">{formatDate(booking.pickup_date)}</p>
+          <p className="text-xs text-muted-foreground/70 uppercase tracking-wide">Pickup Date</p>
+          <p className="text-sm font-medium text-foreground mt-0.5">{formatDate(booking.pickup_date)}</p>
         </div>
         {booking.pickup_time_slot && (
           <div>
-            <p className="text-xs text-gray-400 uppercase tracking-wide">Time Slot</p>
-            <p className="text-sm font-medium text-gray-900 mt-0.5">{booking.pickup_time_slot}</p>
+            <p className="text-xs text-muted-foreground/70 uppercase tracking-wide">Time Slot</p>
+            <p className="text-sm font-medium text-foreground mt-0.5">{booking.pickup_time_slot}</p>
+          </div>
+        )}
+        {/* Omitted for a fleet-affiliated driver — the API masks the money
+            because their owner is the commercial party on the trip. */}
+        {booking.quoted_price !== undefined && (
+          <div>
+            <p className="text-xs text-muted-foreground/70 uppercase tracking-wide">Shipper&apos;s Price</p>
+            <p className="text-base font-bold text-emerald-400 mt-0.5">{formatPrice(booking.quoted_price)}</p>
           </div>
         )}
         <div>
-          <p className="text-xs text-gray-400 uppercase tracking-wide">Shipper&apos;s Price</p>
-          <p className="text-base font-bold text-green-700 mt-0.5">{formatPrice(booking.quoted_price)}</p>
-        </div>
-        <div>
-          <p className="text-xs text-gray-400 uppercase tracking-wide">Type</p>
+          <p className="text-xs text-muted-foreground/70 uppercase tracking-wide">Type</p>
           <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold mt-0.5 ${
-            booking.booking_type === 'auction' ? 'bg-orange-100 text-orange-700' : 'bg-blue-100 text-blue-700'
+            booking.booking_type === 'auction' ? 'bg-amber-500/15 text-amber-400' : 'bg-primary/15 text-primary'
           }`}>
             {booking.booking_type === 'auction' ? 'Auction' : 'Direct'}
           </span>
@@ -175,18 +181,18 @@ function BookingDetailsCard({ booking }: { booking: Booking }) {
       </div>
 
       {booking.special_instructions && (
-        <div className="pt-2 border-t border-gray-100">
-          <p className="text-xs text-gray-400 uppercase tracking-wide mb-1">Special Instructions</p>
-          <p className="text-sm text-gray-700">{booking.special_instructions}</p>
+        <div className="pt-2 border-t border-border/60">
+          <p className="text-xs text-muted-foreground/70 uppercase tracking-wide mb-1">Special Instructions</p>
+          <p className="text-sm text-foreground/85">{booking.special_instructions}</p>
         </div>
       )}
 
       {booking.booking_type === 'auction' && countdown && (
-        <div className="flex items-center gap-2 pt-2 border-t border-gray-100">
+        <div className="flex items-center gap-2 pt-2 border-t border-border/60">
           <svg className="w-4 h-4 text-orange-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
-          <span className={`text-sm font-medium ${countdown === 'Expired' ? 'text-red-500' : 'text-orange-600'}`}>
+          <span className={`text-sm font-medium ${countdown === 'Expired' ? 'text-red-500' : 'text-amber-400'}`}>
             Auction: {countdown}
           </span>
         </div>
@@ -234,15 +240,17 @@ function SubmitQuoteForm({ booking, onSubmitted }: { booking: Booking; onSubmitt
   }
 
   return (
-    <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm">
-      <h3 className="font-bold text-gray-900 mb-1">Submit Your Quote</h3>
-      <p className="text-sm text-gray-500 mb-4">
-        Shipper is asking {formatPrice(booking.quoted_price)}
-      </p>
+    <div className="bg-card rounded-2xl border border-border p-4 shadow-sm">
+      <h3 className="font-bold text-foreground mb-1">Submit Your Quote</h3>
+      {booking.quoted_price !== undefined && (
+        <p className="text-sm text-muted-foreground mb-4">
+          Shipper is asking {formatPrice(booking.quoted_price)}
+        </p>
+      )}
 
       <form onSubmit={handleSubmit} className="space-y-3">
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Your Price (&#8377;)</label>
+          <label className="block text-sm font-medium text-foreground/85 mb-1">Your Price (&#8377;)</label>
           <input
             type="number"
             value={amount}
@@ -251,17 +259,17 @@ function SubmitQuoteForm({ booking, onSubmitted }: { booking: Booking; onSubmitt
             min="1"
             step="1"
             required
-            className="w-full h-12 rounded-xl border border-gray-300 px-4 text-lg font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            className="w-full h-12 rounded-xl border border-border px-4 text-lg font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
           />
         </div>
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Message (optional)</label>
+          <label className="block text-sm font-medium text-foreground/85 mb-1">Message (optional)</label>
           <textarea
             value={message}
             onChange={e => setMessage(e.target.value)}
             placeholder="e.g. I can deliver by 5pm"
             rows={2}
-            className="w-full rounded-xl border border-gray-300 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
+            className="w-full rounded-xl border border-border px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
           />
         </div>
         <button
@@ -344,13 +352,13 @@ function QuoteStatusSection({
   // --- Paid ---
   if (booking.status === 'paid') {
     return (
-      <div className="bg-emerald-50 rounded-2xl border-2 border-emerald-400 p-6 text-center shadow-sm">
+      <div className="bg-emerald-500/10 rounded-2xl border-2 border-emerald-400 p-6 text-center shadow-sm">
         <svg className="w-10 h-10 text-emerald-500 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
         </svg>
-        <h3 className="text-xl font-bold text-emerald-800 mb-1">Payment Received</h3>
-        <p className="text-sm text-emerald-700">Shipper has confirmed payment.</p>
-        <p className="text-lg font-bold text-emerald-700 mt-3">{formatPrice(booking.final_price ?? quote.amount)}</p>
+        <h3 className="text-xl font-bold text-emerald-300 mb-1">Payment Received</h3>
+        <p className="text-sm text-emerald-400">Shipper has confirmed payment.</p>
+        <p className="text-lg font-bold text-emerald-400 mt-3">{formatPrice(booking.final_price ?? quote.amount)}</p>
       </div>
     )
   }
@@ -358,10 +366,10 @@ function QuoteStatusSection({
   // --- Completed ---
   if (booking.status === 'completed') {
     return (
-      <div className="bg-green-50 rounded-2xl border-2 border-green-400 p-6 text-center shadow-sm">
-        <h3 className="text-xl font-bold text-green-800 mb-1">Trip Completed</h3>
-        <p className="text-sm text-green-700">Delivered successfully. Awaiting payment.</p>
-        <p className="text-lg font-bold text-green-700 mt-3">{formatPrice(booking.final_price ?? quote.amount)}</p>
+      <div className="bg-emerald-500/10 rounded-2xl border-2 border-green-400 p-6 text-center shadow-sm">
+        <h3 className="text-xl font-bold text-emerald-300 mb-1">Trip Completed</h3>
+        <p className="text-sm text-emerald-400">Delivered successfully. Awaiting payment.</p>
+        <p className="text-lg font-bold text-emerald-400 mt-3">{formatPrice(booking.final_price ?? quote.amount)}</p>
       </div>
     )
   }
@@ -375,9 +383,9 @@ function QuoteStatusSection({
     }
     return (
       <div className="space-y-4">
-        <div className="bg-gray-50 rounded-2xl border border-gray-200 p-6 text-center opacity-75">
-          <h3 className="text-lg font-semibold text-gray-500 mb-1">{msgs[quote.status]}</h3>
-          <p className="text-sm text-gray-400">{formatPrice(quote.amount)} &middot; {relativeTime(quote.submitted_at)}</p>
+        <div className="bg-secondary rounded-2xl border border-border p-6 text-center opacity-75">
+          <h3 className="text-lg font-semibold text-muted-foreground mb-1">{msgs[quote.status]}</h3>
+          <p className="text-sm text-muted-foreground/70">{formatPrice(quote.amount)} &middot; {relativeTime(quote.submitted_at)}</p>
         </div>
         {history.length > 0 && (
           <NegotiationHistorySection history={history} show={showHistory} onToggle={onToggleHistory} />
@@ -405,25 +413,25 @@ function QuoteStatusSection({
 
     return (
       <div className="space-y-4">
-        <div className="bg-orange-50 rounded-2xl border-2 border-orange-400 p-4 shadow-sm animate-pulse-border">
+        <div className="bg-amber-500/10 rounded-2xl border-2 border-orange-400 p-4 shadow-sm animate-pulse-border">
           <div className="flex items-center gap-2 mb-3">
-            <svg className="w-5 h-5 text-orange-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-5 h-5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-2.694-.833-3.464 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z" />
             </svg>
-            <h3 className="font-bold text-orange-800">Shipper Countered!</h3>
+            <h3 className="font-bold text-amber-300">Shipper Countered!</h3>
           </div>
 
-          <div className="bg-white rounded-xl p-3 mb-3 space-y-2">
+          <div className="bg-card rounded-xl p-3 mb-3 space-y-2">
             <div className="flex justify-between items-center">
-              <span className="text-sm text-gray-500">Your quote</span>
-              <span className="text-sm font-medium text-gray-600 line-through">{formatPrice(driverPreviousAmount)}</span>
+              <span className="text-sm text-muted-foreground">Your quote</span>
+              <span className="text-sm font-medium text-muted-foreground line-through">{formatPrice(driverPreviousAmount)}</span>
             </div>
             <div className="flex justify-between items-center">
-              <span className="text-sm text-gray-500">Shipper&apos;s counter</span>
-              <span className="text-lg font-bold text-orange-700">{formatPrice(counterAmount)}</span>
+              <span className="text-sm text-muted-foreground">Shipper&apos;s counter</span>
+              <span className="text-lg font-bold text-amber-400">{formatPrice(counterAmount)}</span>
             </div>
             {lastShipperEntry?.message && (
-              <p className="text-sm text-gray-600 italic border-t border-gray-100 pt-2">
+              <p className="text-sm text-muted-foreground italic border-t border-border/60 pt-2">
                 &ldquo;{lastShipperEntry.message}&rdquo;
               </p>
             )}
@@ -447,7 +455,7 @@ function QuoteStatusSection({
               <button
                 onClick={handleWithdraw}
                 disabled={withdrawing}
-                className="h-11 px-4 rounded-xl border border-gray-300 text-gray-600 font-medium text-sm active:scale-[0.98] transition-transform disabled:opacity-40"
+                className="h-11 px-4 rounded-xl border border-border text-muted-foreground font-medium text-sm active:scale-[0.98] transition-transform disabled:opacity-40"
               >
                 Withdraw
               </button>
@@ -474,30 +482,30 @@ function QuoteStatusSection({
   // --- Submitted: waiting ---
   return (
     <div className="space-y-4">
-      <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm space-y-4">
+      <div className="bg-card rounded-2xl border border-border p-4 shadow-sm space-y-4">
         <div className="text-center">
           <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold ${statusConfig.color}`}>
             {statusConfig.label}
           </span>
-          <h3 className="text-lg font-bold text-gray-900 mt-3">Your Quote</h3>
-          <p className="text-2xl font-bold text-blue-700 mt-1">{formatPrice(quote.amount)}</p>
+          <h3 className="text-lg font-bold text-foreground mt-3">Your Quote</h3>
+          <p className="text-2xl font-bold text-primary mt-1">{formatPrice(quote.amount)}</p>
           {quote.message && (
-            <p className="text-sm text-gray-500 mt-1 italic">&ldquo;{quote.message}&rdquo;</p>
+            <p className="text-sm text-muted-foreground mt-1 italic">&ldquo;{quote.message}&rdquo;</p>
           )}
-          <p className="text-xs text-gray-400 mt-2">
+          <p className="text-xs text-muted-foreground/70 mt-2">
             Submitted {relativeTime(quote.submitted_at)} &middot; {formatDateTime(quote.submitted_at)}
           </p>
         </div>
 
-        <div className="flex items-center gap-2 bg-yellow-50 rounded-xl p-3">
+        <div className="flex items-center gap-2 bg-amber-500/10 rounded-xl p-3">
           <div className="animate-spin h-4 w-4 border-2 border-yellow-600 border-t-transparent rounded-full flex-shrink-0" />
-          <p className="text-sm text-yellow-800">Waiting for shipper response...</p>
+          <p className="text-sm text-amber-300">Waiting for shipper response...</p>
         </div>
 
         <button
           onClick={handleWithdraw}
           disabled={withdrawing}
-          className="w-full h-11 rounded-xl border border-red-200 text-red-600 font-medium text-sm active:scale-[0.98] transition-transform disabled:opacity-40 flex items-center justify-center gap-2"
+          className="w-full h-11 rounded-xl border border-red-500/25 text-red-400 font-medium text-sm active:scale-[0.98] transition-transform disabled:opacity-40 flex items-center justify-center gap-2"
         >
           {withdrawing ? <Spinner className="h-4 w-4 border-red-600 border-t-transparent" /> : 'Withdraw Quote'}
         </button>
@@ -551,11 +559,11 @@ function CounterForm({
   }
 
   return (
-    <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm">
-      <h3 className="font-bold text-gray-900 mb-3">Counter-Offer</h3>
+    <div className="bg-card rounded-2xl border border-border p-4 shadow-sm">
+      <h3 className="font-bold text-foreground mb-3">Counter-Offer</h3>
       <form onSubmit={handleSubmit} className="space-y-3">
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Your Counter Price (&#8377;)</label>
+          <label className="block text-sm font-medium text-foreground/85 mb-1">Your Counter Price (&#8377;)</label>
           <input
             type="number"
             value={amount}
@@ -565,17 +573,17 @@ function CounterForm({
             step="1"
             required
             autoFocus
-            className="w-full h-12 rounded-xl border border-gray-300 px-4 text-lg font-semibold focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent"
+            className="w-full h-12 rounded-xl border border-border px-4 text-lg font-semibold focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent"
           />
         </div>
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Message (optional)</label>
+          <label className="block text-sm font-medium text-foreground/85 mb-1">Message (optional)</label>
           <textarea
             value={message}
             onChange={e => setMessage(e.target.value)}
             placeholder="e.g. Best I can do — fuel costs are high"
             rows={2}
-            className="w-full rounded-xl border border-gray-300 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent resize-none"
+            className="w-full rounded-xl border border-border px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent resize-none"
           />
         </div>
         <div className="flex gap-2">
@@ -589,7 +597,7 @@ function CounterForm({
           <button
             type="button"
             onClick={onCancel}
-            className="h-12 px-4 rounded-xl border border-gray-300 text-gray-600 font-medium text-sm active:scale-[0.98] transition-transform"
+            className="h-12 px-4 rounded-xl border border-border text-muted-foreground font-medium text-sm active:scale-[0.98] transition-transform"
           >
             Cancel
           </button>
@@ -623,7 +631,7 @@ function NavigateButton({ booking }: { booking: Booking }) {
   return (
     <button
       onClick={handleNavigate}
-      className="w-full h-12 rounded-xl border-2 border-blue-500 text-blue-700 font-semibold text-base active:scale-[0.98] transition-transform flex items-center justify-center gap-2"
+      className="w-full h-12 rounded-xl border-2 border-blue-500 text-primary font-semibold text-base active:scale-[0.98] transition-transform flex items-center justify-center gap-2"
     >
       <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
@@ -663,19 +671,19 @@ function AcceptedTripSection({
 
   return (
     <div className="space-y-4">
-      <div className="bg-green-50 rounded-2xl border-2 border-green-400 p-5 shadow-sm">
-        <h3 className="text-lg font-bold text-green-800 mb-1">You got the job!</h3>
-        <p className="text-sm text-green-700 mb-4">
+      <div className="bg-emerald-500/10 rounded-2xl border-2 border-green-400 p-5 shadow-sm">
+        <h3 className="text-lg font-bold text-emerald-300 mb-1">You got the job!</h3>
+        <p className="text-sm text-emerald-400 mb-4">
           {formatPrice(booking.final_price ?? quote.amount)} &middot; Pickup {formatDate(booking.pickup_date)}
         </p>
 
-        <div className="bg-white rounded-xl p-3 space-y-2 text-sm mb-4">
+        <div className="bg-card rounded-xl p-3 space-y-2 text-sm mb-4">
           <div className="flex justify-between">
-            <span className="text-gray-500">From</span>
+            <span className="text-muted-foreground">From</span>
             <span className="font-medium text-right max-w-[200px] truncate">{booking.source_address}</span>
           </div>
           <div className="flex justify-between">
-            <span className="text-gray-500">To</span>
+            <span className="text-muted-foreground">To</span>
             <span className="font-medium text-right max-w-[200px] truncate">{booking.destination_address}</span>
           </div>
         </div>
@@ -689,13 +697,13 @@ function AcceptedTripSection({
           </button>
         ) : (
           <div className="space-y-2">
-            <p className="text-sm text-green-800 font-medium text-center">
+            <p className="text-sm text-emerald-300 font-medium text-center">
               Confirm you have loaded the cargo and are ready to depart?
             </p>
             <div className="flex gap-2">
               <button
                 onClick={() => setShowConfirm(false)}
-                className="flex-1 h-11 rounded-xl border border-gray-300 text-gray-600 font-medium text-sm"
+                className="flex-1 h-11 rounded-xl border border-border text-muted-foreground font-medium text-sm"
               >
                 Not Yet
               </button>
@@ -937,30 +945,30 @@ function ActiveTripSection({
 
   return (
     <div className="space-y-4">
-      <div className="bg-purple-50 rounded-2xl border-2 border-purple-400 p-5 shadow-sm">
+      <div className="bg-purple-500/10 rounded-2xl border-2 border-purple-400 p-5 shadow-sm">
         <div className="flex items-center justify-between mb-3">
-          <h3 className="text-lg font-bold text-purple-800">Trip In Progress</h3>
-          <span className="text-sm font-medium text-purple-600">{elapsed}</span>
+          <h3 className="text-lg font-bold text-purple-300">Trip In Progress</h3>
+          <span className="text-sm font-medium text-purple-400">{elapsed}</span>
         </div>
 
         {/* GPS status */}
         <div className={`flex items-center gap-2 rounded-xl p-2 mb-3 ${
-          gpsActive ? 'bg-green-100' : gpsError ? 'bg-gray-100' : 'bg-yellow-100'
+          gpsActive ? 'bg-emerald-500/15' : gpsError ? 'bg-secondary' : 'bg-amber-500/15'
         }`}>
           <div className={`w-2 h-2 rounded-full flex-shrink-0 ${
-            gpsActive ? 'bg-green-500 animate-pulse' : gpsError ? 'bg-gray-400' : 'bg-yellow-500 animate-pulse'
+            gpsActive ? 'bg-green-500 animate-pulse' : gpsError ? 'bg-muted-foreground' : 'bg-yellow-500 animate-pulse'
           }`} />
           <span className={`text-xs font-medium ${
-            gpsActive ? 'text-green-700' : gpsError ? 'text-gray-500' : 'text-yellow-700'
+            gpsActive ? 'text-emerald-400' : gpsError ? 'text-muted-foreground' : 'text-amber-400'
           }`}>
             {gpsActive ? 'Location active — sharing with shipper' : gpsError ?? 'Acquiring location...'}
           </span>
         </div>
 
         {/* Destination */}
-        <div className="bg-white rounded-xl p-3 text-sm mb-4">
-          <p className="text-xs text-gray-400 uppercase tracking-wide mb-1">Delivering to</p>
-          <p className="font-medium text-gray-900">{booking.destination_address}</p>
+        <div className="bg-card rounded-xl p-3 text-sm mb-4">
+          <p className="text-xs text-muted-foreground/70 uppercase tracking-wide mb-1">Delivering to</p>
+          <p className="font-medium text-foreground">{booking.destination_address}</p>
         </div>
 
         {/* Proof-of-delivery: receiver-OTP gate. The trip completes only
@@ -977,14 +985,14 @@ function ActiveTripSection({
 
         {deliverPhase === 'confirm' && (
           <div className="space-y-3">
-            <div className="bg-white rounded-xl p-3 text-sm">
-              <p className="text-xs text-gray-400 uppercase tracking-wide mb-1">
+            <div className="bg-card rounded-xl p-3 text-sm">
+              <p className="text-xs text-muted-foreground/70 uppercase tracking-wide mb-1">
                 Delivery code will be sent to
               </p>
               {receiverEmail ? (
-                <p className="font-medium text-gray-900 break-all">{receiverEmail}</p>
+                <p className="font-medium text-foreground break-all">{receiverEmail}</p>
               ) : (
-                <p className="font-medium text-red-600">
+                <p className="font-medium text-red-400">
                   No receiver email is set for this booking — the shipper must add one before delivery can be confirmed.
                 </p>
               )}
@@ -992,7 +1000,7 @@ function ActiveTripSection({
             <div className="flex gap-2">
               <button
                 onClick={() => setDeliverPhase('idle')}
-                className="flex-1 h-11 rounded-xl border border-gray-300 text-gray-600 font-medium text-sm"
+                className="flex-1 h-11 rounded-xl border border-border text-muted-foreground font-medium text-sm"
               >
                 Cancel
               </button>
@@ -1008,21 +1016,21 @@ function ActiveTripSection({
         )}
 
         {deliverPhase === 'sent' && (
-          <div className="bg-white rounded-xl p-4 space-y-3">
+          <div className="bg-card rounded-xl p-4 space-y-3">
             <div className="flex items-center justify-center gap-2">
               <Spinner className="h-4 w-4 border-purple-600 border-t-transparent" />
-              <p className="text-sm font-semibold text-purple-800">Awaiting receiver confirmation</p>
+              <p className="text-sm font-semibold text-purple-300">Awaiting receiver confirmation</p>
             </div>
-            <p className="text-sm text-gray-600 text-center">
+            <p className="text-sm text-muted-foreground text-center">
               Delivery code sent to{' '}
-              <span className="font-medium text-gray-900 break-all">{receiverEmail ?? 'the receiver'}</span>.
+              <span className="font-medium text-foreground break-all">{receiverEmail ?? 'the receiver'}</span>.
               The trip is marked delivered once they enter the code.
             </p>
             <div className="flex gap-2">
               <button
                 onClick={handleCancelAwaiting}
                 disabled={sending}
-                className="flex-1 h-11 rounded-xl border border-gray-300 text-gray-600 font-medium text-sm disabled:opacity-40"
+                className="flex-1 h-11 rounded-xl border border-border text-muted-foreground font-medium text-sm disabled:opacity-40"
               >
                 Cancel
               </button>
@@ -1055,10 +1063,10 @@ function NegotiationHistorySection({
   onToggle: () => void
 }) {
   return (
-    <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm">
+    <div className="bg-card rounded-2xl border border-border p-4 shadow-sm">
       <button
         onClick={onToggle}
-        className="flex items-center gap-2 text-sm text-blue-600 font-medium w-full justify-center"
+        className="flex items-center gap-2 text-sm text-primary font-medium w-full justify-center"
       >
         <svg
           className={`w-4 h-4 transition-transform ${show ? 'rotate-180' : ''}`}
@@ -1081,18 +1089,18 @@ function NegotiationHistorySection({
                   className={`max-w-[75%] rounded-2xl px-4 py-2.5 ${
                     isDriver
                       ? 'bg-blue-600 text-white rounded-br-md'
-                      : 'bg-gray-100 text-gray-900 rounded-bl-md'
+                      : 'bg-secondary text-foreground rounded-bl-md'
                   }`}
                 >
-                  <p className={`text-base font-bold ${isDriver ? 'text-white' : 'text-gray-900'}`}>
+                  <p className={`text-base font-bold ${isDriver ? 'text-white' : 'text-foreground'}`}>
                     {formatPrice(entry.amount)}
                   </p>
                   {entry.message && (
-                    <p className={`text-sm mt-0.5 ${isDriver ? 'text-blue-100' : 'text-gray-600'}`}>
+                    <p className={`text-sm mt-0.5 ${isDriver ? 'text-blue-100' : 'text-muted-foreground'}`}>
                       {entry.message}
                     </p>
                   )}
-                  <p className={`text-xs mt-1 ${isDriver ? 'text-blue-200' : 'text-gray-400'}`}>
+                  <p className={`text-xs mt-1 ${isDriver ? 'text-blue-200' : 'text-muted-foreground/70'}`}>
                     {isDriver ? 'You' : 'Shipper'} &middot; {relativeTime(entry.created_at)}
                   </p>
                 </div>

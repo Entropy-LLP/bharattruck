@@ -158,19 +158,19 @@ export default function NewBookingPage() {
     }
   }
 
-  const inputClass = 'w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent'
-  const labelClass = 'block text-sm font-medium text-gray-700 mb-1'
+  const inputClass = 'w-full rounded-lg border border-border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent'
+  const labelClass = 'block text-sm font-medium text-foreground/85 mb-1'
 
   return (
     <>
       <Navbar />
       <main className="max-w-2xl mx-auto px-4 sm:px-6 py-6">
-        <h1 className="text-xl font-bold text-gray-900 mb-6">Create New Booking</h1>
+        <h1 className="text-xl font-bold text-foreground mb-6">Create New Booking</h1>
 
         <form onSubmit={handleSubmit} className="space-y-6">
           {/* Source */}
-          <fieldset className="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
-            <legend className="text-sm font-semibold text-gray-900 px-1">Pickup Location</legend>
+          <fieldset className="bg-card rounded-xl border border-border p-5 space-y-4">
+            <legend className="text-sm font-semibold text-foreground px-1">Pickup Location</legend>
             <div>
               <label htmlFor="source_address" className={labelClass}>Address</label>
               <input id="source_address" name="source_address" required className={inputClass} placeholder="e.g. 45 MG Road, Mumbai" />
@@ -206,8 +206,8 @@ export default function NewBookingPage() {
           </fieldset>
 
           {/* Destination */}
-          <fieldset className="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
-            <legend className="text-sm font-semibold text-gray-900 px-1">Drop Location</legend>
+          <fieldset className="bg-card rounded-xl border border-border p-5 space-y-4">
+            <legend className="text-sm font-semibold text-foreground px-1">Drop Location</legend>
             <div>
               <label htmlFor="destination_address" className={labelClass}>Address</label>
               <input id="destination_address" name="destination_address" required className={inputClass} placeholder="e.g. 12 Brigade Road, Bangalore" />
@@ -243,13 +243,13 @@ export default function NewBookingPage() {
             <div>
               <label htmlFor="receiver_email" className={labelClass}>Receiver&apos;s email (for delivery confirmation)</label>
               <input id="receiver_email" name="receiver_email" type="email" required className={inputClass} placeholder="e.g. consignee@example.com" />
-              <p className="mt-1 text-xs text-gray-500">The person receiving the goods enters a code emailed here to confirm delivery.</p>
+              <p className="mt-1 text-xs text-muted-foreground">The person receiving the goods enters a code emailed here to confirm delivery.</p>
             </div>
           </fieldset>
 
           {/* Cargo Details — these drive the price quote */}
-          <fieldset className="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
-            <legend className="text-sm font-semibold text-gray-900 px-1">Cargo &amp; Vehicle</legend>
+          <fieldset className="bg-card rounded-xl border border-border p-5 space-y-4">
+            <legend className="text-sm font-semibold text-foreground px-1">Cargo &amp; Vehicle</legend>
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label htmlFor="vehicle_type" className={labelClass}>Vehicle Type</label>
@@ -292,7 +292,7 @@ export default function NewBookingPage() {
                 />
               </div>
               <div className="flex items-end">
-                <p className="text-xs text-gray-500 pb-2">
+                <p className="text-xs text-muted-foreground pb-2">
                   Distance is calculated from the pickup &amp; drop coordinates above.
                 </p>
               </div>
@@ -304,30 +304,30 @@ export default function NewBookingPage() {
                 type="button"
                 onClick={handleGetQuote}
                 disabled={quoting}
-                className="w-full bg-gray-900 text-white rounded-lg py-2.5 text-sm font-medium hover:bg-gray-800 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+                className="w-full bg-primary text-primary-foreground rounded-lg py-2.5 text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
               >
                 {quoting && <Spinner className="h-4 w-4 border-white border-t-transparent" />}
                 {quoting ? 'Getting price…' : quote ? 'Refresh Quote' : 'Get Quote'}
               </button>
 
               {quote && (
-                <div className="mt-4 rounded-lg border border-green-200 bg-green-50 p-4">
+                <div className="mt-4 rounded-lg border border-green-200 bg-emerald-500/10 p-4">
                   <div className="flex items-baseline justify-between">
-                    <span className="text-sm font-semibold text-gray-900">
+                    <span className="text-sm font-semibold text-foreground">
                       {bookingType === 'auction' ? 'Estimated Price' : 'Locked Price'}
                     </span>
-                    <span className="text-lg font-bold text-green-700">{inr(quote.quoted_price)}</span>
+                    <span className="text-lg font-bold text-emerald-400">{inr(quote.quoted_price)}</span>
                   </div>
-                  <dl className="mt-3 space-y-1 text-xs text-gray-600">
-                    <div className="flex justify-between text-gray-500"><dt>Distance (est.)</dt><dd>{quote.breakdown.distance_km} km</dd></div>
+                  <dl className="mt-3 space-y-1 text-xs text-muted-foreground">
+                    <div className="flex justify-between text-muted-foreground"><dt>Distance (est.)</dt><dd>{quote.breakdown.distance_km} km</dd></div>
                     <div className="flex justify-between"><dt>Fuel</dt><dd>{inr(quote.breakdown.fuel_cost)}</dd></div>
                     <div className="flex justify-between"><dt>Driver wage</dt><dd>{inr(quote.breakdown.driver_wage)}</dd></div>
                     <div className="flex justify-between"><dt>Per-km operating</dt><dd>{inr(quote.breakdown.per_km_operating_cost)}</dd></div>
                     <div className="flex justify-between"><dt>Handling</dt><dd>{inr(quote.breakdown.handling)}</dd></div>
                     <div className="flex justify-between border-t border-green-200 pt-1"><dt>Platform fee</dt><dd>{inr(quote.platform_fee)}</dd></div>
-                    <div className="flex justify-between text-gray-500"><dt>Vehicle class</dt><dd>{quote.breakdown.vehicle_class}</dd></div>
+                    <div className="flex justify-between text-muted-foreground"><dt>Vehicle class</dt><dd>{quote.breakdown.vehicle_class}</dd></div>
                   </dl>
-                  <p className="mt-3 text-[11px] text-gray-500">
+                  <p className="mt-3 text-[11px] text-muted-foreground">
                     {bookingType === 'auction' ? (
                       <>
                         This is a reference estimate for an auction booking — the final charge is the
@@ -347,8 +347,8 @@ export default function NewBookingPage() {
           </fieldset>
 
           {/* Schedule */}
-          <fieldset className="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
-            <legend className="text-sm font-semibold text-gray-900 px-1">Schedule</legend>
+          <fieldset className="bg-card rounded-xl border border-border p-5 space-y-4">
+            <legend className="text-sm font-semibold text-foreground px-1">Schedule</legend>
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label htmlFor="pickup_date" className={labelClass}>Pickup Date</label>
@@ -366,8 +366,8 @@ export default function NewBookingPage() {
           </fieldset>
 
           {/* Booking Type */}
-          <fieldset className="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
-            <legend className="text-sm font-semibold text-gray-900 px-1">Booking Type</legend>
+          <fieldset className="bg-card rounded-xl border border-border p-5 space-y-4">
+            <legend className="text-sm font-semibold text-foreground px-1">Booking Type</legend>
             <div className="flex gap-6">
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
@@ -375,7 +375,7 @@ export default function NewBookingPage() {
                   name="booking_type_radio"
                   checked={bookingType === 'auction'}
                   onChange={() => setBookingType('auction')}
-                  className="text-blue-600"
+                  className="text-primary"
                 />
                 <span className="text-sm">Auction (open to all drivers)</span>
               </label>
@@ -385,7 +385,7 @@ export default function NewBookingPage() {
                   name="booking_type_radio"
                   checked={bookingType === 'direct'}
                   onChange={() => setBookingType('direct')}
-                  className="text-blue-600"
+                  className="text-primary"
                 />
                 <span className="text-sm">Direct (specific driver)</span>
               </label>

@@ -5,7 +5,10 @@
  * go to the cross-origin gateway (NEXT_PUBLIC_API_URL) and must always hit the
  * network. This handler only touches same-origin GET requests.
  */
-const CACHE = 'bt-driver-shell-v1'
+// Bump this on any change to the caching rules below. `activate` deletes every
+// cache whose key !== CACHE, so a bump is what evicts stale entries from
+// already-installed clients.
+const CACHE = 'bt-driver-shell-v2'
 const SHELL = ['/']
 
 self.addEventListener('install', (event) => {
