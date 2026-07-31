@@ -690,3 +690,20 @@ export interface AlertsData {
 export function getTripAlerts(bookingId: string) {
   return request<AlertsData>(`/tracking/alerts/${bookingId}`)
 }
+
+/**
+ * Alerts for a BACKGROUND poll — deliberately routed through `authRequest`, not `request`.
+ *
+ * `request()` treats any failure of the token refresh as session death: it clears both
+ * tokens and hard-navigates to /login. That is correct for an action the driver just took,
+ * and dangerous for a timer. This poll runs every 60s for the whole trip, so on `request()`
+ * a single refresh attempt landing inside a tunnel would log the driver out mid-delivery and
+ * take Mark-as-Delivered with it.
+ *
+ * `authRequest` neither refreshes nor redirects, so a 401 here simply rejects and the alerts
+ * card hides itself until the next tick. Failing quiet is the right trade for a decoration;
+ * never for the POD flow, which keeps using `request()`.
+ */
+export function getTripAlertsQuiet(bookingId: string) {
+  return authRequest<AlertsData>(`/tracking/alerts/${bookingId}`)
+}

@@ -22,7 +22,7 @@ import {
   ApiError,
   getPumps,
   getFuel,
-  getTripAlerts,
+  getTripAlertsQuiet,
   type PetrolPump,
   type FuelData,
   type TripAlert,
@@ -61,11 +61,13 @@ function AlertsCard({ bookingId }: { bookingId: string }) {
 
     async function load() {
       try {
-        const data = await getTripAlerts(bookingId)
+        const data = await getTripAlertsQuiet(bookingId)
         if (cancelled) return
         // Only unresolved alerts matter to a driver mid-trip; the resolved history is the
         // fleet owner's and the shipper's concern, not something to nag the driver with.
-        setAlerts(data.alerts.filter((a) => !a.resolved_at))
+        // Array guard: this payload is not validated field-by-field, and `.filter` on a
+        // missing field would throw inside render.
+        setAlerts(Array.isArray(data?.alerts) ? data.alerts.filter((a) => !a.resolved_at) : [])
         setFailed(false)
       } catch {
         if (!cancelled) setFailed(true)
@@ -87,15 +89,22 @@ function AlertsCard({ bookingId }: { bookingId: string }) {
 
   return (
     <div className="space-y-2">
+      {/* NOTE: no blue-* classes below. driver/src/app/globals.css redefines
+          --color-blue-500 through --color-blue-800 to the brand ORANGE but leaves
+          blue-300/400 as stock Tailwind blue, so the obvious "info" styling renders as
+          orange-on-blue. Info uses the neutral secondary surface instead, which also keeps
+          it visually distinct from the amber warning tier. */}
       {alerts.map((a) => (
         <div
           key={a.id}
+          role="status"
+          aria-live="polite"
           className={`flex items-start gap-2 rounded-xl p-3 border ${
             a.severity === 'critical'
               ? 'bg-red-500/10 border-red-400/40'
               : a.severity === 'warning'
                 ? 'bg-amber-500/10 border-amber-400/40'
-                : 'bg-blue-500/10 border-blue-400/40'
+                : 'bg-secondary border-border'
           }`}
         >
           <AlertTriangle
@@ -104,7 +113,7 @@ function AlertsCard({ bookingId }: { bookingId: string }) {
                 ? 'text-red-400'
                 : a.severity === 'warning'
                   ? 'text-amber-400'
-                  : 'text-blue-400'
+                  : 'text-muted-foreground'
             }`}
           />
           <p
@@ -113,7 +122,7 @@ function AlertsCard({ bookingId }: { bookingId: string }) {
                 ? 'text-red-300'
                 : a.severity === 'warning'
                   ? 'text-amber-300'
-                  : 'text-blue-300'
+                  : 'text-foreground'
             }`}
           >
             {a.message ?? a.type}
@@ -142,7 +151,7 @@ function FuelCard({ bookingId }: { bookingId: string }) {
         setFuel(data)
         setPrice(String(data.diesel_price_inr))
       } catch (err) {
-        setError(err instanceof ApiError ? err.message : 'Could not load the fuel estimate')
+        setError('Could not load the fuel estimate just now.')
       } finally {
         setLoading(false)
       }
@@ -166,7 +175,14 @@ function FuelCard({ bookingId }: { bookingId: string }) {
 
       {error && <p className="text-xs text-muted-foreground">{error}</p>}
 
-      {fuel && !error && (
+      {/* distance_basis 'unknown' means no route has been computed yet, so every figure
+          below would be zero. Rendering "Rs 0" would read as "this trip costs nothing",
+          which is worse than admitting we cannot say yet. */}
+      {fuel && !error && fuel.distance_basis === 'unknown' && (
+        <p className="text-xs text-muted-foreground">{fuel.distance_note}</p>
+      )}
+
+      {fuel && !error && fuel.distance_basis !== 'unknown' && (
         <>
           <p className="text-2xl font-bold text-foreground tabular-nums">
             {inr(fuel.estimated_fuel_cost_inr)}
@@ -188,7 +204,7 @@ function FuelCard({ bookingId }: { bookingId: string }) {
 
           {editing ? (
             <div className="flex items-center gap-2 mt-3">
-              <div className="flex-1 flex items-center gap-1 bg-secondary rounded-xl px-3 h-10">
+              <div className="flex-1 flex items-center gap-1 bg-secondary rounded-xl px-3 h-11">
                 <span className="text-sm text-muted-foreground">₹</span>
                 <input
                   type="number"
@@ -207,7 +223,7 @@ function FuelCard({ bookingId }: { bookingId: string }) {
                   if (Number.isFinite(n) && n > 0) void load(n)
                   setEditing(false)
                 }}
-                className="h-10 px-4 rounded-xl bg-purple-600 text-white text-sm font-semibold active:scale-95 transition-transform"
+                className="h-11 px-4 rounded-xl bg-purple-600 text-white text-sm font-semibold active:scale-95 transition-transform"
               >
                 Apply
               </button>
@@ -216,7 +232,7 @@ function FuelCard({ bookingId }: { bookingId: string }) {
             <button
               type="button"
               onClick={() => setEditing(true)}
-              className="mt-3 text-xs text-purple-400 font-medium"
+              className="mt-3 h-11 -mx-1 px-1 flex items-center text-xs text-purple-400 font-medium"
             >
               Diesel at ₹{fuel.diesel_price_inr}/L — change
             </button>
@@ -246,11 +262,15 @@ function PumpsCard({
     setError(null)
     try {
       const data = await getPumps(bookingId)
-      setPumps(data.pumps)
-      setSource(data.origin_source)
-      onPumpsLoaded?.(data.pumps)
+      // Array guard: the render below dereferences .length on anything non-null.
+      const list = Array.isArray(data?.pumps) ? data.pumps : []
+      setPumps(list)
+      setSource(data?.origin_source ?? null)
+      onPumpsLoaded?.(list)
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not find nearby pumps')
+      // Deliberately NOT err.message: an UPSTREAM_ERROR from tracking-service carries up
+      // to 200 chars of raw Google response body, which is noise to a driver.
+      setError('Could not find nearby pumps just now — tap to try again.')
     } finally {
       setLoading(false)
     }
@@ -267,8 +287,12 @@ function PumpsCard({
           <button
             type="button"
             onClick={() => void load()}
+            // Disabled while in flight: every call here is a BILLED Places (New) request,
+            // and a 16px icon on a moving truck gets double-tapped constantly.
+            disabled={loading}
             aria-label="Search again from my current position"
-            className="text-muted-foreground active:scale-90 transition-transform"
+            aria-busy={loading}
+            className="-m-2 p-2 h-11 w-11 flex items-center justify-center text-muted-foreground active:scale-90 transition-transform disabled:opacity-40"
           >
             <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
           </button>
@@ -282,6 +306,8 @@ function PumpsCard({
           type="button"
           onClick={() => void load()}
           disabled={loading}
+          aria-label="Find nearest pumps"
+          aria-busy={loading}
           className="w-full h-11 rounded-xl bg-secondary text-foreground font-medium text-sm active:scale-[0.98] transition-transform disabled:opacity-40 flex items-center justify-center gap-2"
         >
           {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Find nearest pumps'}
@@ -316,7 +342,7 @@ function PumpsCard({
                   target="_blank"
                   rel="noopener noreferrer"
                   aria-label={`Navigate to ${p.name}`}
-                  className="flex-shrink-0 h-9 w-9 rounded-full bg-secondary flex items-center justify-center active:scale-90 transition-transform"
+                  className="flex-shrink-0 h-11 w-11 rounded-full bg-secondary flex items-center justify-center active:scale-90 transition-transform"
                 >
                   <Navigation className="h-4 w-4 text-purple-400" />
                 </a>

@@ -121,8 +121,13 @@ export function useMapsAuthFailed(): boolean {
  *
  * `onReady` must be called when the map genuinely paints (the `tilesloaded` event).
  */
-export function useMapRenderWatchdog(timeoutMs = 8000): { timedOut: boolean; onReady: () => void } {
+export function useMapRenderWatchdog(timeoutMs = 8000): {
+  timedOut: boolean
+  onReady: () => void
+  retry: () => void
+} {
   const [timedOut, setTimedOut] = useState(false)
+  const [attempt, setAttempt] = useState(0)
   const ready = useRef(false)
 
   useEffect(() => {
@@ -131,14 +136,30 @@ export function useMapRenderWatchdog(timeoutMs = 8000): { timedOut: boolean; onR
       if (!ready.current) setTimedOut(true)
     }, timeoutMs)
     return () => clearTimeout(id)
-  }, [timeoutMs])
+    // `attempt` re-arms the timer after a retry.
+  }, [timeoutMs, attempt])
 
   const onReady = useCallback(() => {
     ready.current = true
     setTimedOut(false)
   }, [])
 
-  return { timedOut, onReady }
+  /**
+   * Re-arm after a timeout.
+   *
+   * Needed because the watchdog is otherwise a ONE-WAY latch: firing it swaps in the
+   * fallback, which unmounts the <Map> that owns the only `tilesloaded` listener — so
+   * `onReady` can never run and the flag can never clear. A map that was merely slow (a
+   * truck stop with one bar of signal) would stay replaced for the life of the mount. The
+   * fallback surfaces this as a "Try again" button.
+   */
+  const retry = useCallback(() => {
+    ready.current = false
+    setTimedOut(false)
+    setAttempt((n) => n + 1)
+  }, [])
+
+  return { timedOut, onReady, retry }
 }
 
 // ── 2. Render-error boundary ──────────────────────────────────
@@ -150,7 +171,7 @@ export function useMapRenderWatchdog(timeoutMs = 8000): { timedOut: boolean; onR
  * `componentDidCatch` — this is one of the few places a class is the only option.
  */
 export class MapBoundary extends Component<
-  { children: ReactNode; fallback: ReactNode },
+  { children: ReactNode; fallback: ReactNode; label?: string },
   { crashed: boolean }
 > {
   state = { crashed: false }
@@ -160,12 +181,25 @@ export class MapBoundary extends Component<
   }
 
   componentDidCatch(error: Error) {
-    // Logged, not swallowed: the owner keeps a working dashboard, and we still want the
+    // Logged, not swallowed: the driver keeps working trip controls, and we still want the
     // real reason in the console for whoever debugs it.
-    console.warn('[driver] Live map failed to render; trip controls unaffected.', error)
+    console.warn(`[driver] ${this.props.label ?? 'Live map'} failed to render; trip controls unaffected.`, error)
   }
 
   render() {
     return this.state.crashed ? this.props.fallback : this.props.children
   }
 }
+
+/**
+ * Same boundary, honestly named, for the non-map panels.
+ *
+ * The insights panel renders three separate server payloads (pumps, fuel, alerts) that this
+ * client does not validate field-by-field. An unexpected shape throwing during render would,
+ * without this, unmount the entire booking page — including Mark as Delivered — over a
+ * cosmetic fuel card. Same reasoning as the map: nothing optional may take down the trip.
+ *
+ * NOTE (D-013): `fleet/src/components/map-guard.tsx` is the sibling copy and does NOT yet
+ * have `retry` or this alias. Sync it by hand when that app next needs them.
+ */
+export const SubtreeBoundary = MapBoundary

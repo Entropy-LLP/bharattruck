@@ -26,6 +26,7 @@ import { useScreenWakeLock } from '@/lib/use-wake-lock'
 import Spinner from '@/components/spinner'
 import LiveTrackMap from '@/components/maps/LiveTrackMap'
 import TripInsights from '@/components/trip-insights'
+import { SubtreeBoundary } from '@/components/maps/map-guard'
 
 export default function BookingDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params)
@@ -1008,21 +1009,6 @@ function ActiveTripSection({
 
   return (
     <div className="space-y-4">
-      {/* The map sits ABOVE the trip card, not inside it: it is the thing a driver glances at
-          while moving, and it must never push the Mark-as-Delivered button off screen. A
-          booking without coordinates (older rows) simply renders no map. */}
-      {hasCoords && (
-        <LiveTrackMap
-          origin={origin}
-          dest={dest}
-          encodedPolyline={route?.polyline}
-          bounds={route?.bounds}
-          self={selfPos}
-          heading={heading}
-          pumps={pumpMarkers}
-        />
-      )}
-
       <div className="bg-purple-500/10 rounded-2xl border-2 border-purple-400 p-5 shadow-sm">
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-lg font-bold text-purple-300">Trip In Progress</h3>
@@ -1124,11 +1110,41 @@ function ActiveTripSection({
         )}
       </div>
 
+      {/* The map goes BELOW the trip card, not above it.
+          Above, it measured ~42vh and pushed "Mark as Delivered" a full screen down — on a
+          375x812 phone the booking details card already fills most of the fold, so the map
+          was displacing the one action that gets the driver paid. Orientation is worth a
+          scroll; the money action is not. A booking without coordinates (older rows) simply
+          renders no map. */}
+      {hasCoords && (
+        <LiveTrackMap
+          origin={origin}
+          dest={dest}
+          encodedPolyline={route?.polyline}
+          bounds={route?.bounds}
+          self={selfPos}
+          heading={heading}
+          pumps={pumpMarkers}
+        />
+      )}
+
       <NavigateButton booking={booking} />
 
       {/* Pumps / fuel / alerts. Below the trip controls by design — useful, never in the way
-          of the action that gets the driver paid. */}
-      <TripInsights bookingId={booking.id} onPumpsLoaded={setPumpMarkers} />
+          of the action that gets the driver paid.
+          Boundaried for the same reason the map is: this panel renders three server payloads
+          the client does not validate field-by-field, and an unexpected shape throwing during
+          render would otherwise unmount the whole booking page, Mark as Delivered included. */}
+      <SubtreeBoundary
+        label="Trip insights"
+        fallback={
+          <p className="text-xs text-muted-foreground px-1">
+            Trip insights are unavailable right now. Your delivery controls above are unaffected.
+          </p>
+        }
+      >
+        <TripInsights bookingId={booking.id} onPumpsLoaded={setPumpMarkers} />
+      </SubtreeBoundary>
     </div>
   )
 }

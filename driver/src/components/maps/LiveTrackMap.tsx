@@ -87,7 +87,7 @@ export default function LiveTrackMap({
   className,
 }: LiveTrackMapProps) {
   const authFailed = useMapsAuthFailed()
-  const { timedOut, onReady } = useMapRenderWatchdog()
+  const { timedOut, onReady, retry } = useMapRenderWatchdog()
 
   // Follow state lives HERE, not inside the map, because the recentre button must render in
   // the wrapper below. A button returned as a child of <Map> has no guaranteed positioned
@@ -109,7 +109,14 @@ export default function LiveTrackMap({
     return (
       <MapUnavailable
         className={className}
-        detail="Google would not load the map here. Navigation still works."
+        detail={
+          authFailed
+            ? 'Google would not load the map here. Navigation still works.'
+            : 'The map is taking too long to load — you may be on a weak signal.'
+        }
+        // Only a timeout is retryable. A rejected key will not fix itself, and offering a
+        // dead button would just waste taps at the roadside.
+        onRetry={authFailed ? undefined : retry}
       />
     )
   }
@@ -124,7 +131,13 @@ export default function LiveTrackMap({
             defaultCenter={center}
             defaultZoom={self ? 14 : 7}
             mapId={GOOGLE_MAPS_MAP_ID || undefined}
-            gestureHandling="greedy"
+            // COOPERATIVE, not "greedy". This map is embedded mid-page in a scrolling
+            // mobile view: with "greedy" the map swallows one-finger drags, so a thumb
+            // landing anywhere on it stops the page scrolling and the driver cannot reach
+            // Mark as Delivered below. Cooperative pans on two fingers and lets a
+            // one-finger drag scroll the page, which is the right default for an embedded
+            // map. (The shipper copy uses greedy because its map is the whole screen.)
+            gestureHandling="cooperative"
             disableDefaultUI
             style={{ width: '100%', height: '100%' }}
           >
@@ -162,7 +175,14 @@ export default function LiveTrackMap({
               </AdvancedMarker>
             )}
 
-            <RouteOverlay path={path} origin={origin} dest={dest} bounds={bounds} onReady={onReady} />
+            <RouteOverlay
+              path={path}
+              origin={origin}
+              dest={dest}
+              bounds={bounds}
+              onReady={onReady}
+              hasSelf={!!self}
+            />
             <FollowCamera
               self={self ?? null}
               following={following}
@@ -206,12 +226,15 @@ function RouteOverlay({
   dest,
   bounds,
   onReady,
+  hasSelf,
 }: {
   path: LatLng[]
   origin: LatLng
   dest: LatLng
   bounds?: MapBounds
   onReady: () => void
+  /** When true the driver has a fix, so FollowCamera owns the camera instead. */
+  hasSelf: boolean
 }) {
   const map = useMap()
   const framed = useRef(false)
@@ -237,7 +260,12 @@ function RouteOverlay({
         : null
     line?.setMap(map)
 
-    if (!framed.current) {
+    // Frame the whole corridor ONLY while we do not know where the driver is. Once there is
+    // a fix, FollowCamera takes over at navigation zoom — fitting a 1,134 km route would
+    // otherwise zoom the driver out to a country view, which tells them nothing about the
+    // road ahead. (This is also why `defaultZoom` alone was never enough: fitBounds ran
+    // immediately after and overrode it.)
+    if (!framed.current && !hasSelf) {
       const box = new google.maps.LatLngBounds()
       if (bounds) {
         box.extend({ lat: bounds.sw_lat, lng: bounds.sw_lng })
@@ -263,7 +291,7 @@ function RouteOverlay({
     // 7,471 vertices on the Nagpur-Delhi lane — which burns CPU on a cheap Android and
     // visibly flickers the route out from under the driver.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [map, path, origin.lat, origin.lng, dest.lat, dest.lng, bounds])
+  }, [map, path, origin.lat, origin.lng, dest.lat, dest.lng, bounds, hasSelf])
 
   return null
 }
@@ -302,9 +330,18 @@ function FollowCamera({
     return () => listener.remove()
   }, [map, onUserPan])
 
+  const zoomed = useRef(false)
+
   useEffect(() => {
     if (!map || !self || !following) return
     map.panTo(self)
+    // Zoom in ONCE, on the first fix. Doing it on every fix would fight the driver's own
+    // pinch-zoom; never doing it leaves them at the route-overview zoom, where their own
+    // position is a dot on a corridor and the next junction is invisible.
+    if (!zoomed.current) {
+      zoomed.current = true
+      if ((map.getZoom() ?? 0) < 14) map.setZoom(15)
+    }
   }, [map, self, following])
 
   return null
@@ -380,7 +417,15 @@ function Pin({ color, label }: { color: string; label: string }) {
   )
 }
 
-function MapUnavailable({ className, detail }: { className?: string; detail: string }) {
+function MapUnavailable({
+  className,
+  detail,
+  onRetry,
+}: {
+  className?: string
+  detail: string
+  onRetry?: () => void
+}) {
   return (
     <div
       className={`${className ?? DEFAULT_CLASS} bg-card border border-border flex items-center justify-center p-6 text-center`}
@@ -389,6 +434,15 @@ function MapUnavailable({ className, detail }: { className?: string; detail: str
         <MapPin className="w-6 h-6 text-muted-foreground/50 mx-auto mb-2" />
         <p className="text-sm font-medium text-foreground">Map unavailable</p>
         <p className="text-xs text-muted-foreground mt-1">{detail}</p>
+        {onRetry && (
+          <button
+            type="button"
+            onClick={onRetry}
+            className="mt-3 h-11 px-5 rounded-xl bg-secondary text-foreground text-sm font-medium active:scale-95 transition-transform"
+          >
+            Try again
+          </button>
+        )}
       </div>
     </div>
   )
