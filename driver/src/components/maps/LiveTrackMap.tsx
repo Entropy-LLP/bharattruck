@@ -255,7 +255,15 @@ function RouteOverlay({
     return () => {
       line?.setMap(null)
     }
-  }, [map, path, origin, dest, bounds])
+    // Depends on the COORDINATES, not on the origin/dest object identities.
+    //
+    // The parent memoises both, but this list is the load-bearing guard: a caller passing
+    // `origin={{lat, lng}}` inline creates a new object every render, and every GPS fix
+    // re-renders. With object deps that tears down and rebuilds the Polyline on each fix —
+    // 7,471 vertices on the Nagpur-Delhi lane — which burns CPU on a cheap Android and
+    // visibly flickers the route out from under the driver.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [map, path, origin.lat, origin.lng, dest.lat, dest.lng, bounds])
 
   return null
 }

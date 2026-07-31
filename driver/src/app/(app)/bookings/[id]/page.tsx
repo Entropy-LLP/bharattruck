@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback, useRef, use } from 'react'
+import { useEffect, useState, useCallback, useMemo, useRef, use } from 'react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
 import {
@@ -983,6 +983,18 @@ function ActiveTripSection({
 
   const receiverEmail = podContext?.receiver_email ?? null
 
+  // Memoised so the map's effects do not see a fresh object on every render. Every GPS fix
+  // sets state here, so an inline `origin={{...}}` would hand the map new identities several
+  // times a minute and make it rebuild the route polyline each time.
+  const origin = useMemo(
+    () => ({ lat: booking.source_lat, lng: booking.source_lng }),
+    [booking.source_lat, booking.source_lng],
+  )
+  const dest = useMemo(
+    () => ({ lat: booking.dest_lat, lng: booking.dest_lng }),
+    [booking.dest_lat, booking.dest_lng],
+  )
+
   // `Booking` types these as required numbers, but the guard is a runtime check on the API,
   // not on the type: this repo has a documented history of types drifting from what the DB
   // actually returns, and a null slipping through here would render a map at (0, 0) — the
@@ -1001,8 +1013,8 @@ function ActiveTripSection({
           booking without coordinates (older rows) simply renders no map. */}
       {hasCoords && (
         <LiveTrackMap
-          origin={{ lat: booking.source_lat, lng: booking.source_lng }}
-          dest={{ lat: booking.dest_lat, lng: booking.dest_lng }}
+          origin={origin}
+          dest={dest}
           encodedPolyline={route?.polyline}
           bounds={route?.bounds}
           self={selfPos}
