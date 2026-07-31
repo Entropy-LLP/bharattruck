@@ -753,17 +753,31 @@ function BidDialog({
     }
     setSaving(true)
     setError(null)
+
+    // Re-bidding replaces a live quote, and the DB allows only one live quote per bidder,
+    // so the old one has to come out first. There is no atomic swap available: the only
+    // update path (`/counter`) is legal solely while a quote is `countered`.
+    //
+    // That makes the window between the two calls real — if the withdraw lands and the
+    // place then fails (network drop, deadline passed in between, booking just awarded),
+    // the fleet is left with NO bid where it previously had one. This tracks that so the
+    // failure can say what actually happened, because silently reporting "could not place
+    // that bid" while having already destroyed the old one is the worst of both.
+    let withdrew = false
     try {
-      // Re-bidding replaces a live quote, and the DB allows only one live quote per
-      // bidder — so the old one is withdrawn first. Sequential, not parallel: that
-      // unique index is exactly what this is stepping around.
       if (auction.my_bid && isLive(auction.my_bid.status)) {
         await withdrawBid(auction.id, auction.my_bid.id)
+        withdrew = true
       }
       await placeBid(auction.id, n, message.trim() || undefined)
       onDone()
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not place that bid')
+      const base = err instanceof ApiError ? err.message : 'Could not place that bid'
+      setError(
+        withdrew
+          ? `${base} — and your previous bid of ${inr(auction.my_bid?.amount ?? null)} has already been withdrawn, so this load currently has no bid from you. Try again.`
+          : base,
+      )
     } finally {
       setSaving(false)
     }
