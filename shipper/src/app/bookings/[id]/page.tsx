@@ -135,7 +135,10 @@ export default function BookingDetailPage({
     )
   }
 
-  const status = bookingStatusConfig[booking.status]
+  // Guarded the way the dashboard already guards its own lookup: a status this
+  // build predates would otherwise take the page down on `status.color`, which
+  // is the same failure the carrier fix above is about.
+  const status = bookingStatusConfig[booking.status] ?? bookingStatusConfig.pending
   const canCancel = !['cancelled', 'completed', 'in_transit', 'paid'].includes(booking.status)
 
   return (
@@ -246,7 +249,7 @@ export default function BookingDetailPage({
           ) : (
             <div className="divide-y divide-gray-100">
               {quotes.map((quote) => {
-                const qs = quoteStatusConfig[quote.status]
+                const qs = quoteStatusConfig[quote.status] ?? quoteStatusConfig.submitted
                 const canAct = quote.status === 'submitted' || quote.status === 'countered'
                 const isExpanded = expandedQuote === quote.id
 
