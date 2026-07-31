@@ -269,3 +269,82 @@ export type ModelCategory = {
   payload_tons_typical: number | null
   volume_cuft_typical: number | null
 }
+
+// ── Auction bidding ───────────────────────────────────────────
+//
+// Reads come from bt-fleet-service (`/fleet/auctions`, `/fleet/bids`) because they are
+// tenant-scoped list queries. Writes go straight to bt-booking-service's existing
+// `/bookings/:id/quotes*` routes, which already accept a fleet owner as a bidder and
+// already own the auction-deadline and duplicate-bid rules.
+
+export type Quote = {
+  id: string
+  booking_id: string
+  driver_id: string | null
+  /** Set instead of driver_id when the bidder is a fleet (migration 0016). */
+  fleet_owner_id: string | null
+  amount: number
+  message: string | null
+  status: QuoteStatus
+  submitted_at: string
+  expires_at: string | null
+  updated_at: string
+}
+
+/** The load behind a bid or an open auction. */
+export type AuctionBooking = {
+  id: string
+  shipper_id: string
+  shipper_name: string | null
+  source_address: string
+  destination_address: string
+  source_lat: number
+  source_lng: number
+  dest_lat: number
+  dest_lng: number
+  load_type: string
+  weight_kg: number
+  /** What the shipper posted as their ask. */
+  quoted_price: number
+  pickup_date: string
+  pickup_time_slot: string | null
+  status: BookingStatus
+  booking_type: string
+  auction_deadline: string | null
+  target_driver_id: string | null
+  special_instructions: string | null
+  created_at: string
+}
+
+export type OpenAuction = AuctionBooking & {
+  /** This fleet's live bid on this load, or null if it has not bid yet. */
+  my_bid: Quote | null
+  /**
+   * Total live bids on the load. Deliberately the ONLY competitive signal the
+   * service exposes — rival amounts and identities are never sent.
+   */
+  bid_count: number
+}
+
+export type FleetBid = Quote & {
+  /** Null only if the load became unreadable; the bid row still shows. */
+  booking: AuctionBooking | null
+}
+
+/**
+ * One entry in a bid's price thread.
+ *
+ * `actor_role` includes `fleet_owner` — bt-booking-service writes that value
+ * (quote-service.ts recordNegotiation), and the driver app's copy of this type
+ * omits it, which would mis-render a fleet's own counter.
+ */
+export type NegotiationEntry = {
+  id: string
+  quote_id: string
+  booking_id: string
+  actor_id: string
+  actor_role: 'shipper' | 'driver' | 'fleet_owner'
+  amount: number
+  message: string | null
+  created_at: string
+}

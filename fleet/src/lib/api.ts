@@ -12,6 +12,7 @@ import type {
   AuthUser, FleetOwner, Vehicle, VehicleFinance, VehiclePermit, VehicleLane,
   FleetDriver, FleetSummary, VehicleAnalytics, DriverAnalytics, FuelComparison,
   LivePosition, FleetBooking, ModelCategory, Period,
+  OpenAuction, FleetBid, Quote, NegotiationEntry, QuoteStatus,
 } from './types'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
@@ -314,4 +315,62 @@ export function getDriverAnalytics(p?: Partial<Period>) {
 
 export function getFuelComparison(p?: Partial<Period>) {
   return request<FuelComparison>(`/fleet/analytics/fuel${periodQS(p)}`)
+}
+
+// ── Auction bidding ───────────────────────────────────────────
+//
+// READS come from bt-fleet-service, WRITES from bt-booking-service, and the split is
+// deliberate. `/fleet/auctions` and `/fleet/bids` are tenant-scoped list queries, which
+// is what the fleet service owns. Bid writes reuse `/bookings/:id/quotes*`, which
+// already accept a fleet owner as a bidder and already enforce the auction-deadline,
+// duplicate-bid and fleet-affiliated-driver rules. Re-implementing those writes here —
+// or proxying them through the fleet service — would fork the auction rules across two
+// services and let them drift.
+//
+// Note what /fleet/bookings could NOT do: `bookings.fleet_owner_id` is written only when
+// a shipper ACCEPTS a quote, so it can only ever return auctions already won. Live,
+// countered and lost bids live on `quotes.fleet_owner_id`, which is what /fleet/bids reads.
+
+/** Open loads this fleet may bid on, each annotated with its own bid if it has one. */
+export function listOpenAuctions(opts?: { include_expired?: boolean }) {
+  const qs = opts?.include_expired ? '?include_expired=true' : ''
+  return request<{ fleet_owner_id: string; count: number; auctions: OpenAuction[] }>(
+    `/fleet/auctions${qs}`,
+  )
+}
+
+/** Every bid this fleet has placed, newest first, with its load attached. */
+export function listMyBids(status?: QuoteStatus) {
+  const qs = status ? `?status=${encodeURIComponent(status)}` : ''
+  return request<{ fleet_owner_id: string; count: number; bids: FleetBid[] }>(`/fleet/bids${qs}`)
+}
+
+/**
+ * Place a bid. 409 CONFLICT means this fleet already has a live quote on the load
+ * (the DB enforces one per bidder), and 409 AUCTION_CLOSED means the deadline passed
+ * or the booking left pending/negotiating.
+ */
+export function placeBid(bookingId: string, amount: number, message?: string) {
+  return request<Quote>(`/bookings/${bookingId}/quotes`, {
+    method: 'POST',
+    body: JSON.stringify({ amount, ...(message ? { message } : {}) }),
+  })
+}
+
+/** Counter the shipper's counter-offer. Only legal while the quote is `countered`. */
+export function counterBid(bookingId: string, quoteId: string, amount: number, message?: string) {
+  return request<Quote>(`/bookings/${bookingId}/quotes/${quoteId}/counter`, {
+    method: 'PATCH',
+    body: JSON.stringify({ amount, ...(message ? { message } : {}) }),
+  })
+}
+
+/** Pull a live bid. Frees the fleet to re-bid, since the unique index only covers live rows. */
+export function withdrawBid(bookingId: string, quoteId: string) {
+  return request<Quote>(`/bookings/${bookingId}/quotes/${quoteId}/withdraw`, { method: 'PATCH' })
+}
+
+/** The full price thread for one bid — every offer and counter, oldest first. */
+export function getBidHistory(bookingId: string, quoteId: string) {
+  return request<NegotiationEntry[]>(`/bookings/${bookingId}/quotes/${quoteId}/history`)
 }
