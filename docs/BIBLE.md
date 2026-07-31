@@ -1516,6 +1516,22 @@ seed `bt-fleet-service` env + gateway wiring) · `fix-empty-env.sh` (repairs emp
 
 ### 5.4 Known issues
 
+**Resolved 2026-07-31 — a fleet-owner bid white-screened the shipper's booking page.**
+The shipper labelled each bid with `quote.driver_id.slice(0, 8)`. Migration 016 made
+`quotes.driver_id` nullable and added `fleet_owner_id` under
+`num_nonnulls(driver_id, fleet_owner_id) = 1`, so a fleet bid leaves `driver_id` NULL — every fleet
+bid took the whole page down with `Cannot read properties of null (reading 'slice')`. The shipper's
+`Quote` type still declared `driver_id: string`, so TypeScript never flagged it: **the frontend types
+are hand-maintained copies of the backend's and drift silently — when a migration changes a column's
+nullability, grep the apps for that column, do not trust the app's own type.** Fixed by resolving the
+bidding party server-side (`listQuotesForBooking` now returns a `carrier` object: kind + name +
+truck/rating), because a uuid prefix was never renderable anyway — `drivers.id`/`fleet_owners.id` are
+identities the apps never hold. Two more spots carried the same solo-driver assumption and were fixed
+with it: negotiation history labelled a fleet's counter-offer "Driver", and the trip panel announced
+"Driver Assigned" the moment a fleet won — but a fleet wins as a *company* and `bookings.driver_id`
+stays NULL until the owner pairs a truck in `bt-fleet-service`, so it now reads "Carrier Booked" /
+"Awaiting Truck". Pinned by `bt-booking-service/test/quote-carrier.unit.mts`.
+
 **Resolved 2026-07-31 — POD was unreachable for almost every live trip.**
 `bookings.receiver_email` is required at creation but the column is nullable, and almost nothing in
 the live DB has one: **10 of 11 `in_transit`, 15 of 15 `accepted`, and 621 of 622 `paid` bookings had
@@ -1810,6 +1826,18 @@ To refresh the URL table (services get added/removed): `gcloud run services list
   `bt_driver_refresh_token` (settable via `javascript_tool` to skip the login form entirely). A mock
   with switchable personas is the only practical way to see both the fleet-driver and solo-driver
   builds of the driver app side by side.
+- **To preview a WORKTREE, the worktree must live under the repo root.** `preview_start` resolves
+  `.claude/launch.json` from the **primary working directory only** — a config added to the
+  worktree's own copy is invisible ("No server named …"), and an absolute `cwd` is rejected outright
+  ("cwd must be a relative path within the project root"). So a `../bt-wt-*` sibling worktree cannot
+  be previewed at all. Create it at **`.claude/worktrees/<name>`** instead and point the launch entry
+  at `.claude/worktrees/<name>/<app>` — that path is relative and inside the root, so it works.
+  Remember `npm ci` in the new worktree; it starts with no `node_modules`. (Learned 2026-07-31
+  shipper-QA'ing a branch while another session held the main checkout.)
+- **The shipper's localStorage auth keys are `bt_token` / `bt_refresh_token`** — *not* the
+  `bt_driver_*` keys listed above, which are the driver app's. Setting the shipper's pair via
+  `javascript_tool` skips its login form the same way. A mock never validates the token, so any
+  non-empty string works.
 - **Both apps' login screens default to the "Phone" tab.** Phone OTP has no SMS provider wired
   (console-logs only) — dead end for testing. Click **"Email"** and use the demo creds (§6.4). Both
   login pages also have a "Dev: Paste JWT directly" collapsible — faster than the form if you already

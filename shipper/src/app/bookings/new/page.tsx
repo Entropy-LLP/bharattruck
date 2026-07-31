@@ -331,7 +331,7 @@ export default function NewBookingPage() {
                     {bookingType === 'auction' ? (
                       <>
                         This is a reference estimate for an auction booking — the final charge is the
-                        winning driver&apos;s awarded bid, not this locked price. Estimate valid until{' '}
+                        winning carrier&apos;s awarded bid, not this locked price. Estimate valid until{' '}
                         {new Date(quote.expires_at).toLocaleString('en-IN')}.
                       </>
                     ) : (
@@ -377,7 +377,10 @@ export default function NewBookingPage() {
                   onChange={() => setBookingType('auction')}
                   className="text-primary"
                 />
-                <span className="text-sm">Auction (open to all drivers)</span>
+                {/* Fleet owners bid on auctions too — "all drivers" understates who
+                    the load actually goes out to. Direct stays driver-only: it
+                    targets one drivers.id. */}
+                <span className="text-sm">Auction (open to all carriers)</span>
               </label>
               <label className="flex items-center gap-2 cursor-pointer">
                 <input

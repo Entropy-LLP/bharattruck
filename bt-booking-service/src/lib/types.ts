@@ -82,6 +82,39 @@ export type DbQuote = {
 }
 
 // -----------------------------------------------------------
+// QuoteCarrier — the party behind a bid, resolved for display
+// -----------------------------------------------------------
+
+// A quote row identifies its bidder only by id, and WHICH id depends on the
+// party kind (driver_id XOR fleet_owner_id). Neither is resolvable by the
+// shipper app: drivers.id/fleet_owners.id are server-side identities it never
+// holds. So the shipper had nothing to render but a raw uuid — and once fleet
+// owners could bid, `driver_id` came back NULL and the column it was reading
+// did not exist at all. Resolving the party here is what makes a bid
+// attributable to a carrier the shipper can actually choose between.
+
+export type QuoteCarrier = {
+  kind: 'driver' | 'fleet'
+  id: string
+  /**
+   * Display name — `users.full_name` for a solo driver, `company_name` for a
+   * fleet. Nullable: a driver row whose user has no name on file is a live case
+   * (the seeded demo drivers are exactly that), so the client must still have a
+   * fallback rather than treat this as guaranteed.
+   */
+  name: string | null
+  /** Driver-only. A fleet bid names no truck — that is chosen at assignment. */
+  truck_number: string | null
+  average_rating: number | null
+  total_trips: number | null
+}
+
+export type QuoteWithCarrier = DbQuote & {
+  /** Null only if the referenced party row has since been deleted. */
+  carrier: QuoteCarrier | null
+}
+
+// -----------------------------------------------------------
 // DbNegotiation — append-only log of price offers/counters
 // -----------------------------------------------------------
 

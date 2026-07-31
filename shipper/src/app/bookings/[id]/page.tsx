@@ -135,7 +135,10 @@ export default function BookingDetailPage({
     )
   }
 
-  const status = bookingStatusConfig[booking.status]
+  // Guarded the way the dashboard already guards its own lookup: a status this
+  // build predates would otherwise take the page down on `status.color`, which
+  // is the same failure the carrier fix above is about.
+  const status = bookingStatusConfig[booking.status] ?? bookingStatusConfig.pending
   const canCancel = !['cancelled', 'completed', 'in_transit', 'paid'].includes(booking.status)
 
   return (
@@ -246,7 +249,7 @@ export default function BookingDetailPage({
           ) : (
             <div className="divide-y divide-gray-100">
               {quotes.map((quote) => {
-                const qs = quoteStatusConfig[quote.status]
+                const qs = quoteStatusConfig[quote.status] ?? quoteStatusConfig.submitted
                 const canAct = quote.status === 'submitted' || quote.status === 'countered'
                 const isExpanded = expandedQuote === quote.id
 
@@ -255,10 +258,8 @@ export default function BookingDetailPage({
                     <div className="flex flex-col sm:flex-row sm:items-center gap-3">
                       <div className="flex-1 grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
                         <div>
-                          <p className="text-xs text-muted-foreground/70">Driver</p>
-                          <p className="font-mono text-foreground/85" title={quote.driver_id}>
-                            {quote.driver_id.slice(0, 8)}...
-                          </p>
+                          <p className="text-xs text-muted-foreground/70">{carrierKindLabel(quote)}</p>
+                          <CarrierName quote={quote} />
                         </div>
                         <div>
                           <p className="text-xs text-muted-foreground/70">Amount</p>
@@ -370,7 +371,73 @@ export default function BookingDetailPage({
   )
 }
 
+// --- Carrier identity on a bid ---
+// A bid comes from EITHER a solo driver OR a fleet owner, and the quote row
+// names only the one it came from. The server resolves that party into
+// `carrier`; this renders it.
+//
+// `carrier` can be absent two ways, and they are not the same thing: the party
+// row was deleted, or the service predates carrier resolution (the deploy
+// window where this app ships ahead of bt-booking-service). In the second case
+// the row still says WHICH KIND bid via the id columns, so read those before
+// falling back to "unknown" — guessing "Driver" for a fleet bid is how this
+// page got into trouble in the first place.
+
+function carrierKind(quote: Quote): 'driver' | 'fleet' | null {
+  if (quote.carrier) return quote.carrier.kind
+  if (quote.fleet_owner_id) return 'fleet'
+  if (quote.driver_id) return 'driver'
+  return null
+}
+
+function carrierKindLabel(quote: Quote): string {
+  const kind = carrierKind(quote)
+  return kind === 'fleet' ? 'Fleet' : kind === 'driver' ? 'Driver' : 'Carrier'
+}
+
+function CarrierName({ quote }: { quote: Quote }) {
+  const carrier = quote.carrier
+  const kind = carrierKind(quote)
+
+  // An unnamed bidder still has to be a selectable row, not a blank cell.
+  const fallback =
+    kind === 'fleet' ? 'Fleet operator' : kind === 'driver' ? 'Independent driver' : 'Unknown carrier'
+
+  // Fleet bids carry no truck or rating — those belong to the driver assigned later.
+  const detail =
+    carrier?.kind === 'driver'
+      ? [
+          carrier.truck_number,
+          carrier.total_trips ? `${carrier.total_trips} trips` : null,
+          carrier.average_rating ? `${carrier.average_rating.toFixed(1)}★` : null,
+        ]
+          .filter(Boolean)
+          .join(' · ')
+      : null
+
+  return (
+    <>
+      <p className={`text-foreground/85 ${carrier?.name ? 'font-medium' : 'italic'}`}>
+        {carrier?.name ?? fallback}
+      </p>
+      {detail && <p className="text-xs text-muted-foreground/70">{detail}</p>}
+    </>
+  )
+}
+
 // --- Trip Tracking Section ---
+
+/**
+ * A fleet wins the auction as a COMPANY; the truck and driver are paired to the
+ * trip afterwards, in bt-fleet-service. Until that happens `driver_id` is NULL,
+ * so an `accepted` fleet booking means "carrier locked in", NOT "driver
+ * assigned" — saying otherwise tells the shipper someone is on the job when
+ * nobody has been named. Always false for a solo-driver booking, which is what
+ * keeps that path reading exactly as it did.
+ */
+function isAwaitingFleetDriver(booking: Booking): boolean {
+  return !!booking.fleet_owner_id && !booking.driver_id
+}
 
 function TripTrackingSection({ booking }: { booking: Booking }) {
   const [track, setTrack] = useState<TrackData | null>(null)
@@ -409,14 +476,19 @@ function TripTrackingSection({ booking }: { booking: Booking }) {
     }
   }, [booking.id, booking.status])
 
+  const awaitingFleetDriver = isAwaitingFleetDriver(booking)
+
   const steps = [
-    { key: 'accepted', label: 'Driver Assigned' },
+    { key: 'accepted', label: awaitingFleetDriver ? 'Carrier Booked' : 'Driver Assigned' },
     { key: 'in_transit', label: 'In Transit' },
     { key: 'completed', label: 'Delivered' },
     { key: 'paid', label: 'Paid' },
   ]
   const currentIndex = steps.findIndex(s => s.key === booking.status)
-  const badge = TRIP_STATUS_BADGE[booking.status] ?? TRIP_STATUS_BADGE.accepted
+  const badge =
+    booking.status === 'accepted' && awaitingFleetDriver
+      ? TRIP_STATUS_BADGE.awaiting_fleet_driver
+      : TRIP_STATUS_BADGE[booking.status] ?? TRIP_STATUS_BADGE.accepted
 
   return (
     <Card>
@@ -453,6 +525,8 @@ function TripTrackingSection({ booking }: { booking: Booking }) {
 // here and stays localizable (mapped, not baked into JSX).
 const TRIP_STATUS_BADGE: Record<string, { label: string; className: string }> = {
   accepted:   { label: 'Driver Assigned', className: 'bg-primary/15 text-primary' },
+  // Fleet won the load but has not named a truck/driver yet — see awaitingFleetDriver.
+  awaiting_fleet_driver: { label: 'Awaiting Truck', className: 'bg-amber-500/15 text-amber-400' },
   in_transit: { label: 'In Transit',      className: 'bg-amber-500/15 text-amber-400' },
   completed:  { label: 'Delivered',       className: 'bg-emerald-500/15 text-emerald-400' },
   paid:       { label: 'Paid',            className: 'bg-emerald-500/15 text-emerald-400' },
@@ -508,6 +582,7 @@ function ShipperTrackPanel({
       <TrackCaption
         status={booking.status}
         delivered={delivered}
+        awaitingFleetDriver={isAwaitingFleetDriver(booking)}
         completedAt={booking.completed_at}
         location={location}
         eta={track?.eta ?? null}
@@ -527,6 +602,7 @@ function etaSuffix(eta: TrackEta | null): string {
 function TrackCaption({
   status,
   delivered,
+  awaitingFleetDriver,
   completedAt,
   location,
   eta,
@@ -536,6 +612,7 @@ function TrackCaption({
 }: {
   status: Booking['status']
   delivered: boolean
+  awaitingFleetDriver: boolean
   completedAt: string | null
   location: TrackLocation | null
   eta: TrackEta | null
@@ -561,9 +638,11 @@ function TrackCaption({
       <p className="text-xs text-muted-foreground/70">
         {pollError
           ? 'Could not fetch live tracking — retrying…'
-          : status === 'accepted'
-            ? 'Driver assigned — waiting for the trip to start.'
-            : 'Waiting for driver to start sharing location…'}
+          : awaitingFleetDriver
+            ? 'Carrier booked — waiting for the fleet to assign a truck and driver.'
+            : status === 'accepted'
+              ? 'Driver assigned — waiting for the trip to start.'
+              : 'Waiting for driver to start sharing location…'}
       </p>
     )
   }
