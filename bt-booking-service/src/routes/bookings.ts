@@ -88,7 +88,7 @@ export async function bookingRoutes(app: FastifyInstance) {
     const id = parseId(reply, req.params)
     if (!id) return
     try {
-      const booking = await svc.acceptBooking(id, req.user)
+      const booking = await svc.acceptBooking(id, req.user, req.log)
       return reply.send({ success: true, data: booking })
     } catch (err) {
       return handleError(reply, err)
@@ -100,7 +100,7 @@ export async function bookingRoutes(app: FastifyInstance) {
     const id = parseId(reply, req.params)
     if (!id) return
     try {
-      const booking = await svc.startBooking(id, req.user)
+      const booking = await svc.startBooking(id, req.user, req.log)
       return reply.send({ success: true, data: booking })
     } catch (err) {
       return handleError(reply, err)
@@ -117,7 +117,7 @@ export async function bookingRoutes(app: FastifyInstance) {
     const id = parseId(reply, req.params)
     if (!id) return
     try {
-      const booking = await svc.cancelBooking(id, req.user)
+      const booking = await svc.cancelBooking(id, req.user, req.log)
       return reply.send({ success: true, data: booking })
     } catch (err) {
       return handleError(reply, err)

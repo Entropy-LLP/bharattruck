@@ -19,6 +19,7 @@ package is the single source for those.
 | `auth` — HS256 JWT verify + `AuthenticatedUser`, the `users.id` vs `drivers.id` helper contract | ⏳ next | `authenticate.ts` copies |
 | `db` — Supabase **service-role** client factory (validates `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` at boot) | ⏳ | `lib/supabase.ts` copies |
 | `fleet` — fleet-owner **tenant isolation**: `resolveFleetOwnerByUserId`, `isFleetAffiliatedDriver`, `canFleetAccessBooking` | ✅ built | nothing — new with the fleet persona, shared from day one so no service hand-rolls the predicate |
+| `notifications` — `EmailSender`/SMTP transport contract, the async event catalogue + categories, `enqueueNotification()` | ✅ built | the inline `sendMail()` copies in `bt-auth-service` (3×) and `bt-cargo-ledger`. **Only `bt-booking-service` consumes it so far** — migrating the other two is a separate CTO-sequenced change per the rules below; they still use the identical `SMTP_*` env contract meanwhile. Deliberately takes **no** nodemailer dependency: the consuming service injects the transport. |
 | `redis` — shared ioredis client + key helpers | ⏳ | per-service redis setup |
 | `http` — Fastify bootstrap (global error handler mapping `AppError`→envelope, request-id, health, graceful shutdown) | ⏳ | 7× bootstrap copies |
 | `config` — Zod-validated env loader (fail-fast on missing secrets; no `JWT_SECRET!` assertions) | ⏳ | scattered `process.env.X!` |

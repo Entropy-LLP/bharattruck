@@ -9,6 +9,7 @@ import {
   type PriceMasked,
 } from './fleet.js'
 import { defaultPricingClient, type PricingClient } from './pricing-client.js'
+import * as notify from './notifications/emit.js'
 
 // -----------------------------------------------------------
 // createBooking — the price quote-lock saga.
@@ -244,6 +245,7 @@ export async function listBookings(actor: AuthenticatedUser): Promise<PriceMaske
 export async function acceptBooking(
   bookingId: string,
   actor: AuthenticatedUser,
+  log?: Logger,
 ): Promise<DbBooking> {
   if (actor.role !== 'driver') {
     throw new BookingError('Only drivers can accept bookings', 'FORBIDDEN', 403)
@@ -281,6 +283,8 @@ export async function acceptBooking(
       409,
     )
   }
+
+  await notify.emitBookingAccepted(updated, log)
   return updated
 }
 
@@ -300,8 +304,11 @@ export async function acceptBooking(
 export async function startBooking(
   bookingId: string,
   actor: AuthenticatedUser,
+  log?: Logger,
 ): Promise<DbBooking> {
-  return transitionAssignedBooking(bookingId, actor, 'in_transit')
+  const updated = await transitionAssignedBooking(bookingId, actor, 'in_transit')
+  await notify.emitTripStarted(updated, log)
+  return updated
 }
 
 async function transitionAssignedBooking(
@@ -413,7 +420,7 @@ export async function getPodContext(
 // driver actor; we transition on the booking's own driver_id.
 // -----------------------------------------------------------
 
-export async function completeBookingViaPod(bookingId: string): Promise<DbBooking> {
+export async function completeBookingViaPod(bookingId: string, log?: Logger): Promise<DbBooking> {
   const booking = await repo.getBookingById(bookingId)
   if (!booking) {
     throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
@@ -432,6 +439,11 @@ export async function completeBookingViaPod(bookingId: string): Promise<DbBookin
       409,
     )
   }
+
+  // The one notification the trip cannot be considered closed without: both sides
+  // learn the receiver's OTP landed. Idempotent on the booking, so the payout saga
+  // replaying this internal call cannot double-mail anyone.
+  await notify.emitTripCompleted(updated, log)
   return updated
 }
 
@@ -447,7 +459,18 @@ export async function completeBookingViaPod(bookingId: string): Promise<DbBookin
 // means a replay after the flip returns 409, never a double-apply.
 // -----------------------------------------------------------
 
-export async function markBookingPaid(bookingId: string): Promise<DbBooking> {
+export type SettlementDetail = {
+  amount?: number | null
+  method?: string | null
+  paymentId?: string | null
+  payoutStatus?: string | null
+}
+
+export async function markBookingPaid(
+  bookingId: string,
+  detail?: SettlementDetail,
+  log?: Logger,
+): Promise<DbBooking> {
   const booking = await repo.getBookingById(bookingId)
   if (!booking) {
     throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
@@ -466,6 +489,19 @@ export async function markBookingPaid(bookingId: string): Promise<DbBooking> {
       409,
     )
   }
+
+  // Receipt to the payer, payout notice to the payee. The amount is taken from the
+  // settlement the caller actually recorded when supplied; it falls back to the
+  // booking's own price so an older bt-payment-service that posts no body still
+  // produces a truthful receipt rather than none at all.
+  const amount = detail?.amount ?? updated.final_price ?? updated.quoted_price
+  await notify.emitPaymentSettled(
+    updated,
+    { amount, method: detail?.method ?? null, paymentId: detail?.paymentId ?? null },
+    log,
+  )
+  await notify.emitPayoutRecorded(updated, { amount, status: detail?.payoutStatus ?? null }, log)
+
   return updated
 }
 
@@ -495,6 +531,7 @@ function assertOps(actor: AuthenticatedUser): void {
 export async function forceCompleteBooking(
   bookingId: string,
   actor: AuthenticatedUser,
+  log?: Logger,
 ): Promise<{ booking: DbBooking; fromStatus: BookingStatus }> {
   assertOps(actor)
 
@@ -519,6 +556,11 @@ export async function forceCompleteBooking(
       409,
     )
   }
+
+  // Someone's trip just changed underneath them with neither party acting. Both
+  // sides are told — an unexplained override is how a support fix becomes a
+  // support ticket.
+  await notify.emitOpsOverride(updated, 'force_complete', log)
   return { booking: updated, fromStatus }
 }
 
@@ -526,6 +568,7 @@ export async function reassignBooking(
   bookingId: string,
   driverId: string,
   actor: AuthenticatedUser,
+  log?: Logger,
 ): Promise<{ booking: DbBooking; fromDriverId: string | null }> {
   assertOps(actor)
 
@@ -544,6 +587,8 @@ export async function reassignBooking(
   if (!updated) {
     throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
   }
+
+  await notify.emitOpsOverride(updated, 'reassign', log)
   return { booking: updated, fromDriverId }
 }
 
@@ -557,6 +602,7 @@ export async function reassignBooking(
 export async function cancelBooking(
   bookingId: string,
   actor: AuthenticatedUser,
+  log?: Logger,
 ): Promise<DbBooking> {
   const booking = await repo.getBookingById(bookingId)
   if (!booking) {
@@ -584,5 +630,11 @@ export async function cancelBooking(
       409,
     )
   }
+
+  // Tell whoever did NOT cancel. `updated` has already been nulled of nothing here —
+  // driver_id survives the cancel — so the carrier is still resolvable. An admin
+  // cancelling is treated as the shipper side, since the carrier is the party who
+  // needs to stop planning for the load.
+  await notify.emitBookingCancelled(updated, actor.role === 'driver' ? 'driver' : 'shipper', log)
   return updated
 }

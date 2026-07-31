@@ -115,6 +115,33 @@ export async function getQuoteById(quoteId: string): Promise<DbQuote | null> {
 }
 
 // -----------------------------------------------------------
+// listLosingQuotes
+// Every OTHER quote still in play on a booking at the moment one wins —
+// i.e. the bidders who need telling they lost.
+//
+// Deliberately NOT role-scoped, unlike listQuotesForBooking: this is a
+// server-side notification lookup with no actor, and its result never reaches
+// a bidder's eyes (only their own address does). Restricted to the live
+// statuses so a bidder who already withdrew or was rejected earlier is not
+// told a second time that they lost.
+// -----------------------------------------------------------
+
+export async function listLosingQuotes(
+  bookingId: string,
+  winningQuoteId: string,
+): Promise<DbQuote[]> {
+  const { data, error } = await supabase
+    .from('quotes')
+    .select('*')
+    .eq('booking_id', bookingId)
+    .neq('id', winningQuoteId)
+    .in('status', ['submitted', 'countered'])
+
+  if (error) throw new Error(`DB list losing quotes failed: ${error.message}`)
+  return (data ?? []) as DbQuote[]
+}
+
+// -----------------------------------------------------------
 // listQuotesForBooking
 // Role-scoped: a bidder only sees its own quote (blind auction),
 // shippers and admins see all quotes for the booking. `bidder` is the

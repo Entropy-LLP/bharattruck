@@ -28,15 +28,61 @@ function randomOtp(): string {
   return String(Math.floor(100000 + Math.random() * 900000))
 }
 
-function getMailer() {
-  return nodemailer.createTransport({
-    host: process.env.SMTP_HOST ?? 'smtp.gmail.com',
-    port: Number(process.env.SMTP_PORT ?? 587),
-    secure: false,
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS,
-    },
+// Built once for the process, not once per email. Every send here used to call
+// createTransport() again, which throws away the connection pool and pays a fresh
+// TCP + TLS handshake per message — on a login-OTP path where the user is watching a
+// spinner. Lazy so a service with no SMTP configured never constructs one at all.
+//
+// Port 465 is implicit TLS; 587 is STARTTLS, which nodemailer upgrades to when
+// secure=false. Deriving `secure` from the port means a provider swap to a 465-only
+// host cannot silently attempt a plaintext handshake.
+//
+// NOTE: this mirrors smtpTransportOptions() in @bharattruck/shared/notifications,
+// which is the canonical copy. This service is not yet on the shared package —
+// migrating it is a separate, CTO-sequenced change (see packages/shared/README.md).
+let mailerInstance: nodemailer.Transporter | null = null
+
+function getMailer(): nodemailer.Transporter {
+  if (!mailerInstance) {
+    const port = Number(process.env.SMTP_PORT ?? 587)
+    mailerInstance = nodemailer.createTransport({
+      host: process.env.SMTP_HOST ?? 'smtp.gmail.com',
+      port,
+      secure: port === 465,
+      auth: {
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS,
+      },
+    })
+  }
+  return mailerInstance
+}
+
+// -----------------------------------------------------------
+// notifyPasswordChanged — queue the "your password was changed" security notice.
+//
+// Posted to bt-booking-service's outbox rather than sent inline: unlike the OTP and
+// reset-link emails above, nobody is waiting on this one, and it must not be able to
+// fail or delay the password update that has already been committed. Same plain-fetch,
+// skip-silently-when-unconfigured shape as the existing cross-service emit helpers
+// (bt-booking-service/src/lib/payment-emit.ts, bt-payment-service/src/lib/fleet-emit.ts).
+// -----------------------------------------------------------
+
+function notifyPasswordChanged(userId: string, log?: { warn(o: unknown, m: string): void }): void {
+  const base = process.env.BOOKING_SERVICE_URL
+  const secret = process.env.INTERNAL_SERVICE_SECRET
+  if (!base || !secret) return
+
+  void fetch(`${base}/internal/notifications`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-internal-secret': secret },
+    body: JSON.stringify({
+      event: 'password_changed',
+      user_id: userId,
+      changed_at: new Date().toISOString(),
+    }),
+  }).catch((err) => {
+    log?.warn({ err, user_id: userId }, 'password-changed notification emit failed (password was still updated)')
   })
 }
 
@@ -634,6 +680,11 @@ export async function authRoutes(app: FastifyInstance) {
     // Burn the reset token + revoke sessions opened under the old password.
     await app.redis.del(`pwreset:${decoded.userId}`)
     await app.redis.del(`refresh:${decoded.userId}`)
+
+    // Security notice. This is the email that tells a user their account was taken
+    // over: a reset they did not request is invisible to them without it, because the
+    // reset link itself goes to whoever asked for it.
+    notifyPasswordChanged(decoded.userId, req.log)
 
     return reply.send({ success: true, data: { message: 'Password updated. Please sign in with your new password.' } })
   })

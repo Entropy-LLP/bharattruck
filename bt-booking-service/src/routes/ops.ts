@@ -34,7 +34,7 @@ export async function opsRoutes(app: FastifyInstance, opts: OpsRouteOptions) {
     const p = UuidParam.safeParse(req.params)
     if (!p.success) return reply.status(400).send({ success: false, error: p.error.errors[0].message, code: 'VALIDATION_ERROR' })
     try {
-      const { booking, fromStatus } = await svc.forceCompleteBooking(p.data.id, req.user)
+      const { booking, fromStatus } = await svc.forceCompleteBooking(p.data.id, req.user, req.log)
       emitTripCompleted(booking, req.log) // same payout-saga trigger as normal completion
       try {
         await audit.record({
@@ -58,7 +58,7 @@ export async function opsRoutes(app: FastifyInstance, opts: OpsRouteOptions) {
     const b = ReassignBody.safeParse(req.body)
     if (!b.success) return reply.status(400).send({ success: false, error: b.error.errors[0].message, code: 'VALIDATION_ERROR' })
     try {
-      const { booking, fromDriverId } = await svc.reassignBooking(p.data.id, b.data.driver_id, req.user)
+      const { booking, fromDriverId } = await svc.reassignBooking(p.data.id, b.data.driver_id, req.user, req.log)
       try {
         await audit.record({
           booking_id: booking.id, action: 'reassign', actor_user_id: req.user.userId,
