@@ -19,6 +19,7 @@ import type {
   DbBooking,
   DbNegotiation,
   DbQuote,
+  QuoteWithCarrier,
   SubmitQuoteBody,
 } from './types.js'
 import { BookingError } from './types.js'
@@ -370,7 +371,7 @@ export async function withdrawQuote(
 export async function listQuotes(
   bookingId: string,
   actor: AuthenticatedUser,
-): Promise<DbQuote[]> {
+): Promise<QuoteWithCarrier[]> {
   const booking = await repo.getBookingById(bookingId)
   if (!booking) {
     throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)

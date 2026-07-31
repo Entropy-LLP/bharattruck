@@ -6,6 +6,16 @@ import { getQuoteHistory } from '@/lib/api'
 import type { NegotiationEntry } from '@/lib/types'
 import Spinner from './Spinner'
 
+// The carrier side of a negotiation is a fleet owner as often as a driver now,
+// and calling a fleet's counter-offer "Driver" misattributes who the shipper is
+// bargaining with. Unknown roles fall back to the neutral "Carrier" rather than
+// naming the wrong party.
+const ACTOR_LABEL: Record<NegotiationEntry['actor_role'], string> = {
+  shipper: 'You',
+  driver: 'Driver',
+  fleet_owner: 'Fleet operator',
+}
+
 export default function NegotiationHistory({
   bookingId,
   quoteId,
@@ -59,7 +69,7 @@ export default function NegotiationHistory({
               }`}
             >
               <p className="text-xs font-medium opacity-75 mb-0.5">
-                {isShipper ? 'You' : 'Driver'}
+                {ACTOR_LABEL[entry.actor_role] ?? 'Carrier'}
               </p>
               <p className="text-sm font-semibold">
                 {'\u20B9'}{entry.amount.toLocaleString('en-IN')}

@@ -16,7 +16,7 @@ import {
 } from '@/lib/api'
 import type { TrackData, TrackEta, TrackLocation, PaymentStatus, PaymentMode } from '@/lib/api'
 import { bookingStatusConfig, quoteStatusConfig } from '@/lib/status'
-import type { Booking, Quote } from '@/lib/types'
+import type { Booking, Quote, QuoteCarrier } from '@/lib/types'
 import Navbar from '@/components/Navbar'
 import Spinner from '@/components/Spinner'
 import CounterModal from '@/components/CounterModal'
@@ -255,10 +255,10 @@ export default function BookingDetailPage({
                     <div className="flex flex-col sm:flex-row sm:items-center gap-3">
                       <div className="flex-1 grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
                         <div>
-                          <p className="text-xs text-muted-foreground/70">Driver</p>
-                          <p className="font-mono text-foreground/85" title={quote.driver_id}>
-                            {quote.driver_id.slice(0, 8)}...
+                          <p className="text-xs text-muted-foreground/70">
+                            {quote.carrier?.kind === 'fleet' ? 'Fleet' : 'Driver'}
                           </p>
+                          <CarrierName carrier={quote.carrier} />
                         </div>
                         <div>
                           <p className="text-xs text-muted-foreground/70">Amount</p>
@@ -370,6 +370,40 @@ export default function BookingDetailPage({
   )
 }
 
+// --- Carrier identity on a bid ---
+// A bid comes from EITHER a solo driver OR a fleet owner, and the quote row
+// names only the one it came from. The server resolves that to `carrier`; this
+// renders it, with a fallback for a party that has no name on file yet (the
+// seeded drivers are exactly that) so an unnamed bidder is still a real,
+// selectable row rather than a blank cell.
+
+function CarrierName({ carrier }: { carrier: QuoteCarrier | null }) {
+  if (!carrier) {
+    return <p className="text-muted-foreground/70 italic">Unknown carrier</p>
+  }
+
+  const fallback = carrier.kind === 'fleet' ? 'Fleet operator' : 'Independent driver'
+  const detail =
+    carrier.kind === 'fleet'
+      ? null
+      : [
+          carrier.truck_number,
+          carrier.total_trips ? `${carrier.total_trips} trips` : null,
+          carrier.average_rating ? `${carrier.average_rating.toFixed(1)}★` : null,
+        ]
+          .filter(Boolean)
+          .join(' · ')
+
+  return (
+    <>
+      <p className={`text-foreground/85 ${carrier.name ? 'font-medium' : 'italic'}`}>
+        {carrier.name ?? fallback}
+      </p>
+      {detail && <p className="text-xs text-muted-foreground/70">{detail}</p>}
+    </>
+  )
+}
+
 // --- Trip Tracking Section ---
 
 function TripTrackingSection({ booking }: { booking: Booking }) {
@@ -409,14 +443,23 @@ function TripTrackingSection({ booking }: { booking: Booking }) {
     }
   }, [booking.id, booking.status])
 
+  // A fleet wins the auction as a COMPANY; the truck and driver are paired to
+  // the trip afterwards, in bt-fleet-service. Until that happens driver_id is
+  // NULL, so calling this step "Driver Assigned" tells the shipper a driver is
+  // on the job when nobody has been named yet.
+  const awaitingFleetDriver = !!booking.fleet_owner_id && !booking.driver_id
+
   const steps = [
-    { key: 'accepted', label: 'Driver Assigned' },
+    { key: 'accepted', label: awaitingFleetDriver ? 'Carrier Booked' : 'Driver Assigned' },
     { key: 'in_transit', label: 'In Transit' },
     { key: 'completed', label: 'Delivered' },
     { key: 'paid', label: 'Paid' },
   ]
   const currentIndex = steps.findIndex(s => s.key === booking.status)
-  const badge = TRIP_STATUS_BADGE[booking.status] ?? TRIP_STATUS_BADGE.accepted
+  const badge =
+    booking.status === 'accepted' && awaitingFleetDriver
+      ? TRIP_STATUS_BADGE.awaiting_fleet_driver
+      : TRIP_STATUS_BADGE[booking.status] ?? TRIP_STATUS_BADGE.accepted
 
   return (
     <Card>
@@ -453,6 +496,8 @@ function TripTrackingSection({ booking }: { booking: Booking }) {
 // here and stays localizable (mapped, not baked into JSX).
 const TRIP_STATUS_BADGE: Record<string, { label: string; className: string }> = {
   accepted:   { label: 'Driver Assigned', className: 'bg-primary/15 text-primary' },
+  // Fleet won the load but has not named a truck/driver yet — see awaitingFleetDriver.
+  awaiting_fleet_driver: { label: 'Awaiting Truck', className: 'bg-amber-500/15 text-amber-400' },
   in_transit: { label: 'In Transit',      className: 'bg-amber-500/15 text-amber-400' },
   completed:  { label: 'Delivered',       className: 'bg-emerald-500/15 text-emerald-400' },
   paid:       { label: 'Paid',            className: 'bg-emerald-500/15 text-emerald-400' },
@@ -508,6 +553,7 @@ function ShipperTrackPanel({
       <TrackCaption
         status={booking.status}
         delivered={delivered}
+        awaitingFleetDriver={!!booking.fleet_owner_id && !booking.driver_id}
         completedAt={booking.completed_at}
         location={location}
         eta={track?.eta ?? null}
@@ -527,6 +573,7 @@ function etaSuffix(eta: TrackEta | null): string {
 function TrackCaption({
   status,
   delivered,
+  awaitingFleetDriver,
   completedAt,
   location,
   eta,
@@ -536,6 +583,7 @@ function TrackCaption({
 }: {
   status: Booking['status']
   delivered: boolean
+  awaitingFleetDriver: boolean
   completedAt: string | null
   location: TrackLocation | null
   eta: TrackEta | null
@@ -561,9 +609,11 @@ function TrackCaption({
       <p className="text-xs text-muted-foreground/70">
         {pollError
           ? 'Could not fetch live tracking — retrying…'
-          : status === 'accepted'
-            ? 'Driver assigned — waiting for the trip to start.'
-            : 'Waiting for driver to start sharing location…'}
+          : awaitingFleetDriver
+            ? 'Carrier booked — waiting for the fleet to assign a truck and driver.'
+            : status === 'accepted'
+              ? 'Driver assigned — waiting for the trip to start.'
+              : 'Waiting for driver to start sharing location…'}
       </p>
     )
   }
