@@ -173,6 +173,17 @@ async function fleetAffiliatedDriverId(actor: AuthenticatedUser): Promise<string
 // getBooking
 // Returns booking with driver profile joined.
 // Shippers can only fetch their own bookings.
+//
+// A FLEET-AFFILIATED driver is scoped to the trips assigned to them, exactly
+// like listBookings. Masking the money alone was not enough: the list said
+// "assignments only" while a direct fetch by id still returned ANY booking, so
+// an employed driver could read the whole marketplace one UUID at a time — and
+// the app, seeing a readable booking with no quote of their own, offered them
+// the bid form for it. Scoping the read is what makes the two agree.
+//
+// Answered as 404 (not 403) so a fleet driver cannot probe which booking ids
+// exist. Solo drivers are untouched: the open pending load board is their
+// product, and browsing it is exactly what they are meant to do.
 // -----------------------------------------------------------
 
 export async function getBooking(
@@ -186,10 +197,23 @@ export async function getBooking(
   if (actor.role === 'shipper' && booking.shipper_id !== actor.userId) {
     throw new BookingError('Forbidden', 'FORBIDDEN', 403)
   }
-  if (await fleetAffiliatedDriverId(actor)) {
-    return stripCommercialFields(booking)
+
+  // Shipper/admin keep the payload they have always had — assigned_to_me is a
+  // driver-facing field and they are not drivers.
+  if (actor.role !== 'driver') return booking
+
+  // One driver lookup answers both questions below.
+  const driverRow = await repo.getDriverByUserId(actor.userId)
+  const assignedToMe = !!driverRow && booking.driver_id === driverRow.id
+
+  if (driverRow && (await isFleetAffiliatedDriver(driverRow.id))) {
+    if (!assignedToMe) {
+      throw new BookingError(`Booking ${id} not found`, 'NOT_FOUND', 404)
+    }
+    return { ...stripCommercialFields(booking), assigned_to_me: true }
   }
-  return booking
+
+  return { ...booking, assigned_to_me: assignedToMe }
 }
 
 // -----------------------------------------------------------

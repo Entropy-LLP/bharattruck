@@ -1519,6 +1519,40 @@ seed `bt-fleet-service` env + gateway wiring) · `fix-empty-env.sh` (repairs emp
 - Nine test files never ran in CI (no `test` script) — **fixed**, all now run.
 - `POD_OTP_PEPPER` unset in prod — **set 2026-07-28**.
 
+**Resolved 2026-07-31 — fleet drivers were shown the marketplace on their own trips:**
+- A fleet-employed driver opening a trip **already assigned to them and `in_transit`** got a
+  **"Submit Your Quote" form**. Reported against Dinesh Chauhan (Shree Balaji Roadlines) on booking
+  `f5000000-…-a003`. **620 of 620** bookings assigned to active fleet drivers were affected — every
+  fleet driver, every trip.
+- **Root cause: the driver booking screen decided what to render from QUOTE OWNERSHIP, not from trip
+  assignment.** The whole trip lifecycle (Start Trip / GPS / POD / Navigate) lived inside
+  `QuoteStatusSection`, reachable only when `getQuotes()` returned the driver's own quote. A fleet
+  driver **never** owns a quote — their owner is the bidder (Q14) — so the screen read that absence as
+  "free to bid". The same trap hit a **solo** driver who took a load with `PATCH /accept`: no quote
+  row either. Q16 price-masking was working correctly and hid the money, which is why the screenshot
+  showed a bid form with no price.
+- Three gaps fed it, all now closed:
+  1. `getBooking` masked the money for a fleet driver but **did not scope which bookings they could
+     read** — `listBookings` returned assignments only while a fetch by id returned ANY booking, so an
+     employed driver could read the whole marketplace one UUID at a time. Now 404s anything not
+     assigned to them (404, not 403, so ids cannot be probed).
+  2. Nothing told the client a driver was fleet-affiliated. `/fleet/drivers/invites/mine` returns
+     `status='pending'` rows ONLY, so an ACCEPTED affiliation was invisible to the app. Added
+     **`GET /fleet/drivers/me/affiliation`** (bt-fleet-service owns `fleet_drivers`; already routed by
+     the gateway's `/api/fleet/` block, no nginx change). Keyed on `status='active'` to match
+     `isFleetAffiliatedDriver()` — **the two must stay in agreement**.
+  3. `GET /bookings/:id` now stamps **`assigned_to_me`** for driver callers (server-computed: the app
+     holds `users.id` from its JWT and cannot compare it to `bookings.driver_id`, which is a
+     `drivers.id`). Absent for shipper/admin.
+- Driver app now branches on affiliation: `/available` is "My Trips" with a status column, the
+  `My Quotes` tab is hidden, and auction/countdown/price furniture is suppressed. The screen picks the
+  trip lifecycle from `assigned_to_me`, falling back to the old quote inference when the field is
+  absent so a **rolling deploy** (app ahead of API) does not strand a solo driver on "waiting for
+  shipper". The shell holds its loading state until affiliation resolves — the provider reads the
+  token straight from `localStorage` so that lookup RACES `getMe()` instead of queueing behind it —
+  otherwise the SOLO default flashes marketplace chrome at a fleet driver on every page load.
+  Covered by `bt-booking-service/test/fleet-driver-scope.e2e.mts` (23 checks).
+
 **Still open:**
 1. **The driver app's UI is the weakest surface in the product.** Measured 2026-07-28: server-side is
    fine (55 ms warm TTFB) but the initial payload is **710 KB**. Shipper is 708 KB and the fleet
@@ -1539,9 +1573,15 @@ seed `bt-fleet-service` env + gateway wiring) · `fix-empty-env.sh` (repairs emp
    booking on the platform to any `fleet_owner` account (the role matched no branch in
    `listBookings` and fell through to the unfiltered admin path), and `negotiations.actor_role`
    rejected `fleet_owner`, so fleet bid history had never recorded a single row (migration 0020).
-4. **Direct bookings are invisible to the assigned driver** (from 2026-07-20, still open, highest
-   product impact). The driver flow is quote-based throughout; a direct booking has no quote row, so
-   it never appears in any driver list.
+4. **Direct bookings are invisible to the assigned SOLO driver** (from 2026-07-20, still open,
+   highest product impact). Same root cause as the fleet-driver bug resolved 2026-07-31 — the driver
+   flow is quote-based — but that fix only closed the **detail screen** (`assigned_to_me`) and the
+   **fleet** driver's list. The remaining hole is the LIST for a solo driver:
+   `repository.listBookings` still filters a non-fleet driver to `status='pending'`, so a booking
+   assigned directly to them never appears in any list. The detail screen now renders such a trip
+   correctly **if they can reach its URL** — they just have no link to it. Fix is a union in
+   `listBookings` (`status='pending'` **OR** `driver_id = me`); deliberately not bundled into the
+   fleet fix to keep that change scoped.
 5. **Driver's onboarding wizard is built but unreachable** — no in-app link. Blocks a real driver
    entering insurance/bank details, which the payout path needs.
 6. **`bt-ops-web` auth and data are still stubbed.**
@@ -1715,6 +1755,23 @@ To refresh the URL table (services get added/removed): `gcloud run services list
 - **Prefer `read_page` → `ref_N` clicks over raw coordinate clicks.** A coordinate click on a tab button
   has silently no-op'd (likely a toast/overlay shifting layout). When a click seems to do nothing,
   re-run `read_page` and click by `ref` instead of nudging coordinates.
+- **…but `read_page` can return `(empty page)` / `Viewport: 0x0` on a page that renders fine**
+  (seen 2026-07-31 on the driver app, Next 16 + Turbopack dev). `computer{action:"screenshot"}` showed
+  the full UI at the same moment. When that happens, fall back to screenshots + coordinate clicks;
+  coordinates are in the **screenshot's** space (the reported "Screenshot size", e.g. 800×450), NOT
+  the CSS-pixel space of the image you see.
+- **A LOCAL dev server CANNOT call the live Cloud Run gateway from this browser** — the fetch dies as
+  a bare `TypeError: Failed to fetch` (CORS; the gateway does not allow `http://localhost:*` origins),
+  and the login form just says "Login failed" with **no entry in `read_network_requests`**. The same
+  request succeeds from `curl`, so "curl works, browser doesn't" is this, not bad credentials. So the
+  `*-dev` launch configs pointed at the live gateway are **not usable for UI testing in this tool**.
+  Workarounds: test the **deployed** app (§6.2), or point `NEXT_PUBLIC_API_URL` at a local mock that
+  sends `Access-Control-Allow-Origin: *`. The mock route shapes worth knowing: the client calls the
+  booking LIST as **`/api/bookings/` with a trailing slash** (`api.ts listBookings`) but the detail as
+  `/api/bookings/:id` without one, and it reads auth from `localStorage` keys **`bt_driver_token`** /
+  `bt_driver_refresh_token` (settable via `javascript_tool` to skip the login form entirely). A mock
+  with switchable personas is the only practical way to see both the fleet-driver and solo-driver
+  builds of the driver app side by side.
 - **Both apps' login screens default to the "Phone" tab.** Phone OTP has no SMS provider wired
   (console-logs only) — dead end for testing. Click **"Email"** and use the demo creds (§6.4). Both
   login pages also have a "Dev: Paste JWT directly" collapsible — faster than the form if you already
@@ -1774,6 +1831,15 @@ last two are the interesting ones — they exercise the affiliation edges.
 | Arjun Nair | `arjun@bharattruck.in` | `arjun-2026` | **pending invite** — tests the driver-consent accept flow |
 | Kailash Meena | `kailash@bharattruck.in` | `kailash-2026` | **left fleet** — tests access revocation |
 
+> **Re-confirmed 2026-07-31 (curl, live gateway):** `dinesh-2026` and `vikram-2026` both return
+> `success: true`. The `<firstname>-2026` pattern holds for the fleet drivers.
+>
+> ⚠️ **A "Login failed" toast in the browser does NOT mean the password is wrong.** From a
+> *local* dev server these creds fail in-browser with a bare "Login failed" and **zero** network
+> entries — that is the CORS wall described in §6.3, not bad credentials. Verify with `curl` before
+> concluding a password is broken (this bit once on 2026-07-31 and nearly got a good password
+> recorded here as dead).
+>
 > **Password caveat (verified 2026-07-28):** the fleet-driver logins DO work with `<firstname>-2026`
 > (vikram-2026 confirmed via real login). The two `@bharattruck.in` shipper logins
 > `anand.textiles`/`deccan.steels` returned 401 for `anand-2026`/`deccan-2026` — their real passwords

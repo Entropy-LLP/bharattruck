@@ -7,6 +7,7 @@ import { listBookings, getQuotes, ApiError } from '@/lib/api'
 import type { Booking, Quote } from '@/lib/types'
 import { formatPrice, relativeTime } from '@/lib/utils'
 import { quoteStatusConfig } from '@/lib/status'
+import { useFleetAffiliation } from '@/lib/fleet-affiliation'
 import Spinner from '@/components/spinner'
 
 interface QuoteWithBooking {
@@ -15,11 +16,22 @@ interface QuoteWithBooking {
 }
 
 export default function MyQuotesPage() {
+  const { affiliation } = useFleetAffiliation()
+  const isFleetDriver = affiliation.is_fleet_affiliated
   const [items, setItems] = useState<QuoteWithBooking[]>([])
   const [loading, setLoading] = useState(true)
   const router = useRouter()
 
   const fetchMyQuotes = useCallback(async () => {
+    // A fleet driver owns no quotes — their owner is the bidder (founder Q14) —
+    // so every /quotes call below would answer []. Skip the fan-out entirely
+    // (one request per booking) and show the explanation instead of an empty
+    // list that reads like "you haven't bid yet".
+    if (isFleetDriver) {
+      setItems([])
+      setLoading(false)
+      return
+    }
     try {
       const bookings = await listBookings()
 
@@ -47,7 +59,7 @@ export default function MyQuotesPage() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [isFleetDriver])
 
   useEffect(() => {
     fetchMyQuotes()
@@ -77,13 +89,19 @@ export default function MyQuotesPage() {
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
           </svg>
         </div>
-        <h3 className="text-lg font-bold text-foreground mb-1">No quotes yet</h3>
-        <p className="text-sm text-muted-foreground mb-6 max-w-xs">Browse available loads and submit quotes to start earning.</p>
+        <h3 className="text-lg font-bold text-foreground mb-1">
+          {isFleetDriver ? 'You don’t bid for loads' : 'No quotes yet'}
+        </h3>
+        <p className="text-sm text-muted-foreground mb-6 max-w-xs">
+          {isFleetDriver
+            ? `${affiliation.company_name ?? 'Your fleet owner'} bids for loads and assigns the trips to you.`
+            : 'Browse available loads and submit quotes to start earning.'}
+        </p>
         <button
           onClick={() => router.push('/available')}
           className="px-7 py-3 bg-gradient-to-r from-primary to-orange-500 text-white rounded-xl text-sm font-bold active:scale-95 transition-all shadow-lg shadow-primary/30 hover:-translate-y-0.5"
         >
-          Browse Loads
+          {isFleetDriver ? 'Go to My Trips' : 'Browse Loads'}
         </button>
       </div>
     )

@@ -123,6 +123,22 @@ export type DriverProfile = {
 
 export type BookingWithProfiles = DbBooking & {
   driver?: DriverProfile | null
+
+  /**
+   * Driver-facing only: is the CALLER the driver assigned to this trip?
+   *
+   * Server-computed because the client cannot work it out — `driver_id` is a
+   * `drivers.id`, and the app only ever holds the `users.id` from its JWT. The
+   * driver app needs the answer to decide whether to show the trip lifecycle
+   * (start / navigate / POD) or the marketplace bid form, and its previous
+   * stand-in for it — "do I own a quote on this booking?" — was wrong for BOTH
+   * personas: a fleet driver never owns a quote (their owner bids), and a solo
+   * driver who took a load with PATCH /accept has no quote row either. Both
+   * were shown a bid form for a trip they were already driving.
+   *
+   * Absent for shipper/admin callers, who are not drivers.
+   */
+  assigned_to_me?: boolean
 }
 
 // -----------------------------------------------------------
