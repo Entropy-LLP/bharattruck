@@ -86,14 +86,33 @@ Account: `password_changed`.
 - [x] `GET /health` reports `email: smtp|console` so a mis-set prod value is visible.
 - [x] `tsc` clean across all five touched services; 40 new unit checks; every existing suite unchanged
       (booking 117, payment 31, cargo-ledger 34, fleet 40, pricing 17).
-- [ ] **Migration 0019 applied to the live Supabase project.** DDL is founder/infra-gated.
-- [ ] **SMTP + app-URL env set on the live `bt-booking-service` Cloud Run service.** `deploy.yml`
-      preserves existing env and sets none, so without this the dispatcher runs in console-log mode —
-      the exact failure `feat/pod-email-smtp` already shipped once.
+- [x] **Migration applied to the live Supabase project** (2026-07-31, as
+      `20260731…_notification_outbox_and_preferences`). `notification_outbox` and
+      `notification_preferences` exist with RLS enabled. Renumbered 0019 → **0021** on the way in:
+      0020 was taken by the fleet-auction work while this was in flight.
+- [x] Branch reviewed + merged (PR #29), deployed to Cloud Run. `GET /health` returns the `email`
+      field; `POST /internal/notifications/dispatch` is secret-gated (401 without); the public
+      unsubscribe page renders.
+- [x] **App-URL env set** on the live service: `SHIPPER_APP_BASE_URL`, `DRIVER_APP_BASE_URL`,
+      `NOTIFICATIONS_PUBLIC_BASE_URL`.
+- [ ] **SMTP env set on the live `bt-booking-service`** — `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`,
+      `EMAIL_DEV_MODE=false`. **Founder action: these are credentials.** `deploy.yml` sets no env by
+      design, so this is a one-time `gcloud run services update --update-env-vars`.
+      `/health` currently reports `"email":"console"`, which is how you can tell it is still missing.
 - [ ] **Cloud Scheduler job created** → `POST /internal/notifications/dispatch` every minute with the
       `x-internal-secret` header. **Without this nothing is ever sent on Cloud Run**, because the
-      container is frozen between requests and the in-process timer does not fire.
-- [ ] Branch reviewed + merged.
+      container is frozen between requests and the in-process timer does not fire. Command in
+      `docs/BIBLE.md §7.1`. **Create it AFTER the SMTP env**, not before — until then the dispatcher
+      deliberately 503s (see below) and the job would just alarm.
+
+### Why the dispatcher refuses to run right now (by design, PR #31)
+
+With no SMTP configured, `defaultEmailSender()` resolves to `ConsoleEmailSender` — and a dispatcher
+using it would claim every due row, "send" it to stdout and mark it `sent`, **consuming the queue and
+destroying notifications nobody received**. Precisely the POD-OTP failure again. So in production
+without SMTP the dispatcher refuses: the route returns `503 EMAIL_NOT_CONFIGURED` and the in-process
+loop does not arm. Rows stay `pending` and drain for real once credentials land. The guard goes quiet
+on its own then — no follow-up needed.
 
 ## Deliberately NOT in this branch
 

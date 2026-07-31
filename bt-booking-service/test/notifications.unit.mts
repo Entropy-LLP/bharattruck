@@ -376,6 +376,34 @@ async function main() {
   res = await dispatchOnce(s5, 25)
   check('accountless recipient still receives optional mail', res.sent === 1)
 
+  // ── Production SMTP guard ────────────────────────────────────────────────
+  // The queue must never be drained into the console sender in production: every
+  // row would be claimed, "sent" to stdout and marked sent, silently destroying
+  // notifications nobody received.
+  console.log('\n── production SMTP guard')
+  const { dispatchBlockedReason } = await import('../src/lib/notifications/dispatcher.js')
+
+  const restoreEnv = { NODE_ENV: process.env.NODE_ENV, SMTP_USER: process.env.SMTP_USER, EMAIL_DEV_MODE: process.env.EMAIL_DEV_MODE }
+
+  process.env.NODE_ENV = 'development'; delete process.env.SMTP_USER
+  check('dev without SMTP is allowed to drain (console logging is the point)',
+    dispatchBlockedReason() === null)
+
+  process.env.NODE_ENV = 'production'; delete process.env.SMTP_USER
+  check('production without SMTP is BLOCKED', dispatchBlockedReason() !== null)
+  check('the block explains itself',
+    (dispatchBlockedReason() ?? '').includes('SMTP is not configured'))
+
+  process.env.SMTP_USER = 'ops@example.com'; delete process.env.EMAIL_DEV_MODE
+  check('production with SMTP drains normally', dispatchBlockedReason() === null)
+
+  process.env.EMAIL_DEV_MODE = 'true'
+  check('EMAIL_DEV_MODE=true in production is also blocked', dispatchBlockedReason() !== null)
+
+  Object.assign(process.env, restoreEnv)
+  if (restoreEnv.SMTP_USER === undefined) delete process.env.SMTP_USER
+  if (restoreEnv.EMAIL_DEV_MODE === undefined) delete process.env.EMAIL_DEV_MODE
+
   // ── Summary ──────────────────────────────────────────────────────────────
   console.log(`\n${passed} passed, ${failures.length} failed`)
   if (failures.length) { failures.forEach(f => console.log(`  - ${f}`)); process.exit(1) }

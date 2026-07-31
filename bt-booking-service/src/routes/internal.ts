@@ -4,7 +4,7 @@ import { BookingError } from '../lib/types.js'
 import * as svc from '../lib/service.js'
 import { emitTripCompleted } from '../lib/payment-emit.js'
 import * as notify from '../lib/notifications/emit.js'
-import { dispatchOnce } from '../lib/notifications/dispatcher.js'
+import { dispatchBlockedReason, dispatchOnce } from '../lib/notifications/dispatcher.js'
 import { mailer } from '../lib/notifications/mailer.js'
 
 const UuidParamSchema = z.object({ id: z.string().uuid('id must be a valid UUID') })
@@ -144,6 +144,14 @@ export async function internalRoutes(app: FastifyInstance) {
   // Safe to call concurrently: the dispatcher claims each row with a compare-and-swap,
   // so an overlapping tick finds nothing to do rather than sending duplicates.
   app.post('/notifications/dispatch', async (req, reply) => {
+    // Refuse rather than drain into the console sender. A 503 here makes the
+    // Cloud Scheduler job go red, which is the whole point: a misconfigured
+    // service should be loudly broken, not quietly marking mail as delivered.
+    const blocked = dispatchBlockedReason()
+    if (blocked) {
+      req.log.error({ reason: blocked }, 'notification dispatch refused')
+      return reply.status(503).send({ success: false, error: blocked, code: 'EMAIL_NOT_CONFIGURED' })
+    }
     try {
       const result = await dispatchOnce(mailer(), 25, req.log)
       return reply.send({ success: true, data: result })

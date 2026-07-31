@@ -21,6 +21,7 @@
 import {
   CATEGORY_PREFERENCE_COLUMN,
   EVENT_CATEGORY,
+  smtpConfigured,
   type EmailSender,
   type NotificationEvent,
 } from '@bharattruck/shared/notifications'
@@ -235,6 +236,28 @@ export type DispatchResult = {
 }
 
 /**
+ * Refuse to drain in production when no SMTP transport is configured.
+ *
+ * Without this guard the dispatcher would happily run with ConsoleEmailSender:
+ * every row would be claimed, "sent" successfully to stdout, and marked `sent` —
+ * silently consuming the queue and destroying notifications that were never
+ * delivered. That is precisely the failure mode that shipped once already with
+ * the POD OTP (docs/tasks/feat-pod-email-smtp.md): the code path ran, nothing
+ * errored, and no mail arrived.
+ *
+ * Leaving the rows PENDING is strictly better: the outbox accumulates, the
+ * backlog is visible, and everything drains for real the moment credentials are
+ * set. Dev is unaffected — console logging there is the point.
+ */
+export function dispatchBlockedReason(): string | null {
+  if (process.env.NODE_ENV !== 'production') return null
+  if (smtpConfigured()) return null
+  return 'SMTP is not configured (SMTP_USER unset or EMAIL_DEV_MODE=true). ' +
+    'Refusing to drain: rows would be marked sent without being delivered. ' +
+    'Set the SMTP_* env on this service — see docs/BIBLE.md §7.1.'
+}
+
+/**
  * Drain up to `limit` due notifications.
  *
  * Rows are processed SEQUENTIALLY, not in parallel. SMTP providers throttle
@@ -334,6 +357,12 @@ export async function dispatchOnce(
 export function startDispatchLoop(sender: EmailSender, log?: Logger): (() => void) | null {
   const intervalMs = Number(process.env.NOTIFICATIONS_DISPATCH_INTERVAL_MS ?? 0)
   if (!Number.isFinite(intervalMs) || intervalMs <= 0) return null
+
+  const blocked = dispatchBlockedReason()
+  if (blocked) {
+    log?.warn({ reason: blocked }, 'notification dispatch loop NOT started')
+    return null
+  }
 
   let draining = false
   const timer = setInterval(() => {
