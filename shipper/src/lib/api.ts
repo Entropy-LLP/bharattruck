@@ -317,6 +317,25 @@ export function cancelBooking(id: string): Promise<Booking> {
   })
 }
 
+/**
+ * Set (or correct) the consignee inbox the delivery code is emailed to.
+ *
+ * `receiver_email` is required when creating a booking, but the column is
+ * nullable and most existing bookings predate that rule — and without an address
+ * the driver's proof-of-delivery request has nowhere to send the code, so the
+ * trip can never be confirmed delivered. This is the only field on a live booking
+ * a shipper may change mid-trip; everything else is price-locked or driven by the
+ * trip state machine.
+ *
+ * Server rejects it once the booking is completed/paid/cancelled.
+ */
+export function setReceiverEmail(id: string, receiverEmail: string): Promise<Booking> {
+  return request<Booking>(`/bookings/${id}/receiver-email`, {
+    method: 'PATCH',
+    body: JSON.stringify({ receiver_email: receiverEmail }),
+  })
+}
+
 // ── Price quote-lock (bt-pricing-service) ─────────────────────
 // POST /api/pricing/quote → the gateway rewrites to /pricing/quote. Returns a
 // locked quote: the price SHOWN here is the price CHARGED at booking (PRD 5.4).

@@ -178,6 +178,7 @@ export type NotificationEvent =
   | 'trip_completed'        // POD verified           → shipper / driver / fleet owner
   | 'booking_cancelled'     // cancelled by either side → the other party
   | 'ops_override'          // ops force-completed or reassigned → both parties
+  | 'receiver_email_missing' // driver blocked at the drop, no consignee address → shipper
   // ── Payments ──────────────────────────────────────────────────
   | 'payment_settled'       // settlement recorded    → shipper (receipt)
   | 'payout_recorded'       // payout booked          → driver / fleet owner
@@ -210,6 +211,9 @@ export const EVENT_CATEGORY: Record<NotificationEvent, NotificationCategory> = {
   trip_completed:        'transactional', // proof of delivery — never mutable
   booking_cancelled:     'transactional', // a commitment was broken — never mutable
   ops_override:          'transactional',
+  // Transactional: a truck is sitting at the drop and only this person can release
+  // it. Muting it would strand the trip and the driver's payment.
+  receiver_email_missing: 'transactional',
   payment_settled:       'transactional',
   payout_recorded:       'transactional',
   fleet_invite:          'transactional', // requires the recipient to act

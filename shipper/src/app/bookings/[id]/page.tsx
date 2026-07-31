@@ -21,6 +21,7 @@ import Navbar from '@/components/Navbar'
 import Spinner from '@/components/Spinner'
 import CounterModal from '@/components/CounterModal'
 import NegotiationHistory from '@/components/NegotiationHistory'
+import ReceiverEmailSection from '@/components/ReceiverEmailSection'
 import LiveTrackMap from '@/components/maps/LiveTrackMap'
 import { Card, CardContent, CardHeader, CardTitle, CardAction } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -213,6 +214,7 @@ export default function BookingDetailPage({
               <p className="text-sm text-foreground/85">{booking.special_instructions}</p>
             </div>
           )}
+          <ReceiverEmailSection booking={booking} onSaved={fetchData} />
         </div>
 
         {/* Trip Tracking */}

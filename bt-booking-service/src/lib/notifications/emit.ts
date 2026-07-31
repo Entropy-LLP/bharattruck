@@ -347,6 +347,35 @@ export async function emitBookingCancelled(
 }
 
 /**
+ * The driver reached the drop and there is no consignee address → tell the shipper.
+ *
+ * The only notification here triggered by a FAILED action rather than a completed
+ * one. Without it the trip silently dead-ends: the driver sees "the shipper must
+ * add one", the shipper is never told, and the booking sits in `in_transit`
+ * forever — taking the payout with it.
+ *
+ * Keyed on the booking alone, so a driver retrying the button (or several attempts
+ * across a day) mails the shipper once rather than once per tap.
+ */
+export async function emitReceiverEmailMissing(
+  booking: DbBooking,
+  log?: Logger,
+): Promise<void> {
+  await safely(log, 'receiver_email_missing', async () => {
+    const shipper = await recipientByUserId(booking.shipper_id)
+    if (!shipper) return
+
+    await enqueueNotification({
+      event: 'receiver_email_missing',
+      to: shipper.email,
+      userId: shipper.userId,
+      payload: bookingPayload(booking),
+      dedupeKey: `receiver_email_missing:${booking.id}`,
+    }, log)
+  })
+}
+
+/**
  * Ops manually force-completed or reassigned a booking → tell both parties.
  *
  * Someone's trip changed underneath them without either party doing anything. Not

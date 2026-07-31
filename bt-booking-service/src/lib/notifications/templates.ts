@@ -565,6 +565,30 @@ const TEMPLATES: Record<NotificationEvent, Template> = {
     }
   },
 
+  receiver_email_missing: (p, ctx) => ({
+    subject: `Action needed — add a receiver email for ${ref(p.booking_id)}`,
+    heading: 'Your driver cannot deliver without a receiver email',
+    preheader: `The truck has reached ${t(p.destination_address) || 'the drop'} but there is no address to send the delivery code to.`,
+    tone: 'attention',
+    bodyHtml:
+      `<p style="margin:0 0 14px 0">Your driver has arrived and tried to confirm delivery, but this
+       booking has <strong class="bt-strong" style="color:${INK}">no receiver email</strong> — so
+       there is nowhere to send the one-time delivery code.</p>
+       <p style="margin:0 0 14px 0">Add the consignee's email on the booking and the driver can send
+       the code straight away. <strong class="bt-strong" style="color:${INK}">The trip cannot be
+       completed until you do</strong>, and payment is not released until it is.</p>` +
+      routeBlock(p) + details([['Reference', ref(p.booking_id)]]),
+    bodyText:
+      `Your driver has arrived and tried to confirm delivery, but this booking has NO RECEIVER ` +
+      `EMAIL — so there is nowhere to send the one-time delivery code.\n\n` +
+      `Add the consignee's email on the booking and the driver can send the code straight away. ` +
+      `The trip cannot be completed until you do, and payment is not released until it is.\n\n` +
+      `${route(p)}\n\n` + detailsText([['Reference', ref(p.booking_id)]]),
+    cta: bookingUrl(ctx.shipperBaseUrl, p.booking_id)
+      ? { label: 'Add receiver email', url: bookingUrl(ctx.shipperBaseUrl, p.booking_id)! }
+      : null,
+  }),
+
   // ── Payments ────────────────────────────────────────────────
 
   payment_settled: (p, ctx) => {
