@@ -95,24 +95,41 @@ Account: `password_changed`.
       unsubscribe page renders.
 - [x] **App-URL env set** on the live service: `SHIPPER_APP_BASE_URL`, `DRIVER_APP_BASE_URL`,
       `NOTIFICATIONS_PUBLIC_BASE_URL`.
-- [ ] **SMTP env set on the live `bt-booking-service`** — `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`,
-      `EMAIL_DEV_MODE=false`. **Founder action: these are credentials.** `deploy.yml` sets no env by
-      design, so this is a one-time `gcloud run services update --update-env-vars`.
-      `/health` currently reports `"email":"console"`, which is how you can tell it is still missing.
-- [ ] **Cloud Scheduler job created** → `POST /internal/notifications/dispatch` every minute with the
-      `x-internal-secret` header. **Without this nothing is ever sent on Cloud Run**, because the
-      container is frozen between requests and the in-process timer does not fire. Command in
-      `docs/BIBLE.md §7.1`. **Create it AFTER the SMTP env**, not before — until then the dispatcher
-      deliberately 503s (see below) and the job would just alarm.
+- [x] **SMTP env set on the live `bt-booking-service`** (2026-07-31). Copied from `bt-auth-service`,
+      which already had the whole set in production, via `scripts/ops/fix-blank-env.py booking` — a new
+      target added for this. Copying beats re-entering: it is argv-based (immune to the zsh-quoting bug
+      that once zeroed these values platform-wide), refuses to run if a source value is empty, and keeps
+      ONE mail config across auth and booking rather than two that can drift.
+      `/health` now reports `"email":"smtp"`.
+- [x] **Cloud Scheduler job created** — `bt-notification-dispatch`, `asia-south1`, every minute,
+      POSTing `/internal/notifications/dispatch` with the `x-internal-secret` header. Required
+      `cloudscheduler.googleapis.com` to be enabled on the project first (it was not). Free at this
+      scale — the free tier is 3 jobs/month.
 
-### Why the dispatcher refuses to run right now (by design, PR #31)
+### Why the dispatcher refuses to run without SMTP (by design, PR #31)
 
 With no SMTP configured, `defaultEmailSender()` resolves to `ConsoleEmailSender` — and a dispatcher
 using it would claim every due row, "send" it to stdout and mark it `sent`, **consuming the queue and
 destroying notifications nobody received**. Precisely the POD-OTP failure again. So in production
 without SMTP the dispatcher refuses: the route returns `503 EMAIL_NOT_CONFIGURED` and the in-process
-loop does not arm. Rows stay `pending` and drain for real once credentials land. The guard goes quiet
-on its own then — no follow-up needed.
+loop does not arm.
+
+This is now satisfied in production, so the guard is quiet. It stays as the safety net: if the SMTP env
+is ever cleared, the Cloud Scheduler job goes red instead of the queue silently eating itself.
+
+### Live state (2026-07-31)
+
+| Check | Result |
+|---|---|
+| `GET /health` | `"email":"smtp"` |
+| `POST /internal/notifications/dispatch` (no secret) | `401` |
+| …(valid secret) | `200 {"claimed":0,"sent":0,"skipped":0,"failed":0}` |
+| Cloud Scheduler `bt-notification-dispatch` | `ENABLED`, `* * * * *`, Asia/Kolkata |
+| `notification_outbox` / `notification_preferences` | exist, RLS on, 8 indexes, 0 rows |
+
+**Nothing has been emitted yet** — the outbox only fills when a real booking/auction/payment event
+happens. The first genuine end-to-end proof is a bid on a live booking producing a `quote_received`
+row that flips to `sent`.
 
 ## Deliberately NOT in this branch
 
