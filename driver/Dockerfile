@@ -15,9 +15,14 @@ COPY . .
 ARG NEXT_PUBLIC_API_URL=https://bt-gateway-itcdoenefa-el.a.run.app
 ARG NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY
 ARG NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID
+# Google Sign-In client ID. Same rule as the Maps key: no default, injected by CI. Without
+# it the login page renders its "not configured" panel instead of the Google button — which
+# is exactly what production was doing, because nothing ever passed this arg.
+ARG NEXT_PUBLIC_GOOGLE_CLIENT_ID
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 ENV NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY=$NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY
 ENV NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID=$NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID
+ENV NEXT_PUBLIC_GOOGLE_CLIENT_ID=$NEXT_PUBLIC_GOOGLE_CLIENT_ID
 RUN npm run build
 
 FROM node:20-alpine AS runner
