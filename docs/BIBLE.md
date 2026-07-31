@@ -243,9 +243,25 @@ edit a stuck booking). *Acceptance:* ops approves a real KYC, watches a real tri
 intervenes on a stuck trip — all against real platform data.
 
 **5.9 Notifications** (`bt-booking-service` + infra) — Notify on: new load, new quote/counter,
-award/loss, status changes, payment events, KYC result. At least one channel — see §5's open-decisions
-note (still undecided as of the last check). *Acceptance:* a driver is notified of a new matching load
-and an award without the app open.
+award/loss, status changes, payment events, KYC result. At least one channel. *Acceptance:* a driver is
+notified of a new matching load and an award without the app open.
+
+**Channel decided (2026-07-31): EMAIL.** This closes §5 open-decision #6 for MVP — email needed no
+vendor onboarding (WhatsApp Business takes weeks) and the SMTP transport already existed for auth OTPs.
+SMS/WhatsApp remain post-MVP additions on the same outbox.
+
+Shape: a durable **outbox** (`notification_outbox`, migration 021) in `bt-booking-service`, drained by
+a dispatcher with retry/backoff, dead-lettering and a delivery audit trail. Other services post to
+`POST /internal/notifications`; that route owns audience resolution (the `drivers.id` → `users.id` hop).
+**Login/POD OTPs are deliberately NOT in the outbox** — a human is blocked on those, so they stay
+synchronous inline sends. 15 events wired (marketplace, trip lifecycle, payments, fleet invites,
+password-changed); per-category opt-out + RFC 8058 one-click unsubscribe; transactional mail cannot be
+muted. Not yet wired: digests/reports. See `docs/tasks/feat-email-notifications.md`.
+
+> **Operational gate:** the dispatcher only runs when something invokes it. On Cloud Run that means a
+> **Cloud Scheduler job** hitting `/internal/notifications/dispatch` — see §7.1. Without it, mail queues
+> silently and nothing errors. `GET /health` reports `email: smtp|console` to make the related
+> mis-config visible.
 
 **5.10 Platform/Infrastructure** (cross-cutting) — API gateway routes `/api/*` to every service; DB
 migrations in version control; real env config (no secret behind `NEXT_PUBLIC_`); both apps build
@@ -325,7 +341,7 @@ net (make override actions first-class); non-literate driver UX (icon-led flows,
 | 1-3 | Payments demo mode / Razorpay custody / registered entity | Tangled up in the escrow/RL reversal — see §2's scope note. Founder re-confirmation still needed. |
 | 4 | GPS ingest transport: Kafka vs Redis | **Resolved: Redis pub/sub** (D-010, §3.2) — lighter, kept for the pilot. |
 | 5 | Auth: finish Supabase Auth migration vs. keep custom JWT | **Resolved: kept custom HS256 JWT** — see §5. |
-| 6 | Notification channel: SMS vs WhatsApp vs both | **Still open** as of the last check (§5) — decide before the W7/W8 pilot; WhatsApp Business onboarding can take weeks. |
+| 6 | Notification channel: SMS vs WhatsApp vs both | **Resolved 2026-07-31 — EMAIL ships as the MVP channel** (§5.9). Chosen because it needed no vendor onboarding and the SMTP transport already existed for auth OTPs. SMS/WhatsApp are post-MVP additions on the same outbox; WhatsApp Business onboarding still takes weeks, so start it early if it is wanted for the pilot. |
 | 7 | Contract semantics: single direct booking vs. standing/recurring | **Resolved: single direct contract per load** at MVP; recurring stayed post-MVP. |
 | 8 | Blockchain choice + anchoring wallet | **Resolved OUT of the first Completed Paid Trip** (Appendix A §0 ruling #3) — the "which chain" question is moot until it resumes. |
 | 9 | Exact 2-3 supported truck classes | **Resolved: MCV / HCV** (aligned to the frozen tracking fuel-estimate decision, D-009). |
@@ -1564,7 +1580,7 @@ seed `bt-fleet-service` env + gateway wiring) · `fix-empty-env.sh` (repairs emp
 - **Escrow/RL scope reversal needs re-confirmation** — see §2's banner.
 - **The kartik decision** (payment + pricing, Appendix D) — pending.
 - **The rate card** (§5.4 item 6) — needs a number from the founder.
-- **Notification channel** (SMS vs WhatsApp vs FCM) — undecided.
+- **Notification channel** — **decided 2026-07-31: email** (§5.9, open-decision #6). SMS/WhatsApp/FCM remain post-MVP additions on the same outbox.
 - **Registered entity** for Surepass (real KYC) + Razorpay — blocks both.
 - **PMO tool's GitHub autotrack is stale** — points at the 11 retired standalone repos.
 
@@ -1934,8 +1950,9 @@ Required env by service (names only — values are shared secrets already on boo
 
 | Service | Required env (beyond NODE_ENV/PORT) |
 |---|---|
-| `bt-auth-service` | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `REDIS_URL`, `JWT_SECRET`, `JWT_REFRESH_SECRET`, `ENCRYPTION_KEY` |
-| `bt-booking-service` | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `REDIS_URL`, `JWT_SECRET`, `INTERNAL_SERVICE_SECRET`, `PRICING_SERVICE_URL`, `PAYMENT_SERVICE_URL`, `CARGO_LEDGER_URL` |
+| `bt-auth-service` | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `REDIS_URL`, `JWT_SECRET`, `JWT_REFRESH_SECRET`, `ENCRYPTION_KEY`, the **SMTP set** (login OTP / magic link / password reset are sent inline from here), and `BOOKING_SERVICE_URL` + `INTERNAL_SERVICE_SECRET` (for the password-changed security notice) |
+| `bt-booking-service` | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `REDIS_URL`, `JWT_SECRET`, `INTERNAL_SERVICE_SECRET`, `PRICING_SERVICE_URL`, `PAYMENT_SERVICE_URL`, `CARGO_LEDGER_URL`, plus the **notification set** (migration 021): the **SMTP set** (`SMTP_HOST`,`SMTP_PORT`,`SMTP_USER`,`SMTP_PASS`,`SMTP_FROM`,`EMAIL_DEV_MODE=false`) + `SHIPPER_APP_BASE_URL`, `DRIVER_APP_BASE_URL`, `NOTIFICATIONS_PUBLIC_BASE_URL`. This service hosts the outbox dispatcher for the whole platform — without the SMTP set it silently runs in console-log mode (`GET /health` reports `email:"console"` when it does). Do **not** set `NOTIFICATIONS_DISPATCH_INTERVAL_MS` on Cloud Run — see the scheduler note below. |
+| `bt-fleet-service` | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `REDIS_URL`, `JWT_SECRET`, `INTERNAL_SERVICE_SECRET`, and `BOOKING_SERVICE_URL` (fleet invites post to the notification outbox; without it an invite is only visible in-app) |
 | `bt-pricing-service` | `JWT_SECRET` (only — see §7.2's ticket-vs-code correction) |
 | `bt-payment-service` | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `JWT_SECRET`, `INTERNAL_SERVICE_SECRET`, `BOOKING_SERVICE_URL` |
 | `bt-cargo-ledger` | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `REDIS_URL`, `INTERNAL_SERVICE_SECRET`, `BOOKING_SERVICE_URL`, `BLOCKCHAIN_ENABLED=false`, and the **SMTP set** (`SMTP_HOST`,`SMTP_PORT`,`SMTP_USER`,`SMTP_PASS`,`SMTP_FROM`,`EMAIL_DEV_MODE=false`) — required for POD OTP to actually reach the receiver, not fall back to console-only logging |
@@ -1944,6 +1961,24 @@ Required env by service (names only — values are shared secrets already on boo
 Cross-service URLs: after the first deploy, read each with `gcloud run services describe <svc>
 --format='value(status.url)'` and set via `--update-env-vars` (merge, never `--set-env-vars` — that
 replaces the whole env).
+
+**Notification dispatch on Cloud Run (required, easy to miss).** Queued email is drained by a worker
+that only runs when something invokes it. Cloud Run freezes the container between requests unless
+CPU-always-allocated is set, so the in-process timer (`NOTIFICATIONS_DISPATCH_INTERVAL_MS`) does **not**
+reliably fire there — leave it unset in prod. Create a Cloud Scheduler job instead:
+
+```
+gcloud scheduler jobs create http bt-notification-dispatch \
+  --location=asia-south1 --schedule="* * * * *" \
+  --uri="https://<bt-booking-service-url>/internal/notifications/dispatch" \
+  --http-method=POST \
+  --headers="x-internal-secret=<INTERNAL_SERVICE_SECRET>"
+```
+
+Safe to run concurrently with anything else draining: rows are claimed with a compare-and-swap, so an
+overlapping tick finds nothing to do rather than sending duplicates. **Without this job, notifications
+queue up in `notification_outbox` and are never sent** — and nothing errors, which is exactly how the
+POD OTP shipped looking green while being undeliverable (§5.4 item 10).
 
 **2. Gateway:**
 ```bash

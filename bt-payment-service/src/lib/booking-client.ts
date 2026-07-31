@@ -23,7 +23,13 @@ export type BookingView = {
 
 export interface BookingClient {
   getBooking(bookingId: string, bearer: string): Promise<BookingView>
-  markPaid(bookingId: string): Promise<{ status: string }>
+  /**
+   * `detail` rides along so booking-service can put the amount actually settled on
+   * the shipper's receipt, rather than re-deriving it from the booking. Optional:
+   * booking-service falls back to the booking's own price when it is absent, so an
+   * older caller (or a test fake) that omits it still behaves exactly as before.
+   */
+  markPaid(bookingId: string, detail?: SettlementDetail): Promise<{ status: string }>
 }
 
 async function readBody(res: Response): Promise<any> {
@@ -39,6 +45,14 @@ function mapCode(code: unknown): PaymentError['code'] {
   }
 }
 
+/** What was settled, for the receipt booking-service emails the shipper. */
+export type SettlementDetail = {
+  amount?: number
+  method?: string
+  payment_id?: string
+  payout_status?: string
+}
+
 export class HttpBookingClient implements BookingClient {
   constructor(private readonly baseUrl: string, private readonly internalSecret: string) {}
 
@@ -51,10 +65,11 @@ export class HttpBookingClient implements BookingClient {
     return body.data as BookingView
   }
 
-  async markPaid(bookingId: string): Promise<{ status: string }> {
+  async markPaid(bookingId: string, detail?: SettlementDetail): Promise<{ status: string }> {
     const res = await fetch(`${this.baseUrl}/internal/bookings/${bookingId}/mark-paid`, {
       method: 'POST',
-      headers: { 'x-internal-secret': this.internalSecret },
+      headers: { 'content-type': 'application/json', 'x-internal-secret': this.internalSecret },
+      body: JSON.stringify(detail ?? {}),
     })
     const body = await readBody(res)
     if (!res.ok) {

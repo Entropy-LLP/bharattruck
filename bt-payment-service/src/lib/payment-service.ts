@@ -116,7 +116,15 @@ export async function settle(args: SettleArgs, actor: AuthenticatedUser, bearer:
   // Flip completed → paid (state machine stays in booking-service). A 409
   // means it is already paid (concurrent/retry) — that is success here.
   try {
-    await deps.booking.markPaid(args.bookingId)
+    // `mode` is the payments vocabulary for how it was paid (cash/UPI/direct) and
+    // `reference` is the operator-supplied receipt handle — both are what a shipper
+    // needs to recognise the payment on their own records. `payment`/`payout` are
+    // read back further down, after this flip, so they are deliberately not used here.
+    await deps.booking.markPaid(args.bookingId, {
+      amount: args.amount,
+      method: args.mode,
+      payment_id: args.reference ?? undefined,
+    })
   } catch (err) {
     if (!(err instanceof PaymentError && err.httpStatus === 409)) throw err
   }

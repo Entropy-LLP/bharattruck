@@ -15,6 +15,7 @@ import {
 import { hasLiveAssignmentForDriver } from '../lib/assignment.js'
 import { addDriverToFleetSet, removeDriverFromFleetSet } from '../lib/redis.js'
 import { FleetError, parseOrThrow, type FleetDriverStatus } from '../lib/types.js'
+import { emitNotification } from '../lib/notify-emit.js'
 
 // -----------------------------------------------------------
 // driverRoutes — the fleet roster (mounted at /fleet/drivers).
@@ -59,6 +60,15 @@ export async function driverRoutes(app: FastifyInstance) {
 
     const driver = await findDriverByPhone(body.driver_phone)
     const affiliation = await inviteDriver(owner.id, driver.driver_id, req.user.userId)
+
+    // The invite is only actionable if the driver hears about it — until now it was
+    // visible ONLY to a driver who happened to open the in-app inbox.
+    emitNotification({
+      event: 'fleet_invite',
+      invite_id: affiliation.id,
+      driver_id: driver.driver_id,
+      fleet_owner_id: owner.id,
+    }, req.log)
 
     return reply.status(201).send({
       success: true,
@@ -105,6 +115,16 @@ export async function driverRoutes(app: FastifyInstance) {
     if (status === 'active') {
       await syncFleetSet(app, 'add', updated.fleet_owner_id, updated.driver_id)
     }
+
+    // The owner is waiting on this answer to plan capacity.
+    emitNotification({
+      event: 'fleet_invite_answered',
+      invite_id: updated.id,
+      driver_id: updated.driver_id,
+      fleet_owner_id: updated.fleet_owner_id,
+      response: status === 'active' ? 'accepted' : 'declined',
+    }, req.log)
+
     return reply.send({ success: true, data: updated })
   })
 
