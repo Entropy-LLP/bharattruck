@@ -4,11 +4,21 @@ import { useEffect, useState, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
 import { listBookings, ApiError } from '@/lib/api'
+import { useFleetAffiliation } from '@/lib/fleet-affiliation'
 import type { Booking } from '@/lib/types'
 import { formatPrice, formatDate, getCountdown } from '@/lib/utils'
+import { bookingStatusConfig } from '@/lib/status'
 import Spinner from '@/components/spinner'
 
+// ONE ROUTE, TWO PRODUCTS. bt-booking-service swaps the meaning of GET /bookings
+// by persona: a solo driver gets the open 'pending' load board, while a FLEET
+// driver gets the trips their owner assigned to them (founder Q14 — they cannot
+// self-select work). The API has always done this; the screen used to describe
+// the result as "Available Loads … near you" either way, which told an employed
+// driver their assigned job was a load to go and bid on.
 export default function AvailablePage() {
+  const { affiliation } = useFleetAffiliation()
+  const isFleetDriver = affiliation.is_fleet_affiliated
   const [bookings, setBookings] = useState<Booking[]>([])
   const [loading, setLoading] = useState(true)
   const router = useRouter()
@@ -43,7 +53,9 @@ export default function AvailablePage() {
             </svg>
           </div>
         </div>
-        <p className="text-sm font-medium text-muted-foreground animate-pulse">Finding available loads…</p>
+        <p className="text-sm font-medium text-muted-foreground animate-pulse">
+          {isFleetDriver ? 'Loading your trips…' : 'Finding available loads…'}
+        </p>
       </div>
     )
   }
@@ -57,13 +69,19 @@ export default function AvailablePage() {
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
           </svg>
         </div>
-        <h3 className="text-lg font-bold text-foreground mb-1">No loads available</h3>
-        <p className="text-sm text-muted-foreground mb-6 max-w-xs">Check back soon — new shipment requests are posted throughout the day.</p>
+        <h3 className="text-lg font-bold text-foreground mb-1">
+          {isFleetDriver ? 'No trips assigned yet' : 'No loads available'}
+        </h3>
+        <p className="text-sm text-muted-foreground mb-6 max-w-xs">
+          {isFleetDriver
+            ? `${affiliation.company_name ?? 'Your fleet owner'} will assign your next trip here. Nothing to do until then.`
+            : 'Check back soon — new shipment requests are posted throughout the day.'}
+        </p>
         <button
           onClick={() => { setLoading(true); fetchBookings() }}
           className="px-7 py-3 bg-gradient-to-r from-primary to-orange-500 text-white rounded-xl text-sm font-bold active:scale-95 transition-all shadow-lg shadow-primary/30 hover:shadow-primary/45 hover:-translate-y-0.5"
         >
-          Refresh Loads
+          {isFleetDriver ? 'Refresh' : 'Refresh Loads'}
         </button>
       </div>
     )
@@ -74,8 +92,14 @@ export default function AvailablePage() {
       {/* Header */}
       <div className="flex items-center justify-between mb-1">
         <div>
-          <h2 className="text-xl font-extrabold text-foreground tracking-tight">Available Loads</h2>
-          <p className="text-xs text-muted-foreground mt-0.5">{bookings.length} load{bookings.length !== 1 ? 's' : ''} near you</p>
+          <h2 className="text-xl font-extrabold text-foreground tracking-tight">
+            {isFleetDriver ? 'My Trips' : 'Available Loads'}
+          </h2>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            {isFleetDriver
+              ? `${bookings.length} trip${bookings.length !== 1 ? 's' : ''} assigned by ${affiliation.company_name ?? 'your fleet'}`
+              : `${bookings.length} load${bookings.length !== 1 ? 's' : ''} near you`}
+          </p>
         </div>
         <button
           onClick={() => { setLoading(true); fetchBookings() }}
@@ -101,7 +125,9 @@ export default function AvailablePage() {
               <th scope="col" className="px-5 py-3 text-left font-semibold">Load</th>
               <th scope="col" className="px-5 py-3 text-right font-semibold">Weight</th>
               <th scope="col" className="px-5 py-3 text-left font-semibold">Pickup date</th>
-              <th scope="col" className="px-5 py-3 text-right font-semibold">Payout</th>
+              <th scope="col" className="px-5 py-3 text-right font-semibold">
+                {isFleetDriver ? 'Status' : 'Payout'}
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -109,6 +135,7 @@ export default function AvailablePage() {
               <BookingRow
                 key={booking.id}
                 booking={booking}
+                isFleetDriver={isFleetDriver}
                 onClick={() => router.push(`/bookings/${booking.id}`)}
               />
             ))}
@@ -122,6 +149,7 @@ export default function AvailablePage() {
             key={booking.id}
             booking={booking}
             index={i}
+            isFleetDriver={isFleetDriver}
             onClick={() => router.push(`/bookings/${booking.id}`)}
           />
         ))}
@@ -134,9 +162,20 @@ export default function AvailablePage() {
  * One load as a table row. The pickup yard repeats across most rows, so the
  * destination carries the emphasis and the origin is de-emphasised beneath it.
  */
-function BookingRow({ booking, onClick }: { booking: Booking; onClick: () => void }) {
-  const isAuction = booking.booking_type === 'auction'
+function BookingRow({
+  booking,
+  isFleetDriver,
+  onClick,
+}: {
+  booking: Booking
+  isFleetDriver: boolean
+  onClick: () => void
+}) {
+  // Auction furniture (the badge, the closing countdown) is about winning work.
+  // A fleet driver's rows are trips already won for them, so it is noise.
+  const isAuction = booking.booking_type === 'auction' && !isFleetDriver
   const countdown = booking.auction_deadline ? getCountdown(booking.auction_deadline) : null
+  const status = bookingStatusConfig[booking.status]
 
   return (
     <tr
@@ -179,7 +218,11 @@ function BookingRow({ booking, onClick }: { booking: Booking; onClick: () => voi
         {formatDate(booking.pickup_date)}
       </td>
       <td className="whitespace-nowrap px-5 py-4 text-right">
-        {booking.quoted_price === undefined ? (
+        {isFleetDriver ? (
+          <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-bold ${status.color}`}>
+            {status.label}
+          </span>
+        ) : booking.quoted_price === undefined ? (
           <span className="text-sm text-muted-foreground">Handled by fleet</span>
         ) : (
           <span className="text-lg font-bold tabular-nums text-foreground">{formatPrice(booking.quoted_price)}</span>
@@ -189,7 +232,17 @@ function BookingRow({ booking, onClick }: { booking: Booking; onClick: () => voi
   )
 }
 
-function BookingCard({ booking, index, onClick }: { booking: Booking; index: number; onClick: () => void }) {
+function BookingCard({
+  booking,
+  index,
+  isFleetDriver,
+  onClick,
+}: {
+  booking: Booking
+  index: number
+  isFleetDriver: boolean
+  onClick: () => void
+}) {
   const [countdown, setCountdown] = useState(() =>
     booking.auction_deadline ? getCountdown(booking.auction_deadline) : null
   )
@@ -202,7 +255,10 @@ function BookingCard({ booking, index, onClick }: { booking: Booking; index: num
     return () => clearInterval(interval)
   }, [booking.auction_deadline])
 
-  const isAuction = booking.booking_type === 'auction'
+  // See BookingRow: auction/direct framing is about winning work, which a fleet
+  // driver never does — their badge is the trip's status instead.
+  const isAuction = booking.booking_type === 'auction' && !isFleetDriver
+  const status = bookingStatusConfig[booking.status]
 
   return (
     <button
@@ -216,7 +272,11 @@ function BookingCard({ booking, index, onClick }: { booking: Booking; index: num
 
       {/* Top pill badges */}
       <div className="flex items-center gap-2 mb-4">
-        {isAuction ? (
+        {isFleetDriver ? (
+          <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wider ${status.color}`}>
+            {status.label}
+          </span>
+        ) : isAuction ? (
           <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-500/12 text-[10px] font-black text-amber-500 border border-amber-500/25 uppercase tracking-wider">
             <span className="w-1 h-1 rounded-full bg-amber-500 animate-pulse" />
             Auction
@@ -270,7 +330,7 @@ function BookingCard({ booking, index, onClick }: { booking: Booking; index: num
         {/* Right — payout. Absent for a fleet-affiliated driver: the API masks
             the money because their owner is the commercial party on the trip. */}
         <div className="text-right">
-          {booking.quoted_price === undefined ? (
+          {isFleetDriver ? null : booking.quoted_price === undefined ? (
             <>
               <span className="text-[9px] uppercase font-black text-muted-foreground/60 tracking-wider block">Payout</span>
               <span className="text-sm font-bold text-muted-foreground tracking-tight leading-none">

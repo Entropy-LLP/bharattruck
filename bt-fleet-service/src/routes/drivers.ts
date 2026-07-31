@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import {
   findDriverByPhone,
+  getAffiliationForDriver,
   getFleetDriverById,
   getInviteForDriver,
   hydrateDriverIdentities,
@@ -85,6 +86,32 @@ export async function driverRoutes(app: FastifyInstance) {
     const driver = await requireDriver(req.user)
     const invites = await listPendingInvitesForDriver(driver.id)
     return reply.send({ success: true, data: invites })
+  })
+
+  // GET /fleet/drivers/me/affiliation — driver-side "who do I drive for?" (role=driver).
+  //
+  // The capability signal the driver app renders from. An affiliated driver has
+  // no load board and cannot bid (founder Q14), so the app must show assigned
+  // trips instead of a marketplace — and nothing else tells it which to show:
+  // /invites/mine returns 'pending' rows only, so an ACCEPTED affiliation is
+  // invisible there. A solo driver gets is_fleet_affiliated:false and keeps the
+  // unchanged marketplace, so this stays additive for them.
+  app.get('/me/affiliation', async (req, reply) => {
+    const driver = await requireDriver(req.user)
+    const affiliation = await getAffiliationForDriver(driver.id)
+
+    return reply.send({
+      success: true,
+      data: affiliation
+        ? {
+            is_fleet_affiliated: true,
+            fleet_owner_id: affiliation.fleet_owner_id,
+            company_name:   affiliation.company_name,
+            fleet_city:     affiliation.fleet_city,
+            since:          affiliation.responded_at ?? affiliation.invited_at,
+          }
+        : { is_fleet_affiliated: false, fleet_owner_id: null, company_name: null, fleet_city: null, since: null },
+    })
   })
 
   // POST /fleet/drivers/invites/:id/respond — driver accepts or rejects (role=driver).

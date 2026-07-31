@@ -25,6 +25,20 @@ export interface Booking {
    */
   quoted_price?: number
   final_price?: number | null
+  /**
+   * Is THIS driver the one assigned to this trip? Server-computed by
+   * bt-booking-service (`GET /bookings/:id`), because `driver_id` above is a
+   * `drivers.id` and the app only holds the `users.id` from its JWT.
+   *
+   * This is what decides trip lifecycle vs. bid form. The screen used to ask
+   * "do I own a quote here?" instead, which is wrong for both personas — a
+   * fleet driver never owns a quote (their owner bids) and a solo driver who
+   * took the load with PATCH /accept has no quote row — so both were offered a
+   * bid form for a trip they were already driving.
+   *
+   * Absent on list payloads; only `GET /bookings/:id` stamps it.
+   */
+  assigned_to_me?: boolean
   pickup_date: string
   pickup_time_slot: string | null
   status: BookingStatus
@@ -208,4 +222,24 @@ export interface FleetInvite {
   updated_at: string
   company_name: string | null
   fleet_city: string | null
+}
+
+/**
+ * `GET /fleet/drivers/me/affiliation` — which product this driver is using.
+ *
+ * This decides what the app IS, not just how it looks. An affiliated driver
+ * does not bid: their owner wins the load and assigns it to them (founder Q14),
+ * so `/available` lists assigned trips rather than a load board and the booking
+ * screen must never offer a quote form. A solo driver gets
+ * `is_fleet_affiliated:false` and the unchanged marketplace.
+ *
+ * `FleetInvite` cannot answer this — that endpoint returns `status='pending'`
+ * rows only, so an ACCEPTED affiliation is invisible in it.
+ */
+export interface FleetAffiliation {
+  is_fleet_affiliated: boolean
+  fleet_owner_id: string | null
+  company_name: string | null
+  fleet_city: string | null
+  since: string | null
 }

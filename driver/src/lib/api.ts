@@ -11,6 +11,7 @@ import type {
   OnboardingStatus,
   VehicleBodyType,
   VehicleAxleConfig,
+  FleetAffiliation,
   FleetInvite,
 } from './types'
 
@@ -583,6 +584,15 @@ export function resetPassword(token: string, password: string) {
 /** Pending invitations only — the server filters to `status='pending'`. */
 export function listMyFleetInvites(): Promise<FleetInvite[]> {
   return request<FleetInvite[]>('/fleet/drivers/invites/mine')
+}
+
+/**
+ * Whether this driver drives for a fleet — the signal the whole app branches on
+ * (see `FleetAffiliation`). Read once per session through `FleetAffiliationProvider`
+ * rather than called directly from screens.
+ */
+export function getMyFleetAffiliation(): Promise<FleetAffiliation> {
+  return request<FleetAffiliation>('/fleet/drivers/me/affiliation')
 }
 
 /**
