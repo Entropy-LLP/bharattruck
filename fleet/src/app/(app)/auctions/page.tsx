@@ -314,7 +314,7 @@ function OpenBoard({ rows, onBid }: { rows: OpenAuction[]; onBid: (a: OpenAuctio
                 <th className="py-3 px-4 text-right font-medium">Shipper ask</th>
                 <th className="py-3 px-4 text-center font-medium">Bids</th>
                 <th className="py-3 px-4 text-left font-medium">Your bid</th>
-                <th className="py-3 px-4 text-right font-medium">Action</th>
+                <th className="py-3 px-4 text-right font-medium sticky right-0 bg-white">Action</th>
               </tr>
             </thead>
             <tbody>
@@ -324,7 +324,7 @@ function OpenBoard({ rows, onBid }: { rows: OpenAuction[]; onBid: (a: OpenAuctio
                 const delta = mine ? mine.amount - a.quoted_price : null
 
                 return (
-                  <tr key={a.id} className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
+                  <tr key={a.id} className="group border-b border-gray-50 hover:bg-gray-50 transition-colors">
                     <td className="py-3 px-4 text-sm">
                       <div className="flex items-center gap-1.5 max-w-[260px]">
                         <span className="truncate text-gray-900" title={a.source_address}>{a.source_address}</span>
@@ -389,7 +389,12 @@ function OpenBoard({ rows, onBid }: { rows: OpenAuction[]; onBid: (a: OpenAuctio
                       )}
                     </td>
 
-                    <td className="py-3 px-4 text-sm text-right whitespace-nowrap">
+                    {/* Sticky so the primary action is reachable without horizontal
+                        scrolling — at 1440px this table is wider than its container and the
+                        button was landing just off-screen. Needs its own opaque background
+                        (a transparent sticky cell shows the row sliding underneath it) and
+                        must track the row's hover via `group`. */}
+                    <td className="py-3 px-4 text-sm text-right whitespace-nowrap sticky right-0 bg-white group-hover:bg-gray-50 transition-colors border-l border-gray-100">
                       <button
                         onClick={() => onBid(a)}
                         disabled={dl?.expired}
