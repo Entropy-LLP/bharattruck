@@ -303,7 +303,7 @@ function OpenBoard({ rows, onBid }: { rows: OpenAuction[]; onBid: (a: OpenAuctio
         />
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1180px]">
+          <table className="w-full min-w-[1040px]">
             <thead>
               <tr className="text-xs text-gray-400 uppercase tracking-wide border-b border-gray-100">
                 <th className="py-3 px-4 text-left font-medium">Route</th>
@@ -326,7 +326,7 @@ function OpenBoard({ rows, onBid }: { rows: OpenAuction[]; onBid: (a: OpenAuctio
                 return (
                   <tr key={a.id} className="group border-b border-gray-50 hover:bg-gray-50 transition-colors">
                     <td className="py-3 px-4 text-sm">
-                      <div className="flex items-center gap-1.5 max-w-[260px]">
+                      <div className="flex items-center gap-1.5 max-w-[200px]">
                         <span className="truncate text-gray-900" title={a.source_address}>{a.source_address}</span>
                         <ArrowRight className="w-3.5 h-3.5 text-gray-300 shrink-0" />
                         <span className="truncate text-gray-900" title={a.destination_address}>{a.destination_address}</span>
@@ -337,12 +337,12 @@ function OpenBoard({ rows, onBid }: { rows: OpenAuction[]; onBid: (a: OpenAuctio
                     </td>
 
                     <td className="py-3 px-4 text-sm">
-                      <div className="text-gray-900 truncate max-w-[140px]" title={a.load_type}>{a.load_type}</div>
+                      <div className="text-gray-900 truncate max-w-[110px]" title={a.load_type}>{a.load_type}</div>
                       <div className="text-xs text-gray-500 tabular-nums">{tons(a.weight_kg)}</div>
                     </td>
 
                     <td className="py-3 px-4 text-sm">
-                      <span className="text-gray-900 truncate block max-w-[150px]">{a.shipper_name || '—'}</span>
+                      <span className="text-gray-900 truncate block max-w-[120px]">{a.shipper_name || '—'}</span>
                     </td>
 
                     <td className="py-3 px-4 text-sm whitespace-nowrap">
