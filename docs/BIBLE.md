@@ -1589,15 +1589,23 @@ seed `bt-fleet-service` env + gateway wiring) · `fix-empty-env.sh` (repairs emp
    booking on the platform to any `fleet_owner` account (the role matched no branch in
    `listBookings` and fell through to the unfiltered admin path), and `negotiations.actor_role`
    rejected `fleet_owner`, so fleet bid history had never recorded a single row (migration 0020).
-4. **Direct bookings are invisible to the assigned SOLO driver** (from 2026-07-20, still open,
-   highest product impact). Same root cause as the fleet-driver bug resolved 2026-07-31 — the driver
-   flow is quote-based — but that fix only closed the **detail screen** (`assigned_to_me`) and the
-   **fleet** driver's list. The remaining hole is the LIST for a solo driver:
-   `repository.listBookings` still filters a non-fleet driver to `status='pending'`, so a booking
-   assigned directly to them never appears in any list. The detail screen now renders such a trip
-   correctly **if they can reach its URL** — they just have no link to it. Fix is a union in
-   `listBookings` (`status='pending'` **OR** `driver_id = me`); deliberately not bundled into the
-   fleet fix to keep that change scoped.
+4. **RESOLVED 2026-07-31 — direct bookings are visible to the assigned SOLO driver.** Open since
+   2026-07-20, the last piece of the quote-based-driver-flow bug. The fleet fix earlier the same day
+   closed the **detail screen** (`assigned_to_me`) and the **fleet** driver's list, leaving the LIST
+   for a solo driver: `repository.listBookings` filtered a non-fleet driver to `status='pending'`, so
+   a booking left the only list they could see the instant it became theirs — targeted directly at
+   them, or won and moved on to `accepted`/`in_transit`. The detail screen rendered such a trip
+   correctly **if they could reach its URL**; nothing linked to it.
+   The driver branch is now three cases, not two:
+   - **fleet-employed** → assignments only, masked (unchanged, Q14/Q16);
+   - **solo** → `status='pending'` **OR** `driver_id = <their drivers.id>`, unmasked;
+   - **no `drivers` row** → the original pending-only query, unchanged.
+   The union matters: a solo driver is both a bidder and the haulier, so returning only their
+   assignments would have traded one broken screen for another and removed their ability to find
+   work. It needs the caller's `drivers.id` resolved for solo drivers too — `fleetAffiliatedDriverId()`
+   became `resolveDriverScope()`, returning `{ driverId, fleetAffiliated }` from the same two lookups
+   (no extra queries). Covered by `bt-booking-service/test/driver-list-scope.e2e.mts` (18 checks),
+   which asserts the union rather than just the new arm.
 5. **Driver's onboarding wizard is built but unreachable** — no in-app link. Blocks a real driver
    entering insurance/bank details, which the payout path needs.
 6. **`bt-ops-web` auth and data are still stubbed.**

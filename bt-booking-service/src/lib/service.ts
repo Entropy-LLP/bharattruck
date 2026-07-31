@@ -150,24 +150,29 @@ export async function createBooking(
 }
 
 // -----------------------------------------------------------
-// PRICE HIDING (founder Q16) — the one rule in this slice that reaches into an
-// EXISTING driver payload, so it is gated as narrowly as possible.
+// resolveDriverScope — who the calling driver is, in the two terms the rest of
+// this file needs: their drivers.id, and whether a fleet employs them.
 //
-// A driver employed by a fleet is not the commercial party on the trip: their
-// owner bid and their owner gets paid, so they must not see quoted_price,
-// final_price or min_acceptable. A SOLO driver is the commercial party and
-// their payload must stay exactly as it is today — which is why the mask is
-// applied only behind an explicit, positive isFleetAffiliatedDriver() answer
-// (active affiliation only). No affiliation row, no drivers row, a non-driver
-// role, or a database without the fleet tables all resolve to "solo" and
-// return the untouched booking.
+// drivers.id (NOT the JWT's users.id) is what bookings.driver_id references, so
+// this lookup is the only way to ask "is this booking mine?".
+//
+// PRICE HIDING (founder Q16) is the rule the affiliation flag gates — the one
+// rule in this slice that reaches into an EXISTING driver payload, so it stays
+// gated as narrowly as possible. A driver employed by a fleet is not the
+// commercial party on the trip: their owner bid and their owner gets paid, so
+// they must not see quoted_price, final_price or min_acceptable. A SOLO driver
+// IS the commercial party and their payload must stay exactly as it is today —
+// which is why the mask is applied only behind an explicit, positive
+// isFleetAffiliatedDriver() answer (active affiliation only). A non-driver
+// role, no drivers row, no affiliation row, or a database without the fleet
+// tables all resolve to "solo" and return the untouched booking.
 // -----------------------------------------------------------
 
-async function fleetAffiliatedDriverId(actor: AuthenticatedUser): Promise<string | null> {
+async function resolveDriverScope(actor: AuthenticatedUser): Promise<repo.DriverListScope | null> {
   if (actor.role !== 'driver') return null
   const driverRow = await repo.getDriverByUserId(actor.userId)
   if (!driverRow) return null
-  return (await isFleetAffiliatedDriver(driverRow.id)) ? driverRow.id : null
+  return { driverId: driverRow.id, fleetAffiliated: await isFleetAffiliatedDriver(driverRow.id) }
 }
 
 // -----------------------------------------------------------
@@ -219,21 +224,22 @@ export async function getBooking(
 
 // -----------------------------------------------------------
 // listBookings
-// Role-scoped filtering is handled inside the repository.
+// Role-scoped filtering is handled inside the repository; this layer only
+// resolves WHICH driver is calling and whether to mask the money.
 //
-// One exception: a FLEET-AFFILIATED driver has no load board (founder Q14) —
-// they cannot self-select work, so the open 'pending' list is replaced by the
-// trips their owner has actually assigned to them, with the money masked. A
-// solo driver still gets the same pending load board, unmasked.
+// A FLEET-AFFILIATED driver has no load board (founder Q14) — they cannot
+// self-select work, so the open 'pending' list is replaced by the trips their
+// owner has actually assigned to them, with the money masked.
+//
+// A SOLO driver keeps the pending load board, unmasked, and now also sees the
+// trips already assigned to them — without that they had no route into their
+// own accepted/in_transit trip at all (BIBLE §5.4 item 3).
 // -----------------------------------------------------------
 
 export async function listBookings(actor: AuthenticatedUser): Promise<PriceMasked<DbBooking>[]> {
-  const fleetDriverId = await fleetAffiliatedDriverId(actor)
-  if (!fleetDriverId) {
-    return repo.listBookings(actor)
-  }
-  const assigned = await repo.listBookings(actor, fleetDriverId)
-  return assigned.map(stripCommercialFields)
+  const scope = await resolveDriverScope(actor)
+  const bookings = await repo.listBookings(actor, scope ?? undefined)
+  return scope?.fleetAffiliated ? bookings.map(stripCommercialFields) : bookings
 }
 
 // -----------------------------------------------------------

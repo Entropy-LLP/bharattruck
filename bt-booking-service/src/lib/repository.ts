@@ -118,17 +118,27 @@ export async function getBookingById(id: string): Promise<BookingWithProfiles | 
 
 // -----------------------------------------------------------
 // listBookings
-// Role-scoped: shipper→own rows, driver→pending rows, admin→all.
+// Role-scoped: shipper→own rows, driver→see below, admin→all.
 //
-// fleetAffiliatedDriverId (drivers.id) is passed ONLY for a driver the caller
-// has already confirmed is fleet-employed: that driver has no load board, so
-// they get the trips assigned to them instead of the open 'pending' pool.
-// Absent — every solo driver — the query is unchanged.
+// `driver` is passed ONLY for a caller the service has already resolved to a
+// drivers row, and it decides which slice of the board that driver gets:
+//   fleet-employed → their assignments ONLY (they have no load board, Q14)
+//   solo           → the open 'pending' pool PLUS the trips already theirs
+// Absent — a driver account with no drivers row — the query is the original
+// pending-only one.
+//
+// driverId is drivers.id, NOT the JWT's users.id: bookings.driver_id
+// references drivers(id) (see the auth/identity gotcha in CLAUDE.md).
 // -----------------------------------------------------------
+
+export type DriverListScope = {
+  driverId:        string
+  fleetAffiliated: boolean
+}
 
 export async function listBookings(
   actor: AuthenticatedUser,
-  fleetAffiliatedDriverId?: string,
+  driver?: DriverListScope,
 ): Promise<DbBooking[]> {
   let query = supabase
     .from('bookings')
@@ -138,9 +148,28 @@ export async function listBookings(
   if (actor.role === 'shipper') {
     query = query.eq('shipper_id', actor.userId)
   } else if (actor.role === 'driver') {
-    query = fleetAffiliatedDriverId
-      ? query.eq('driver_id', fleetAffiliatedDriverId)
-      : query.eq('status', 'pending')
+    if (!driver) {
+      query = query.eq('status', 'pending')
+    } else if (driver.fleetAffiliated) {
+      query = query.eq('driver_id', driver.driverId)
+    } else {
+      // A solo driver is BOTH a bidder and the haulier, so their list is a
+      // UNION, not one slice: the open pool they can still take work from, plus
+      // every booking that is already theirs — a direct booking targeted at
+      // them, or an auction they won that has since moved past 'pending' to
+      // accepted / in_transit / completed / paid.
+      //
+      // The second arm is the fix for BIBLE §5.4 item 3: a pending-only filter
+      // dropped a booking the moment it became this driver's, so the trip
+      // existed and its detail screen rendered correctly, but no list they
+      // could see ever linked to it.
+      //
+      // driverId is interpolated into PostgREST's filter grammar, which is safe
+      // here precisely because it is NOT client input: it is the uuid PK read
+      // out of drivers.id, which getDriverByUserId exchanged for the JWT's
+      // users.id.
+      query = query.or(`status.eq.pending,driver_id.eq.${driver.driverId}`)
+    }
   } else if (actor.role === 'fleet_owner') {
     // A fleet owner is a BIDDER, so they see the open load board — the same slice a
     // solo driver gets — and nothing else. Their own won loads come from
