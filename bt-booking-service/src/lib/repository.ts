@@ -307,6 +307,40 @@ export async function cancelBooking(
 }
 
 // -----------------------------------------------------------
+// setReceiverEmail
+// The ONLY write path for bookings.receiver_email after creation.
+//
+// Until this existed the column was settable exactly once, inside createBooking,
+// and there was no way to correct or supply it later — so any booking created
+// before the field became mandatory (or through ops/seed) could never reach
+// 'completed' through POD, because the driver's OTP request has no address to
+// send to. The driver app told the shipper to "add one"; the platform had no
+// route that could.
+//
+// Guarded on status by the CALLER (service.ts) rather than here, so the repo
+// stays a thin data layer. The optimistic `in` filter on status is a second
+// line: it stops a booking that reached a terminal state between the caller's
+// read and this write from being edited anyway.
+// -----------------------------------------------------------
+
+export async function setReceiverEmail(
+  bookingId: string,
+  receiverEmail: string,
+  allowedStatuses: BookingStatus[],
+): Promise<BookingWithProfiles | null> {
+  const { data, error } = await supabase
+    .from('bookings')
+    .update({ receiver_email: receiverEmail, updated_at: new Date().toISOString() })
+    .eq('id', bookingId)
+    .in('status', allowedStatuses)
+    .select('*')
+    .maybeSingle()
+
+  if (error) throw new Error(`DB update receiver_email failed: ${error.message}`)
+  return data as BookingWithProfiles | null
+}
+
+// -----------------------------------------------------------
 // getDriverByUserId
 // Bridge: JWT gives us users.id; accept/cancel need drivers.id.
 // -----------------------------------------------------------

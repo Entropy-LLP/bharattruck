@@ -117,6 +117,9 @@ export const EVENT_CATEGORY = {
     trip_completed: 'transactional', // proof of delivery — never mutable
     booking_cancelled: 'transactional', // a commitment was broken — never mutable
     ops_override: 'transactional',
+    // Transactional: a truck is sitting at the drop and only this person can release
+    // it. Muting it would strand the trip and the driver's payment.
+    receiver_email_missing: 'transactional',
     payment_settled: 'transactional',
     payout_recorded: 'transactional',
     fleet_invite: 'transactional', // requires the recipient to act

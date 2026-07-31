@@ -22,6 +22,15 @@ export interface Booking {
   pickup_time_slot: string | null
   status: BookingStatus
   special_instructions: string | null
+  /**
+   * Consignee inbox the one-time delivery code is emailed to.
+   *
+   * Nullable: required on new bookings, but the column predates that rule and most
+   * existing bookings have none — and without it the driver's proof-of-delivery
+   * request has nowhere to send the code, so the trip can never be confirmed
+   * delivered. Settable after the fact via `setReceiverEmail`.
+   */
+  receiver_email: string | null
   booking_type: BookingType
   target_driver_id: string | null
   auction_deadline: string | null

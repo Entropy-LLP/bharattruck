@@ -1516,6 +1516,20 @@ seed `bt-fleet-service` env + gateway wiring) · `fix-empty-env.sh` (repairs emp
 
 ### 5.4 Known issues
 
+**Resolved 2026-07-31 — POD was unreachable for almost every live trip.**
+`bookings.receiver_email` is required at creation but the column is nullable, and almost nothing in
+the live DB has one: **10 of 11 `in_transit`, 15 of 15 `accepted`, and 621 of 622 `paid` bookings had
+no receiver email** (2 rows out of 676 total did). Without an address the driver's POD request has
+nowhere to send the delivery code, so those trips could not reach `completed` through POD at all —
+only via an ops force-complete, which bypasses the receiver-OTP proof that `§2` puts on the *never
+cut* list. Worse, the column was settable **exactly once, at booking creation**: the driver app told
+the shipper to "add one before delivery can be confirmed" and no route in the platform could do it.
+Fixed by `PATCH /bookings/:id/receiver-email` (shipper-owner or ops; refused on
+completed/paid/cancelled), a shipper-app editor, and a `receiver_email_missing` notification so the
+shipper learns their driver is blocked instead of both sides waiting. The historical rows are not
+backfilled — a receiver address cannot be invented — so an old stuck trip still needs the shipper (or
+ops) to supply one.
+
 **Resolved 2026-07-28 — do NOT re-report these:**
 - CD failing on every push (WIF trust never migrated) — **fixed**, 12/12 green.
 - `bt-booking-service`/`bt-tracking-service` unable to build (`file:` shared dep) — **fixed** via

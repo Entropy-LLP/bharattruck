@@ -365,6 +365,78 @@ async function transitionAssignedBooking(
 }
 
 // -----------------------------------------------------------
+// setReceiverEmail
+//
+// Lets the shipper (or ops) supply the consignee inbox on an EXISTING booking.
+//
+// Why this exists: receiver_email is required at creation today, but the column
+// is nullable and most live bookings predate that rule — 10 of 11 in-transit
+// trips have no receiver email. Without an address the driver's POD request has
+// nowhere to send the code, so the trip cannot reach 'completed' at all and the
+// payout it gates never happens. The driver app already told the shipper to
+// "add one before delivery can be confirmed"; this is the route that makes that
+// instruction actionable instead of a dead end.
+//
+// WHO: the owning shipper, or ops/admin (who unstick trips on both parties'
+// behalf). Deliberately NOT the driver: the consignee is the shipper's
+// counterparty, and letting the carrier redirect where the delivery code goes
+// would hand them both halves of the proof-of-delivery check.
+//
+// WHEN: any non-terminal status. Editing it on a completed/paid booking would
+// rewrite the audit trail of an already-proven delivery; cancelled has nothing
+// left to deliver.
+// -----------------------------------------------------------
+
+const RECEIVER_EMAIL_EDITABLE_STATUSES: BookingStatus[] = [
+  'pending', 'negotiating', 'accepted', 'in_transit',
+]
+
+export async function setReceiverEmail(
+  bookingId: string,
+  receiverEmail: string,
+  actor: AuthenticatedUser,
+): Promise<DbBooking> {
+  const booking = await repo.getBookingById(bookingId)
+  if (!booking) {
+    throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
+  }
+
+  if (actor.role === 'shipper') {
+    if (booking.shipper_id !== actor.userId) {
+      throw new BookingError('Forbidden', 'FORBIDDEN', 403)
+    }
+  } else if (actor.role !== 'admin') {
+    throw new BookingError(
+      'Only the shipper who owns this booking (or ops) can set the receiver email',
+      'FORBIDDEN',
+      403,
+    )
+  }
+
+  if (!RECEIVER_EMAIL_EDITABLE_STATUSES.includes(booking.status)) {
+    throw new BookingError(
+      `The receiver email cannot be changed on a '${booking.status}' booking`,
+      'INVALID_TRANSITION',
+      409,
+    )
+  }
+
+  const updated = await repo.setReceiverEmail(
+    bookingId,
+    receiverEmail,
+    RECEIVER_EMAIL_EDITABLE_STATUSES,
+  )
+  if (!updated) {
+    throw new BookingError(
+      'Booking could not be updated — its status changed concurrently',
+      'INVALID_TRANSITION',
+      409,
+    )
+  }
+  return updated
+}
+
+// -----------------------------------------------------------
 // getPodContext
 // Authorizes a driver's request to issue a receiver-OTP POD and
 // returns the context bt-cargo-ledger needs (status + the
@@ -386,6 +458,7 @@ export type PodContext = {
 export async function getPodContext(
   bookingId: string,
   actor: AuthenticatedUser,
+  log?: Logger,
 ): Promise<PodContext> {
   if (actor.role !== 'driver') {
     throw new BookingError('Only the assigned driver can request a POD OTP', 'FORBIDDEN', 403)
@@ -411,6 +484,16 @@ export async function getPodContext(
       'INVALID_TRANSITION',
       409,
     )
+  }
+
+  // The driver is standing at the drop with no address to send the code to, and
+  // the shipper is the ONLY party who can fix it — but nothing in the product
+  // tells them. Returning the empty context and leaving both sides waiting is how
+  // a trip silently dead-ends short of 'completed' (and short of the payout it
+  // gates). Emit is idempotent per booking, so a driver retrying the button does
+  // not spam the shipper.
+  if (!booking.receiver_email) {
+    await notify.emitReceiverEmailMissing(booking, log)
   }
 
   return { booking_id: booking.id, status: booking.status, receiver_email: booking.receiver_email }
