@@ -77,6 +77,31 @@ TARGETS = {
         ],
         "literals": {},
     },
+    # bt-booking-service hosts the notification outbox dispatcher for the whole
+    # platform (migration 021). It needs the SAME mail transport bt-auth-service
+    # already sends login OTPs through -- one mail config to operate, not two --
+    # so the SMTP set is COPIED from there rather than re-entered by hand.
+    #
+    # Until these land the dispatcher deliberately REFUSES to run: with no
+    # SMTP_USER it would resolve to ConsoleEmailSender, claim every queued row,
+    # "send" it to stdout and mark it sent, silently destroying mail nobody
+    # received. POST /internal/notifications/dispatch returns 503
+    # EMAIL_NOT_CONFIGURED instead, and rows stay 'pending' until this runs.
+    #
+    # The app base URLs (SHIPPER_APP_BASE_URL / DRIVER_APP_BASE_URL /
+    # NOTIFICATIONS_PUBLIC_BASE_URL) are deliberately NOT here: they are
+    # per-environment Cloud Run hostnames, not secrets shared between services,
+    # and baking prod URLs into a repo script would go stale.
+    "booking": {
+        "service": "bt-booking-service",
+        "groups": [
+            ("bt-auth-service",
+             ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "SMTP_FROM"]),
+        ],
+        # Explicit: with credentials present but EMAIL_DEV_MODE=true, smtpConfigured()
+        # still reports false and the dispatcher stays blocked.
+        "literals": {"EMAIL_DEV_MODE": "false"},
+    },
 }
 
 
