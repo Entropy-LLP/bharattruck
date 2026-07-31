@@ -427,6 +427,18 @@ function CarrierName({ quote }: { quote: Quote }) {
 
 // --- Trip Tracking Section ---
 
+/**
+ * A fleet wins the auction as a COMPANY; the truck and driver are paired to the
+ * trip afterwards, in bt-fleet-service. Until that happens `driver_id` is NULL,
+ * so an `accepted` fleet booking means "carrier locked in", NOT "driver
+ * assigned" — saying otherwise tells the shipper someone is on the job when
+ * nobody has been named. Always false for a solo-driver booking, which is what
+ * keeps that path reading exactly as it did.
+ */
+function isAwaitingFleetDriver(booking: Booking): boolean {
+  return !!booking.fleet_owner_id && !booking.driver_id
+}
+
 function TripTrackingSection({ booking }: { booking: Booking }) {
   const [track, setTrack] = useState<TrackData | null>(null)
   const [pollError, setPollError] = useState(false)
@@ -464,11 +476,7 @@ function TripTrackingSection({ booking }: { booking: Booking }) {
     }
   }, [booking.id, booking.status])
 
-  // A fleet wins the auction as a COMPANY; the truck and driver are paired to
-  // the trip afterwards, in bt-fleet-service. Until that happens driver_id is
-  // NULL, so calling this step "Driver Assigned" tells the shipper a driver is
-  // on the job when nobody has been named yet.
-  const awaitingFleetDriver = !!booking.fleet_owner_id && !booking.driver_id
+  const awaitingFleetDriver = isAwaitingFleetDriver(booking)
 
   const steps = [
     { key: 'accepted', label: awaitingFleetDriver ? 'Carrier Booked' : 'Driver Assigned' },
@@ -574,7 +582,7 @@ function ShipperTrackPanel({
       <TrackCaption
         status={booking.status}
         delivered={delivered}
-        awaitingFleetDriver={!!booking.fleet_owner_id && !booking.driver_id}
+        awaitingFleetDriver={isAwaitingFleetDriver(booking)}
         completedAt={booking.completed_at}
         location={location}
         eta={track?.eta ?? null}
