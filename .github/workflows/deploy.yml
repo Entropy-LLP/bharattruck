@@ -29,6 +29,10 @@ name: deploy
 #   Variables:
 #     NEXT_PUBLIC_API_URL                 e.g. https://bt-gateway-itcdoenefa-el.a.run.app
 #     NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID      vector Map ID for styled maps (driver/shipper only)
+#     NEXT_PUBLIC_GOOGLE_CLIENT_ID        Google Sign-In client ID (driver/shipper login page).
+#                                         A Variable, not a Secret — OAuth client IDs are public
+#                                         by design and ship inside the client bundle. Its origins
+#                                         are restricted at the Google end, same as the Maps key.
 #   Secrets:
 #     NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY HTTP-referrer-restricted Maps JS browser key (driver/shipper)
 #   (NEXT_PUBLIC_API_URL is public; it is a Variable, not a Secret. The browser key is a Secret so it
@@ -112,6 +116,9 @@ jobs:
           # fleet→bt-fleet-console, ops-web unchanged).
           # maps=true for the apps that render a Google Map (driver/shipper/fleet) → they get the
           # Maps build args; bt-ops-web (maps=false) gets NEXT_PUBLIC_API_URL only.
+          # google=true for the apps whose login page renders the Google Sign-In button
+          # (driver/shipper). The fleet console is email+password only today, so passing it a
+          # client ID would just be an unconsumed build arg.
           APPS=$(printf '%s' "$CHANGES" | jq -c '
             [ .[]
               | select(. == "driver" or . == "shipper" or . == "fleet" or . == "bt-ops-web")
@@ -120,7 +127,8 @@ jobs:
                             elif . == "shipper" then "bt-shipper"
                             elif . == "fleet" then "bt-fleet-console"
                             else "bt-ops-web" end),
-                  maps: (if . == "bt-ops-web" then "false" else "true" end) } ]')
+                  maps: (if . == "bt-ops-web" then "false" else "true" end),
+                  google: (if . == "driver" or . == "shipper" then "true" else "false" end) } ]')
           echo "services=$SERVICES" >> "$GITHUB_OUTPUT"
           echo "apps=$APPS" >> "$GITHUB_OUTPUT"
           echo "changed services: $SERVICES"
@@ -238,6 +246,7 @@ jobs:
           NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
           NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID: ${{ vars.NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID }}
           NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY: ${{ secrets.NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY }}
+          NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${{ vars.NEXT_PUBLIC_GOOGLE_CLIENT_ID }}
         run: |
           set -euo pipefail
           IMG="${REGION}-docker.pkg.dev/${PROJECT}/bt/${{ matrix.service }}:${GITHUB_SHA}"
@@ -249,6 +258,15 @@ jobs:
           if [ "${{ matrix.maps }}" = "true" ]; then
             ARGS+=(--build-arg "NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY=${NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY}")
             ARGS+=(--build-arg "NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID=${NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID}")
+          fi
+          if [ "${{ matrix.google }}" = "true" ]; then
+            # Warn loudly rather than failing: a missing client ID degrades to the login page's
+            # "not configured" panel, and blocking the whole deploy over one disabled sign-in
+            # method would be worse than shipping the other three.
+            if [ -z "${NEXT_PUBLIC_GOOGLE_CLIENT_ID}" ]; then
+              echo "::warning::NEXT_PUBLIC_GOOGLE_CLIENT_ID repo variable is unset — ${{ matrix.service }} ships without Google Sign-In."
+            fi
+            ARGS+=(--build-arg "NEXT_PUBLIC_GOOGLE_CLIENT_ID=${NEXT_PUBLIC_GOOGLE_CLIENT_ID}")
           fi
           docker build "${ARGS[@]}" -t "$IMG" "${{ matrix.dir }}"
       - name: Push image

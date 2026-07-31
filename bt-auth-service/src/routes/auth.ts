@@ -133,6 +133,62 @@ async function sendPasswordResetEmail(email: string, link: string) {
   })
 }
 
+// ── Per-role front-end links ──────────────────────────────────────────────────
+//
+// Each persona is a separate Next app on its own origin, so an emailed link has to be
+// built from the *account's* role, not from whichever app happened to take the request:
+// a driver who types their address into the shipper app still belongs on the driver app.
+
+const RESET_PATH = '/auth/reset'
+
+function magicLinkBase(role: string | undefined): string {
+  if (role === 'driver') {
+    return process.env.DRIVER_MAGIC_LINK_URL ?? 'http://localhost:3002/auth/callback'
+  }
+  if (role === 'fleet_owner') {
+    // The fleet console has no /auth pages yet, so fleet owners fall through to the
+    // shipper app. Its callback and reset pages are role-agnostic — they only exchange
+    // a token — so the flow completes correctly; only the branding is off. Setting
+    // FLEET_MAGIC_LINK_URL takes over the moment those pages exist.
+    return process.env.FLEET_MAGIC_LINK_URL
+      ?? process.env.SHIPPER_MAGIC_LINK_URL
+      ?? 'http://localhost:3000/auth/callback'
+  }
+  return process.env.SHIPPER_MAGIC_LINK_URL ?? 'http://localhost:3000/auth/callback'
+}
+
+/**
+ * Where a password-reset link should land for this role.
+ *
+ * An explicit *_RESET_PASSWORD_URL always wins. Without one we DERIVE the reset page
+ * from the role's magic-link URL by swapping the path — we no longer fall back to the
+ * magic-link URL *verbatim*, which is what shipped before.
+ *
+ * That old fallback is why reset was dead in production: every reset email pointed at
+ * /auth/callback, and that page hands its token straight to /auth/magic-link/verify,
+ * where a 'pwreset' token fails the `type !== 'magic'` check. The mail arrived and the
+ * link opened — it just could never complete a reset. Deriving the path keeps the two
+ * flows from sharing a landing page again, even if only one of the vars is ever set.
+ */
+function resetLinkBase(role: string | undefined): string {
+  const explicit = role === 'driver'      ? process.env.DRIVER_RESET_PASSWORD_URL
+                 : role === 'fleet_owner' ? process.env.FLEET_RESET_PASSWORD_URL
+                 :                          process.env.SHIPPER_RESET_PASSWORD_URL
+  if (explicit) return explicit
+
+  try {
+    const url = new URL(magicLinkBase(role))
+    url.pathname = RESET_PATH
+    url.search = ''
+    url.hash = ''
+    return url.toString()
+  } catch {
+    // magicLinkBase only returns a non-URL if someone set a malformed env var; a
+    // localhost link is a visibly-broken dev link rather than a silently-wrong prod one.
+    return `http://localhost:3000${RESET_PATH}`
+  }
+}
+
 // fleet_owners.company_name is NOT NULL, so fall through the identity fields we actually
 // have. The owner renames the fleet properly via PATCH /fleet/owners/me — this only has to
 // be a truthful, non-empty placeholder so the row can exist from the moment the role is set.
@@ -529,10 +585,7 @@ export async function authRoutes(app: FastifyInstance) {
 
     // Prefer the callback URL provided by the frontend (it knows its own origin).
     // Fall back to per-role env vars so production deployments can override without a code change.
-    const defaultRedirect = (user.role ?? role) === 'driver'
-      ? (process.env.DRIVER_MAGIC_LINK_URL ?? 'http://localhost:3002/auth/callback')
-      : (process.env.SHIPPER_MAGIC_LINK_URL ?? 'http://localhost:3000/auth/callback')
-    const redirectBase = callback_url ?? defaultRedirect
+    const redirectBase = callback_url ?? magicLinkBase(user.role ?? role)
     const link = `${redirectBase}?token=${encodeURIComponent(linkToken)}`
     await sendMagicLinkEmail(email, link)
 
@@ -626,10 +679,7 @@ export async function authRoutes(app: FastifyInstance) {
       // Single-use: reset-password checks this key matches AND deletes it, so a token
       // cannot be replayed and a second request invalidates the first.
       await app.redis.set(`pwreset:${user.id}`, resetToken, 'EX', PWRESET_TTL_S)
-      const base = callback_url
-        ?? (user.role === 'driver'
-              ? (process.env.DRIVER_RESET_PASSWORD_URL ?? process.env.DRIVER_MAGIC_LINK_URL ?? 'http://localhost:3002/auth/reset')
-              : (process.env.SHIPPER_RESET_PASSWORD_URL ?? process.env.SHIPPER_MAGIC_LINK_URL ?? 'http://localhost:3000/auth/reset'))
+      const base = callback_url ?? resetLinkBase(user.role)
       const link = `${base}?token=${encodeURIComponent(resetToken)}`
       try {
         await sendPasswordResetEmail(email, link)
