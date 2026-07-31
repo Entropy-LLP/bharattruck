@@ -1532,25 +1532,32 @@ seed `bt-fleet-service` env + gateway wiring) · `fix-empty-env.sh` (repairs emp
    replacement** — that file powers `handleNavigate()`, the Google-Maps deep-link handoff, which is a
    FROZEN Maps contract item. A driver on that build cannot start navigation. Decide: rebase +
    restore nav, or close and re-apply the visual changes onto current `main`.
-3. **Direct bookings are invisible to the assigned driver** (from 2026-07-20, still open, highest
+3. **RESOLVED 2026-07-31 — fleet bidding is wired.** The fleet console can now see open loads,
+   place/replace/withdraw bids, reply to counter-offers and read a per-bid price history
+   (`GET /api/fleet/auctions`, `GET /api/fleet/bids`; writes reuse the existing
+   `/bookings/:id/quotes*` routes). Two bugs fixed with it: `GET /bookings` was returning EVERY
+   booking on the platform to any `fleet_owner` account (the role matched no branch in
+   `listBookings` and fell through to the unfiltered admin path), and `negotiations.actor_role`
+   rejected `fleet_owner`, so fleet bid history had never recorded a single row (migration 0020).
+4. **Direct bookings are invisible to the assigned driver** (from 2026-07-20, still open, highest
    product impact). The driver flow is quote-based throughout; a direct booking has no quote row, so
    it never appears in any driver list.
-4. **Driver's onboarding wizard is built but unreachable** — no in-app link. Blocks a real driver
+5. **Driver's onboarding wizard is built but unreachable** — no in-app link. Blocks a real driver
    entering insurance/bank details, which the payout path needs.
-5. **`bt-ops-web` auth and data are still stubbed.**
-6. **The rate card is roughly a third of market.** `RATE_PER_KM.hcv` is ₹22/km against a computed
+6. **`bt-ops-web` auth and data are still stubbed.**
+7. **The rate card is roughly a third of market.** `RATE_PER_KM.hcv` is ₹22/km against a computed
    operating cost of ₹36.71/km and a real fr8.in market rate of ₹58–60/km (32ft MXL; published band
    ₹45–85/km; Mumbai–Delhi ₹83,500 / 1414 km). The cost engine is right; the rate card is wrong.
    Every fleet owner onboarded will see negative margins on paper until this is addressed.
-7. **The deployer SA still trusts 14 RETIRED repos**, none archived on GitHub — any of them can still
+8. **The deployer SA still trusts 14 RETIRED repos**, none archived on GitHub — any of them can still
    mint a token and deploy to production. Remove those principalSets and/or archive the repos.
-8. **RLS enabled but unpoliced on most tables** — not a live hole (services use `service_role`, which
+9. **RLS enabled but unpoliced on most tables** — not a live hole (services use `service_role`, which
    bypasses RLS) but undecided.
-9. Gateway 301-redirects `/api/bookings` (no trailing slash) to `http://` — scheme downgrade.
-10. `LiveTrackMap.tsx` degrades gracefully on a *missing* key but not an *invalid* one.
-11. Shipper has no PWA manifest/service worker (driver has both).
-12. Dead tables + stray PostGIS extension in the live schema.
-13. Leftover `:rootctx-test` image tags in Artifact Registry from CD verification builds.
+10. Gateway 301-redirects `/api/bookings` (no trailing slash) to `http://` — scheme downgrade.
+11. `LiveTrackMap.tsx` degrades gracefully on a *missing* key but not an *invalid* one.
+12. Shipper has no PWA manifest/service worker (driver has both).
+13. Dead tables + stray PostGIS extension in the live schema.
+14. Leftover `:rootctx-test` image tags in Artifact Registry from CD verification builds.
 
 ### 5.5 Open founder decisions
 

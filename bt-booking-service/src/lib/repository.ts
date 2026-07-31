@@ -141,8 +141,21 @@ export async function listBookings(
     query = fleetAffiliatedDriverId
       ? query.eq('driver_id', fleetAffiliatedDriverId)
       : query.eq('status', 'pending')
+  } else if (actor.role === 'fleet_owner') {
+    // A fleet owner is a BIDDER, so they see the open load board — the same slice a
+    // solo driver gets — and nothing else. Their own won loads come from
+    // bt-fleet-service's /fleet/bookings, which is scoped to fleet_owner_id.
+    //
+    // This branch is a SECURITY FIX, not a feature. `fleet_owner` matched neither of
+    // the branches above, so it fell through to the unfiltered `admin` path below and
+    // GET /bookings returned EVERY booking on the platform to any fleet account —
+    // other shippers' loads, other fleets' trips, prices and addresses included. The
+    // role was added in migration 0014 and this function was never widened with it.
+    query = query.eq('status', 'pending')
   }
-  // admin: no additional filter
+  // admin: no additional filter. Reached ONLY by role === 'admin' now that every
+  // other role above is handled explicitly — a new role must add its own branch
+  // rather than silently inheriting a full-table read.
 
   const { data, error } = await query
   if (error) throw new Error(`DB list failed: ${error.message}`)
