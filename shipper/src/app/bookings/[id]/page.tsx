@@ -16,7 +16,7 @@ import {
 } from '@/lib/api'
 import type { TrackData, TrackEta, TrackLocation, PaymentStatus, PaymentMode } from '@/lib/api'
 import { bookingStatusConfig, quoteStatusConfig } from '@/lib/status'
-import type { Booking, Quote, QuoteCarrier } from '@/lib/types'
+import type { Booking, Quote } from '@/lib/types'
 import Navbar from '@/components/Navbar'
 import Spinner from '@/components/Spinner'
 import CounterModal from '@/components/CounterModal'
@@ -255,10 +255,8 @@ export default function BookingDetailPage({
                     <div className="flex flex-col sm:flex-row sm:items-center gap-3">
                       <div className="flex-1 grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
                         <div>
-                          <p className="text-xs text-muted-foreground/70">
-                            {quote.carrier?.kind === 'fleet' ? 'Fleet' : 'Driver'}
-                          </p>
-                          <CarrierName carrier={quote.carrier} />
+                          <p className="text-xs text-muted-foreground/70">{carrierKindLabel(quote)}</p>
+                          <CarrierName quote={quote} />
                         </div>
                         <div>
                           <p className="text-xs text-muted-foreground/70">Amount</p>
@@ -372,32 +370,52 @@ export default function BookingDetailPage({
 
 // --- Carrier identity on a bid ---
 // A bid comes from EITHER a solo driver OR a fleet owner, and the quote row
-// names only the one it came from. The server resolves that to `carrier`; this
-// renders it, with a fallback for a party that has no name on file yet (the
-// seeded drivers are exactly that) so an unnamed bidder is still a real,
-// selectable row rather than a blank cell.
+// names only the one it came from. The server resolves that party into
+// `carrier`; this renders it.
+//
+// `carrier` can be absent two ways, and they are not the same thing: the party
+// row was deleted, or the service predates carrier resolution (the deploy
+// window where this app ships ahead of bt-booking-service). In the second case
+// the row still says WHICH KIND bid via the id columns, so read those before
+// falling back to "unknown" — guessing "Driver" for a fleet bid is how this
+// page got into trouble in the first place.
 
-function CarrierName({ carrier }: { carrier: QuoteCarrier | null }) {
-  if (!carrier) {
-    return <p className="text-muted-foreground/70 italic">Unknown carrier</p>
-  }
+function carrierKind(quote: Quote): 'driver' | 'fleet' | null {
+  if (quote.carrier) return quote.carrier.kind
+  if (quote.fleet_owner_id) return 'fleet'
+  if (quote.driver_id) return 'driver'
+  return null
+}
 
-  const fallback = carrier.kind === 'fleet' ? 'Fleet operator' : 'Independent driver'
+function carrierKindLabel(quote: Quote): string {
+  const kind = carrierKind(quote)
+  return kind === 'fleet' ? 'Fleet' : kind === 'driver' ? 'Driver' : 'Carrier'
+}
+
+function CarrierName({ quote }: { quote: Quote }) {
+  const carrier = quote.carrier
+  const kind = carrierKind(quote)
+
+  // An unnamed bidder still has to be a selectable row, not a blank cell.
+  const fallback =
+    kind === 'fleet' ? 'Fleet operator' : kind === 'driver' ? 'Independent driver' : 'Unknown carrier'
+
+  // Fleet bids carry no truck or rating — those belong to the driver assigned later.
   const detail =
-    carrier.kind === 'fleet'
-      ? null
-      : [
+    carrier?.kind === 'driver'
+      ? [
           carrier.truck_number,
           carrier.total_trips ? `${carrier.total_trips} trips` : null,
           carrier.average_rating ? `${carrier.average_rating.toFixed(1)}★` : null,
         ]
           .filter(Boolean)
           .join(' · ')
+      : null
 
   return (
     <>
-      <p className={`text-foreground/85 ${carrier.name ? 'font-medium' : 'italic'}`}>
-        {carrier.name ?? fallback}
+      <p className={`text-foreground/85 ${carrier?.name ? 'font-medium' : 'italic'}`}>
+        {carrier?.name ?? fallback}
       </p>
       {detail && <p className="text-xs text-muted-foreground/70">{detail}</p>}
     </>
