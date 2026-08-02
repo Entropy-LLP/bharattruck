@@ -133,7 +133,15 @@ export async function getBookingById(id: string): Promise<BookingWithProfiles | 
 
 export type DriverListScope = {
   driverId:        string
-  fleetAffiliated: boolean
+  /**
+   * True only for an EMPLOYEE: affiliated to a fleet AND owning no truck.
+   *
+   * Was `fleetAffiliated`, which was too broad — it also caught the owner-driver
+   * whose own truck is attached to a fleet, and took away the load board they
+   * are entitled to. Ownership, not affiliation, is what decides
+   * (docs/ARCHITECTURE_UNIFIED_IDENTITY.md §1.1). Resolved by isEmployedDriver().
+   */
+  employed:        boolean
 }
 
 export async function listBookings(
@@ -150,10 +158,11 @@ export async function listBookings(
   } else if (actor.role === 'driver') {
     if (!driver) {
       query = query.eq('status', 'pending')
-    } else if (driver.fleetAffiliated) {
+    } else if (driver.employed) {
       query = query.eq('driver_id', driver.driverId)
     } else {
-      // A solo driver is BOTH a bidder and the haulier, so their list is a
+      // A solo driver — or an OWNER-DRIVER attached to a fleet, who is not an
+      // employee — is BOTH a bidder and the haulier, so their list is a
       // UNION, not one slice: the open pool they can still take work from, plus
       // every booking that is already theirs — a direct booking targeted at
       // them, or an auction they won that has since moved past 'pending' to
