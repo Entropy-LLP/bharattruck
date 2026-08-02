@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
 import Link from 'next/link'
 import { useAuth } from '@/lib/auth'
-import { listMyFleetInvites } from '@/lib/api'
+import { listMyFleetInvites, getOnboardingStatus } from '@/lib/api'
 import { useFleetAffiliation } from '@/lib/fleet-affiliation'
 
 // Two products share this shell. A SOLO driver browses a marketplace and tracks
@@ -19,6 +19,8 @@ type NavItem = {
   icon: React.ReactNode
   /** Badged items show the pending-invite count. */
   badged?: boolean
+  /** Dotted items show a bare attention dot — no count to report, just "look here". */
+  dotted?: boolean
 }
 
 const BROWSE_ITEM: NavItem = {
@@ -68,6 +70,10 @@ const TAIL_ITEMS: NavItem[] = [
   {
     href: '/profile',
     label: 'Profile',
+    // Dotted: the onboarding checklist lives behind this tab, and a driver with
+    // no bank account can run a whole trip and then not get paid. Without a
+    // pointer here, nothing in the app ever tells them to look.
+    dotted: true,
     icon: (
       <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
@@ -82,6 +88,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const router = useRouter()
   const pathname = usePathname()
   const [inviteCount, setInviteCount] = useState(0)
+  const [onboardingIncomplete, setOnboardingIncomplete] = useState(false)
 
   const navItems = affiliation.is_fleet_affiliated
     ? [TRIPS_ITEM, ...TAIL_ITEMS]
@@ -103,6 +110,28 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     listMyFleetInvites()
       .then(list => { if (!cancelled) setInviteCount(list.length) })
       .catch(() => { if (!cancelled) setInviteCount(0) })
+    return () => { cancelled = true }
+  }, [isReady, token, pathname])
+
+  // Onboarding state, on the same re-read-on-navigation footing as invites, so
+  // the dot clears the moment the driver finishes the last step. Only the steps
+  // the driver can act on count — license_verified/vehicle_verified are ops
+  // outcomes, and dotting the tab for those would leave a permanent nag on a
+  // driver who has already done everything asked of them.
+  //
+  // Failures leave it false: a nag that cannot be cleared is worse than a
+  // missing one, and Profile stays one tap away regardless.
+  useEffect(() => {
+    if (!isReady || !token) return
+    let cancelled = false
+    getOnboardingStatus()
+      .then(({ checklist: c }) => {
+        if (cancelled) return
+        setOnboardingIncomplete(
+          !c.profile_complete || !c.vehicle_registered || !c.license_submitted || !c.insurance_uploaded || !c.bank_linked,
+        )
+      })
+      .catch(() => { if (!cancelled) setOnboardingIncomplete(false) })
     return () => { cancelled = true }
   }, [isReady, token, pathname])
 
@@ -215,6 +244,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     : 'hover:bg-secondary'
                 }`}>
                   {item.icon}
+                  {item.dotted && onboardingIncomplete && (
+                    <span
+                      aria-label="Verification incomplete"
+                      className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-amber-500 border-2 border-card"
+                    />
+                  )}
                   {item.badged && inviteCount > 0 && (
                     <span
                       aria-label={`${inviteCount} pending invitation${inviteCount !== 1 ? 's' : ''}`}
