@@ -70,8 +70,39 @@ async function main() {
   r = await quote({ distance_km: 100, vehicle_type: 'hcv', load_type: 'general', weight_kg: 1000 }, tok())
   check('quote with token 200', r.statusCode === 200, `(got ${r.statusCode})`)
   const d = r.json().data
-  check('commercial split present (total_price=2200)', d?.total_price === 2200, `(got ${d?.total_price})`)
+  // HCV/100km: rate=round(36.714*1.63)=60 → base=6000, handling=1000, total=7000.
+  check('commercial split present (total_price=7000)', d?.total_price === 7000, `(got ${d?.total_price})`)
+  check('derived HCV rate is the founder market anchor (60/km)', d?.rate_per_km === 60, `(got ${d?.rate_per_km})`)
+  check('handling passed through at cost (1000)', d?.handling_fee === 1000, `(got ${d?.handling_fee})`)
   check('cost_breakdown present + matches HCV/100', d?.cost_breakdown?.operating_cost_total === 4672 && d?.cost_breakdown?.vehicle_class === 'HCV', JSON.stringify(d?.cost_breakdown))
+
+  console.log('\n── the regression guard: no class may be priced below cost ──')
+  // The original bug: a hand-written rate card (hcv: 22) sitting next to a cost
+  // engine that says an HCV costs ~36.7/km. Every class was underwater. Assert
+  // the property directly, across the whole matrix and at both a short and a
+  // long trip, so no future edit to either table can reintroduce it silently.
+  for (const vt of ['mini_truck', 'lcv', 'hcv', 'trailer'] as const) {
+    for (const km of [50, 1200]) {
+      const q = (await quote({ distance_km: km, vehicle_type: vt, load_type: 'general', weight_kg: 1000 }, tok())).json().data
+      const cost = q.cost_breakdown.operating_cost_total
+      check(`${vt}/${km}km: carrier receives ${q.driver_receives} > cost ${cost}`, q.driver_receives > cost, '')
+    }
+  }
+
+  console.log('\n── a fuel move flows through to the rate ──')
+  // The silent, one-directional failure the old hardcoded card had: diesel rises,
+  // cost rises, price does not, and the margin quietly vanishes.
+  const rateAt90 = (await quote({ distance_km: 100, vehicle_type: 'hcv', load_type: 'general', weight_kg: 1000 }, tok())).json().data.rate_per_km
+  process.env.DIESEL_PRICE_INR = '120'
+  const rateAt120 = (await quote({ distance_km: 100, vehicle_type: 'hcv', load_type: 'general', weight_kg: 1000 }, tok())).json().data.rate_per_km
+  delete process.env.DIESEL_PRICE_INR
+  check('diesel 90 → 120 raises the HCV rate', rateAt120 > rateAt90, `(${rateAt90} → ${rateAt120})`)
+
+  console.log('\n── per-type env override wins over the derived rate ──')
+  process.env.RATE_PER_KM_HCV = '75'
+  const overridden = (await quote({ distance_km: 100, vehicle_type: 'hcv', load_type: 'general', weight_kg: 1000 }, tok())).json().data
+  delete process.env.RATE_PER_KM_HCV
+  check('RATE_PER_KM_HCV=75 is used verbatim', overridden.rate_per_km === 75 && overridden.base_price === 7500, `(got ${overridden.rate_per_km}/${overridden.base_price})`)
 
   console.log('\n── class mapping assumptions (Q9-flagged) ──')
   r = await quote({ distance_km: 50, vehicle_type: 'mini_truck', load_type: 'general', weight_kg: 500 }, tok())

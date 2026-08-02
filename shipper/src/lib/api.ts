@@ -383,6 +383,17 @@ export interface PriceQuote {
   // Commercial split (superset of what pricing returns today; the UI renders these).
   base_price: number
   weight_surcharge: number
+  /**
+   * Fixed per-trip loading/handling cost, passed through at cost. Billed on top
+   * of the per-km base — a purely distance-based price left it uncovered, and
+   * the shorter the trip the bigger the hole.
+   *
+   * The cost-side twin of this number is already rendered from
+   * `breakdown.handling`, so the UI needs no change to show it.
+   */
+  handling_fee: number
+  /** The rate actually applied, derived from the cost model. Lets the UI show its working. */
+  rate_per_km: number
   total_price: number
   platform_fee: number
   shipper_pays: number
