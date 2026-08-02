@@ -49,6 +49,15 @@ everything to one level, and each tier keeps its *own* governance rule intact:
 | **Living current-state** | §5 | **The one section every session should update.** Superseded the old habit of writing a brand-new "handoff" doc every few days that re-described state from scratch (see §0.3) — now there's one table to keep current instead of five going stale in parallel. |
 | **Historical record** | Appendices A–D | Append-only logs / point-in-time snapshots. Don't rewrite history — add a new dated entry. |
 
+**Companion file — `docs/INDIA_FREIGHT_COMPLIANCE.md`** (added 2026-08-03). Legal/regulatory reference
+for e-way bills, LR/consignment notes and POD: what the platform may and may not do without becoming a
+**GTA**, the e-way bill integration model (ASP-on-GSP), document retention, and the evidentiary design
+for photo/QR POD. It lives outside this file for the same reason the Maps PLAN did — it is sourced,
+citation-heavy research with its own verified/unverified confidence marks, and flattening it into a
+tier here would destroy the thing that makes it safe to use. **Read it before touching any
+document-generation, POD or pricing-presentation code**; §1.3 in particular sets three commercial red
+lines that constrain `bt-pricing-service` and `bt-payment-service`, not just the document layer.
+
 ### 0.2 The self-iteration rule
 
 This file goes stale the same way its predecessors did if nobody maintains it — that's the exact
