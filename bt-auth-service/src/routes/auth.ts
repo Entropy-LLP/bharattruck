@@ -4,8 +4,10 @@ import bcrypt from 'bcrypt'
 import jwt from 'jsonwebtoken'
 import { OAuth2Client } from 'google-auth-library'
 import nodemailer from 'nodemailer'
+import { randomInt } from 'node:crypto'
 import type { JwtPayload } from '../lib/authenticate.js'
 import { authenticate } from '../lib/authenticate.js'
+import { consume, isLockedOut, recordFailure, clearFailures, envInt } from '../lib/rate-limit.js'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -14,6 +16,38 @@ const REFRESH_TTL_S = 7 * 24 * 3600   // 7 days
 const OTP_TTL_S     = 600             // 10 minutes
 const MAGIC_TTL_S   = 900             // 15 minutes
 const PWRESET_TTL_S = 30 * 60         // 30 minutes — password-reset link validity
+
+// ── Throttles ─────────────────────────────────────────────────────────────────
+// Env-overridable so ops can retune during the pilot without a redeploy.
+//
+// Keyed on the EMAIL, never on the client IP. `req.ip` here is the bt-gateway
+// container — Fastify is not configured with trustProxy — so an IP-keyed limit
+// would collapse every user onto one counter and lock the whole pilot out at
+// once. The forwarded headers are no better: X-Forwarded-For is appended to by
+// nginx, so its left-most entry is attacker-controlled and an attacker would
+// simply rotate it. The identity is the thing worth protecting and the thing
+// that cannot be spoofed.
+
+/** Wrong passwords tolerated per account before password login is refused. */
+const LOGIN_FAIL_LIMIT    = envInt('LOGIN_FAIL_LIMIT', 10)
+const LOGIN_FAIL_WINDOW_S = envInt('LOGIN_FAIL_WINDOW_S', 15 * 60)
+
+/** Wrong codes tolerated per address before the live OTP is burned. */
+const OTP_VERIFY_LIMIT = envInt('OTP_VERIFY_LIMIT', 5)
+
+/** Messages sent to one address per hour, across every email-producing route. */
+const EMAIL_SEND_LIMIT    = envInt('EMAIL_SEND_LIMIT', 5)
+const EMAIL_SEND_WINDOW_S = envInt('EMAIL_SEND_WINDOW_S', 3600)
+
+/**
+ * Total messages this service may send in a day. The per-address throttle alone
+ * does not stop the drain the founder flagged: registration accepts any address,
+ * so an attacker spreads one send across ten thousand different addresses and
+ * never trips a per-address counter — they just exhaust the SMTP quota, and then
+ * no real user can receive a verification code either. This is the ceiling that
+ * actually binds, regardless of how the attacker distributes the load.
+ */
+const SMTP_DAILY_BUDGET = envInt('SMTP_DAILY_BUDGET', 500)
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -24,8 +58,46 @@ function issueTokens(userId: string, role: string): { access_token: string; refr
   return { access_token, refresh_token }
 }
 
+// crypto.randomInt, not Math.random: this six-digit string is a bearer
+// credential — it verifies an email and mints a session — and Math.random is a
+// seeded PRNG whose stream is recoverable from observed outputs. Same range,
+// same format, no predictability.
 function randomOtp(): string {
-  return String(Math.floor(100000 + Math.random() * 900000))
+  return String(randomInt(100000, 1000000))
+}
+
+// -----------------------------------------------------------
+// guardEmailSend — one gate in front of every outbound message.
+//
+// Returns false when this address has had its fill for the hour, or when the
+// service has spent its daily send budget. Callers decide how to answer: routes
+// that already refuse to confirm whether an address exists absorb it silently,
+// the rest return 429.
+//
+// The budget is charged only once the per-address check passes, so a single
+// attacker hammering one address cannot also eat the global allowance.
+// -----------------------------------------------------------
+
+type SendVerdict = { allowed: boolean; retryAfterS: number }
+
+async function guardEmailSend(app: FastifyInstance, email: string): Promise<SendVerdict> {
+  const perAddress = await consume(app.redis, `email_send:${email}`, EMAIL_SEND_LIMIT, EMAIL_SEND_WINDOW_S)
+  if (!perAddress.allowed) {
+    app.log.warn({ email, count: perAddress.count }, 'email send throttled for address')
+    return { allowed: false, retryAfterS: perAddress.retryAfterS }
+  }
+
+  // Date-stamped key + 25h TTL: rolls over on its own at UTC midnight and
+  // cannot leave a stale counter behind if the service is down at the boundary.
+  const day = new Date().toISOString().slice(0, 10)
+  const budget = await consume(app.redis, `smtp_budget:${day}`, SMTP_DAILY_BUDGET, 25 * 3600)
+  if (!budget.allowed) {
+    // Loud: past this point no real user can receive a verification code
+    // either, so it needs to reach whoever is watching the logs.
+    app.log.error({ email, spent: budget.count, budget: SMTP_DAILY_BUDGET }, 'daily SMTP budget exhausted — outbound email suspended')
+    return { allowed: false, retryAfterS: budget.retryAfterS }
+  }
+  return { allowed: true, retryAfterS: 0 }
 }
 
 // Built once for the process, not once per email. Every send here used to call
@@ -331,11 +403,25 @@ export async function authRoutes(app: FastifyInstance) {
     }
     const { phone, otp } = body.data
 
+    // A six-digit code with no guess cap is a 10^6 space an attacker can walk
+    // in minutes, and it mints a full session. Cap the guesses, then burn the
+    // code: the attacker has to request a new one, which /send-otp already
+    // limits to 5/hour, so the reachable search space collapses to ~25 guesses
+    // an hour instead of unbounded.
+    const guessKey = `otp_guess:${phone}`
+    const gate = await isLockedOut(app.redis, guessKey, OTP_VERIFY_LIMIT)
+    if (!gate.allowed) {
+      return reply.status(429).send({ success: false, error: 'Too many incorrect codes. Request a new OTP.', retry_after_s: gate.retryAfterS })
+    }
+
     const stored = await app.redis.get(`phone_otp:${phone}`)
     if (!stored || stored !== otp) {
+      const used = await recordFailure(app.redis, guessKey, OTP_TTL_S)
+      if (used >= OTP_VERIFY_LIMIT) await app.redis.del(`phone_otp:${phone}`)
       return reply.status(401).send({ success: false, error: 'Invalid or expired OTP' })
     }
     await app.redis.del(`phone_otp:${phone}`)
+    await clearFailures(app.redis, guessKey)
 
     // Upsert user by phone
     let { data: user } = await app.supabase
@@ -388,7 +474,13 @@ export async function authRoutes(app: FastifyInstance) {
 
     if (existing) {
       if (!existing.email_verified) {
-        // Resend OTP so the user can complete verification
+        // Resend OTP so the user can complete verification. Throttled like any
+        // other send — replaying this branch is the cheapest way to make the
+        // service mail an address it has already mailed.
+        const gate = await guardEmailSend(app, email)
+        if (!gate.allowed) {
+          return reply.status(429).send({ success: false, error: 'Too many verification emails requested. Try again later.', retry_after_s: gate.retryAfterS })
+        }
         const otp = randomOtp()
         await app.redis.set(`email_otp:${email}`, otp, 'EX', OTP_TTL_S)
         await sendOtpEmail(email, otp)
@@ -399,6 +491,14 @@ export async function authRoutes(app: FastifyInstance) {
         })
       }
       return reply.status(409).send({ success: false, error: 'Email already registered', code: 'EMAIL_EXISTS' })
+    }
+
+    // Checked BEFORE the row is written: a registration that cannot send its
+    // verification code would otherwise leave an unverifiable account behind
+    // and still burn a users row per request.
+    const sendGate = await guardEmailSend(app, email)
+    if (!sendGate.allowed) {
+      return reply.status(429).send({ success: false, error: 'Too many verification emails requested. Try again later.', retry_after_s: sendGate.retryAfterS })
     }
 
     const password_hash = await bcrypt.hash(password, 12)
@@ -435,11 +535,21 @@ export async function authRoutes(app: FastifyInstance) {
     }
     const { email, otp } = body.data
 
+    // Same guess cap as the phone OTP — this code also mints a session.
+    const guessKey = `email_otp_guess:${email}`
+    const gate = await isLockedOut(app.redis, guessKey, OTP_VERIFY_LIMIT)
+    if (!gate.allowed) {
+      return reply.status(429).send({ success: false, error: 'Too many incorrect codes. Request a new one.', retry_after_s: gate.retryAfterS })
+    }
+
     const stored = await app.redis.get(`email_otp:${email}`)
     if (!stored || stored !== otp) {
+      const used = await recordFailure(app.redis, guessKey, OTP_TTL_S)
+      if (used >= OTP_VERIFY_LIMIT) await app.redis.del(`email_otp:${email}`)
       return reply.status(401).send({ success: false, error: 'Invalid or expired verification code' })
     }
     await app.redis.del(`email_otp:${email}`)
+    await clearFailures(app.redis, guessKey)
 
     const { data: user, error } = await app.supabase
       .from('users')
@@ -476,23 +586,59 @@ export async function authRoutes(app: FastifyInstance) {
     }
     const { email, password } = body.data
 
+    // Brute-force / credential-stuffing gate. Checked before the DB read and
+    // before bcrypt.compare — a 12-round hash is deliberately expensive, so an
+    // unthrottled login endpoint is also a CPU amplification target.
+    //
+    // Only wrong passwords count and a success clears the tally, so a user who
+    // knows their password is never affected by someone else's attempts.
+    //
+    // Accepted trade-off: an attacker who knows an address can lock its owner
+    // out of PASSWORD login for the window. That is the standard cost of a
+    // lockout, and it is bounded here — magic-link and forgot-password still
+    // work, so the account is never actually unreachable.
+    const failKey = `login_fail:${email}`
+    const gate = await isLockedOut(app.redis, failKey, LOGIN_FAIL_LIMIT)
+    if (!gate.allowed) {
+      return reply.status(429).send({
+        success: false,
+        error: 'Too many failed sign-in attempts. Try again later, or sign in with a magic link.',
+        code: 'TOO_MANY_ATTEMPTS',
+        retry_after_s: gate.retryAfterS,
+      })
+    }
+
     const { data: user } = await app.supabase
       .from('users')
       .select('*')
       .eq('email', email)
       .maybeSingle()
 
+    // Unknown address and wrong password are charged identically: branching
+    // only on the real-account path would turn the counter into an account
+    // enumeration oracle, undoing the identical 401 above it.
     if (!user || !user.password_hash) {
+      await recordFailure(app.redis, failKey, LOGIN_FAIL_WINDOW_S)
       return reply.status(401).send({ success: false, error: 'Invalid email or password' })
     }
 
     const match = await bcrypt.compare(password, user.password_hash)
     if (!match) {
+      await recordFailure(app.redis, failKey, LOGIN_FAIL_WINDOW_S)
       return reply.status(401).send({ success: false, error: 'Invalid email or password' })
     }
 
+    // The password was right, so this actor is the account owner.
+    await clearFailures(app.redis, failKey)
+
     if (!user.email_verified) {
-      // Issue a fresh OTP so they can verify
+      // Issue a fresh OTP so they can verify. Correct credentials still do not
+      // buy unmetered sends — this is otherwise a mail loop anyone holding one
+      // valid password can run indefinitely.
+      const sendGate = await guardEmailSend(app, email)
+      if (!sendGate.allowed) {
+        return reply.status(429).send({ success: false, error: 'Too many verification emails requested. Try again later.', retry_after_s: sendGate.retryAfterS })
+      }
       const otp = randomOtp()
       await app.redis.set(`email_otp:${email}`, otp, 'EX', OTP_TTL_S)
       await sendOtpEmail(email, otp)
@@ -541,6 +687,14 @@ export async function authRoutes(app: FastifyInstance) {
       return reply.status(400).send({ success: false, error: 'Email is already verified' })
     }
 
+    // Absorbed silently, matching the unknown-address branch above: a 429 that
+    // only ever appears for real, unverified accounts would re-open the
+    // enumeration hole that branch exists to close.
+    const gate = await guardEmailSend(app, email)
+    if (!gate.allowed) {
+      return reply.send({ success: true, data: { message: 'If that email is registered, a code was sent.', expires_in: OTP_TTL_S } })
+    }
+
     const otp = randomOtp()
     await app.redis.set(`email_otp:${email}`, otp, 'EX', OTP_TTL_S)
     await sendOtpEmail(email, otp)
@@ -556,6 +710,14 @@ export async function authRoutes(app: FastifyInstance) {
       return reply.status(400).send({ success: false, error: body.error.errors[0].message })
     }
     const { email, role, callback_url } = body.data
+
+    // Gated before the upsert: this route creates an account for any address it
+    // is handed, so without a throttle one loop both fills `users` with junk
+    // rows and drains the SMTP quota.
+    const gate = await guardEmailSend(app, email)
+    if (!gate.allowed) {
+      return reply.status(429).send({ success: false, error: 'Too many sign-in links requested. Try again later.', retry_after_s: gate.retryAfterS })
+    }
 
     // Upsert: create account if doesn't exist
     let { data: user } = await app.supabase
@@ -657,10 +819,12 @@ export async function authRoutes(app: FastifyInstance) {
     const { email, callback_url } = body.data
     const generic = { success: true, data: { message: 'If an account exists for that email, a reset link has been sent.' } }
 
-    const rateKey = `pwreset_rate:${email}`
-    const attempts = await app.redis.incr(rateKey)
-    if (attempts === 1) await app.redis.expire(rateKey, 3600)
-    if (attempts > 5) return reply.send(generic) // silently absorb — do not reveal the cap
+    // Was an inline per-email counter; folded into the shared gate so this
+    // route also draws down the global daily send budget rather than being the
+    // one mail-producing path that can drain the quota around it.
+    // Still silently absorbed — do not reveal the cap.
+    const gate = await guardEmailSend(app, email)
+    if (!gate.allowed) return reply.send(generic)
 
     const { data: user } = await app.supabase
       .from('users')

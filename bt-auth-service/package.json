@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "test": "for f in test/*.mts; do echo \"── $f\"; tsx \"$f\" || exit 1; done"
   },
   "dependencies": {
     "@fastify/cors": "^9.0.1",
