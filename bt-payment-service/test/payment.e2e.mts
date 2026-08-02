@@ -23,6 +23,8 @@ const B5 = '55555555-5555-4555-8555-555555555555' // completed — admin settle
 const B3 = '33333333-3333-4333-8333-333333333333' // saga-only id
 const B6 = '66666666-6666-4666-8666-666666666666' // completed — FLEET-won booking
 const B7 = '77777777-7777-4777-8777-777777777777' // saga-only id, fleet payee
+const B8 = '88888888-8888-4888-8888-888888888888' // completed — amount-reconciliation target
+const B9 = '99999999-9999-4999-8999-999999999999' // completed — ops override target
 const D1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const F1 = 'ffffffff-ffff-4fff-8fff-ffffffffffff' // fleet_owners.id (NOT a users.id)
 const U1 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' // driver user
@@ -40,6 +42,10 @@ const bstore: Record<string, Row[]> = {
     // Fleet-won: the fleet bid, so the fleet owner is the payee even though a
     // driver of record is assigned for tracking/POD.
     { id: B6, driver_id: D1, fleet_owner_id: F1, shipper_id: S1, status: 'completed', quoted_price: 8000, final_price: 8000 },
+    // Auction-won: final_price (9000) supersedes the original quote (7500), so
+    // 9000 is the only figure a shipper may settle — settling 7500 must fail.
+    { id: B8, driver_id: D1, shipper_id: S1, status: 'completed', quoted_price: 7500, final_price: 9000 },
+    { id: B9, driver_id: D1, shipper_id: S1, status: 'completed', quoted_price: 4000, final_price: 4000 },
   ],
   drivers: [{ id: D1, user_id: U1 }],
 }
@@ -167,6 +173,28 @@ async function main() {
   console.log('\n── admin can settle ──')
   r = await settle({ booking_id: B5, amount: 6000, mode: 'cash' }, tok(ADMIN, 'admin'))
   check('admin settle completed booking 200 paid', r.statusCode === 200 && r.json().data?.status === 'paid', `(got ${r.statusCode})`)
+
+  console.log('\n── money integrity: settled amount vs agreed price ──')
+  // The whole point: a shipper must not be able to name their own price at
+  // settlement time. B8 was won at 9000; 1 and 7500 (the superseded quote) are
+  // both refusals, and neither may leave any trace behind.
+  r = await settle({ booking_id: B8, amount: 1, mode: 'cash' }, tok(S1, 'shipper'))
+  check('shipper underpaying 422 AMOUNT_MISMATCH', r.statusCode === 422 && r.json().code === 'AMOUNT_MISMATCH', `(got ${r.statusCode}/${r.json().code})`)
+  check('rejected settle wrote no payment', !(await fakeStore.getPayment(B8)), JSON.stringify(await fakeStore.getPayment(B8)))
+  check('rejected settle wrote no payout', !(await fakeStore.getPayout(B8)), JSON.stringify(await fakeStore.getPayout(B8)))
+  check('rejected settle left booking completed (not paid)', bStatus(B8) === 'completed', `(got ${bStatus(B8)})`)
+  r = await settle({ booking_id: B8, amount: 7500, mode: 'cash' }, tok(S1, 'shipper'))
+  check('quoted_price is NOT settleable once final_price is set', r.statusCode === 422, `(got ${r.statusCode})`)
+  r = await settle({ booking_id: B8, amount: 9000, mode: 'cash' }, tok(S1, 'shipper'))
+  check('settling the agreed final_price 200 paid', r.statusCode === 200 && bStatus(B8) === 'paid', `(got ${r.statusCode}/${bStatus(B8)})`)
+
+  console.log('\n── ops override: a real cash settlement may differ ──')
+  // Ops keeps an escape hatch on purpose — detention, damage deductions and
+  // part payments are real, and a hard gate here would strand those trips in
+  // `completed` with no way to close them.
+  r = await settle({ booking_id: B9, amount: 3500, mode: 'cash' }, tok(ADMIN, 'admin'))
+  check('admin may settle a differing amount 200 paid', r.statusCode === 200 && bStatus(B9) === 'paid', `(got ${r.statusCode}/${bStatus(B9)})`)
+  check('override payout carries the amount actually recorded', (await fakeStore.getPayout(B9))?.amount === 3500, JSON.stringify(await fakeStore.getPayout(B9)))
 
   console.log('\n── fleet-won booking: payee = the bidder (Q15) ──')
   check('solo payout is payee_type=driver with driver_id', (await fakeStore.getPayout(B1))?.payee_type === 'driver' && (await fakeStore.getPayout(B1))?.driver_id === D1 && (await fakeStore.getPayout(B1))?.fleet_owner_id === null, JSON.stringify(await fakeStore.getPayout(B1)))
