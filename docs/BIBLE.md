@@ -1510,11 +1510,42 @@ three env shapes and asserts nginx syntax.
   group. Both are needed — Cloud Build allows only **60 operation-GET requests/min per project**, and
   `gcloud builds submit` polls while waiting. Two runs overlapping (two PRs merged a minute apart)
   produced 6 concurrent builds and killed one service in each run.
+- ⚠️ **MERGING PRs BACK-TO-BACK SILENTLY LOSES DEPLOYS.** `cancel-in-progress: false` does *not* mean
+  every run eventually executes: GitHub holds **at most ONE pending run per concurrency group**, and
+  each newly-queued run **cancels the one already waiting**. Merging 4 PRs inside a minute (2026-08-02,
+  PRs #36–#39) ran the 1st, ran the 4th, and **cancelled #37 and #38 after ~8s each** — so
+  `bt-auth-service` and `bt-pricing-service` were merged to `main` but never deployed, with CI all
+  green and nothing flagging it. Because CD is path-filtered per commit, a later unrelated merge does
+  **not** pick them up; those services stay stale until someone notices.
+  **So: after any batch merge, always check `gh run list --workflow=deploy.yml` for `cancelled`** and
+  re-run each one (`gh run rerun <id>`, one at a time, waiting for each to finish). Re-running works —
+  it replays that commit's own path filter. Better still, merge one PR, wait for its deploy, then
+  merge the next. Verify what is actually live with the revision's commit label:
+  `gcloud run services describe <svc> --region=asia-south1 --project=<proj>
+  --format='value(status.latestReadyRevisionName, spec.template.metadata.labels.commit-sha)'`
+  — the sha must match the merge commit.
 
 **Repair scripts** (idempotent, in `scripts/deploy/`): `wire-cicd.sh` (WIF trust + deployer roles +
 seed `bt-fleet-service` env + gateway wiring) · `fix-empty-env.sh` (repairs empty env values).
 
 ### 5.4 Known issues
+
+**OPEN 2026-08-02 — the gateway's own 429 is an HTML page, and the apps cannot parse it.**
+`bt-gateway/nginx.conf` rate-limits `/api/auth/` with `limit_req zone=otp_zone burst=10 nodelay`
+(`otp_zone` = 5r/m, keyed on `$binary_remote_addr`). When it trips, nginx returns its stock
+`<html>…429 Too Many Requests…</html>` body. Both apps' `api.ts` call `res.json()` on every response,
+so the HTML throws and the user is shown **"Server error — please try again"** instead of anything
+about rate limiting. A user who fat-fingers their password a few times in quick succession hits this.
+Fix is a gateway `error_page 429` returning the `{success:false, code:…}` envelope the apps expect —
+not an app-side change, since every service behind the gateway has the same exposure.
+Confirmed live 2026-08-02 by probing `/api/auth/email/login` with a nonexistent address: attempts
+1–10 → 401, 11th → nginx's HTML 429.
+
+> Note the layering, which is correct and worth keeping: **nginx limits by IP, the auth service limits
+> by identity.** `$binary_remote_addr` at the nginx hop IS the real client (verified: a single-IP probe
+> trips it, so it is not collapsing every user onto one bucket), whereas Fastify's `req.ip` is the
+> gateway container because there is no `trustProxy` — which is why the service-level throttles
+> (`LOGIN_FAIL_LIMIT` etc.) are keyed on the email instead. The two are complementary, not redundant.
 
 **Resolved 2026-07-31 — a fleet-owner bid white-screened the shipper's booking page.**
 The shipper labelled each bid with `quote.driver_id.slice(0, 8)`. Migration 016 made
