@@ -10,6 +10,7 @@ export type PaymentErrorCode =
   | 'FORBIDDEN'
   | 'NOT_FOUND'
   | 'INVALID_STATE'
+  | 'AMOUNT_MISMATCH'
   | 'UPSTREAM_ERROR'
 
 export class PaymentError extends Error {

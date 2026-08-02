@@ -26,6 +26,26 @@ export type SettleArgs = {
   reference: string | null
 }
 
+// agreedPrice — what this booking is contractually worth, using the SAME
+// precedence as every other consumer of a booking's money (booking-service's
+// mark-paid receipt and payment-emit both read `final_price ?? quoted_price`):
+// a negotiated/auction-won price supersedes the original quote.
+//
+// Returns null when the booking names no usable price at all. That is not a
+// settlement blocker — refusing to settle a priced-at-nothing booking would
+// strand the trip in `completed` forever with no operator recourse, which is
+// exactly the kind of dead-end the receiver-email gap already taught us to
+// avoid. Callers skip reconciliation and log instead.
+export function agreedPrice(booking: { quoted_price?: number | null; final_price?: number | null }): number | null {
+  const agreed = booking.final_price ?? booking.quoted_price
+  return typeof agreed === 'number' && Number.isFinite(agreed) && agreed > 0 ? agreed : null
+}
+
+// Whole rupees everywhere upstream (the pricing engine Math.ceil()s every
+// component), so this only absorbs float representation noise — never a real
+// discount. One paisa.
+const AMOUNT_EPSILON = 0.01
+
 // resolvePayee — the payout follows the BID, not the steering wheel (Q15).
 // A fleet-won booking still carries driver_id (the assigned driver of record
 // for tracking/POD), but that driver is the fleet's employee and is paid by
@@ -64,6 +84,45 @@ export async function settle(args: SettleArgs, actor: AuthenticatedUser, bearer:
       'INVALID_STATE',
       409,
     )
+  }
+
+  // ── Money integrity ───────────────────────────────────────────────────────
+  // The settled amount is caller-supplied, so without this a shipper could POST
+  // amount: 1 against a ₹36,000 trip: the booking would flip to 'paid', the
+  // payout would be written for ₹1, and the driver/fleet would carry the loss
+  // with the platform's own records agreeing that they were paid in full.
+  //
+  // The split is deliberate and mirrors the authorization split above:
+  //   • A SHIPPER is a party to the deal, so they may only confirm the price
+  //     that was agreed. They cannot self-discount.
+  //   • ADMIN/OPS may record a different figure, because real cash settlements
+  //     genuinely differ — detention, a damage deduction, a part payment the
+  //     shipper and carrier settled between themselves. Removing that escape
+  //     hatch would strand those trips in `completed` with no way to close
+  //     them. It is logged so the deviation is visible in the ledger.
+  //
+  // Checked BEFORE the writes and on every call (not just the first): a heal
+  // retry carrying a wrong amount would otherwise slip through `existing` and
+  // put the wrong number on the shipper's receipt via markPaid.
+  const agreed = agreedPrice(booking)
+  if (agreed === null) {
+    deps.logger?.warn(
+      { booking_id: args.bookingId, amount: args.amount },
+      'booking carries no usable price; settling without amount reconciliation',
+    )
+  } else if (Math.abs(args.amount - agreed) > AMOUNT_EPSILON) {
+    if (actor.role === 'admin') {
+      deps.logger?.warn(
+        { booking_id: args.bookingId, amount: args.amount, agreed_price: agreed, actor: actor.userId },
+        'ops override: settled amount differs from the agreed price',
+      )
+    } else {
+      throw new PaymentError(
+        `Settled amount ₹${args.amount} does not match the agreed price ₹${agreed} for this booking`,
+        'AMOUNT_MISMATCH',
+        422,
+      )
+    }
   }
 
   // Record the money (hard write — must persist). Skip if already recorded
