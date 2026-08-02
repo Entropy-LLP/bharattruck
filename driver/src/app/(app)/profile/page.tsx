@@ -7,6 +7,7 @@ import { toast } from 'sonner'
 import { useAuth } from '@/lib/auth'
 import { registerProfile } from '@/lib/api'
 import Spinner from '@/components/spinner'
+import OnboardingChecklistCard from '@/components/onboarding-checklist'
 
 const TRUCK_TYPES = [
   { value: 'mini_truck', label: 'Mini Truck', sub: 'Up to 1 ton', emoji: '🚐' },
@@ -108,6 +109,14 @@ export default function ProfilePage() {
             </div>
           </div>
         </section>
+
+        {/* Verification & payout — the entry point into /onboarding/*, which had
+            no link anywhere in the app. Placed ABOVE the quick form below
+            because it is the complete path (and the only route to a bank
+            account, without which a finished trip cannot pay out). The quick
+            form stays for the one-field truck-type case; folding the two into a
+            single flow is a follow-up. */}
+        <OnboardingChecklistCard />
 
         {/* Driver profile form */}
         <section
