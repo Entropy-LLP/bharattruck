@@ -21,8 +21,16 @@ import { getMyFleetAffiliation, getToken } from '@/lib/api'
 import { useAuth } from '@/lib/auth'
 import type { FleetAffiliation } from '@/lib/types'
 
+// The safe default while the lookup is in flight or has failed: an independent
+// operator with the full marketplace. Erring toward `is_employed:false` shows a
+// load board to someone who may turn out to be employed — recoverable, and the
+// API refuses their bid anyway. Erring the other way hides the marketplace from
+// a paying operator, which is the failure this whole module exists to avoid.
 const SOLO: FleetAffiliation = {
   is_fleet_affiliated: false,
+  is_employed: false,
+  owns_vehicles: false,
+  owned_vehicle_count: 0,
   fleet_owner_id: null,
   company_name: null,
   fleet_city: null,

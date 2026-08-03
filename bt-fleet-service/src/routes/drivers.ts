@@ -3,6 +3,7 @@ import { z } from 'zod'
 import {
   findDriverByPhone,
   getAffiliationForDriver,
+  countVehiclesOwnedByDriver,
   getFleetDriverById,
   getInviteForDriver,
   hydrateDriverIdentities,
@@ -98,29 +99,58 @@ export async function driverRoutes(app: FastifyInstance) {
     return reply.send({ success: true, data: invites })
   })
 
-  // GET /fleet/drivers/me/affiliation — driver-side "who do I drive for?" (role=driver).
+  // GET /fleet/drivers/me/affiliation — driver-side "who am I, commercially?"
   //
-  // The capability signal the driver app renders from. An affiliated driver has
-  // no load board and cannot bid (founder Q14), so the app must show assigned
-  // trips instead of a marketplace — and nothing else tells it which to show:
-  // /invites/mine returns 'pending' rows only, so an ACCEPTED affiliation is
-  // invisible there. A solo driver gets is_fleet_affiliated:false and keeps the
-  // unchanged marketplace, so this stays additive for them.
+  // The capability signal the driver app renders from. Nothing else tells it
+  // which product to show: /invites/mine returns 'pending' rows only, so an
+  // ACCEPTED affiliation is invisible there.
+  //
+  // `is_employed` — NOT `is_fleet_affiliated` — is the field clients must branch
+  // on. Affiliation alone was the wrong signal: it also caught the owner-driver
+  // whose own truck is attached to a fleet, hiding the money from the person
+  // paying that truck's EMI and taking away the load board they need to fill an
+  // empty return leg. Employment is affiliation AND owning no truck
+  // (docs/ARCHITECTURE_UNIFIED_IDENTITY.md §1.1), and it is what
+  // isEmployedDriver() in bt-booking-service enforces server-side. The two MUST
+  // agree or the app renders one product while the API allows another.
+  //
+  // is_fleet_affiliated and owns_vehicles are both still returned: the first for
+  // backward compatibility with clients not yet updated (they keep today's
+  // behaviour), the second because the app has a legitimate use for it beyond
+  // this rule — an owner-driver needs their bank account for payouts, whereas a
+  // salaried employee is paid by their fleet and does not.
   app.get('/me/affiliation', async (req, reply) => {
     const driver = await requireDriver(req.user)
-    const affiliation = await getAffiliationForDriver(driver.id)
+    const [affiliation, ownedVehicles] = await Promise.all([
+      getAffiliationForDriver(driver.id),
+      countVehiclesOwnedByDriver(driver.id),
+    ])
+    const ownsVehicles = ownedVehicles > 0
 
     return reply.send({
       success: true,
       data: affiliation
         ? {
             is_fleet_affiliated: true,
+            is_employed:    !ownsVehicles,
+            owns_vehicles:  ownsVehicles,
+            owned_vehicle_count: ownedVehicles,
             fleet_owner_id: affiliation.fleet_owner_id,
             company_name:   affiliation.company_name,
             fleet_city:     affiliation.fleet_city,
             since:          affiliation.responded_at ?? affiliation.invited_at,
           }
-        : { is_fleet_affiliated: false, fleet_owner_id: null, company_name: null, fleet_city: null, since: null },
+        : {
+            is_fleet_affiliated: false,
+            // Unaffiliated is never employed, whether or not they own a truck.
+            is_employed:    false,
+            owns_vehicles:  ownsVehicles,
+            owned_vehicle_count: ownedVehicles,
+            fleet_owner_id: null,
+            company_name:   null,
+            fleet_city:     null,
+            since:          null,
+          },
     })
   })
 
