@@ -1,5 +1,5 @@
 import type { BookingClient } from './booking-client.js'
-import type { PaymentStore, PaymentMode, PayoutPayee } from './payment-store.js'
+import type { PaymentStore, PaymentMode, PayoutPayee, PayoutRecord, PayoutKey } from './payment-store.js'
 import { PaymentError } from './errors.js'
 import { emitTripEconomics } from './fleet-emit.js'
 import type { AuthenticatedUser } from '../plugins/auth.js'
@@ -7,10 +7,11 @@ import type { AuthenticatedUser } from '../plugins/auth.js'
 // -----------------------------------------------------------
 // PaymentService — cash-recorded settlement (NO escrow, NO Razorpay).
 // Records a direct/UPI/cash settlement against a COMPLETED booking,
-// records the driver payout, and asks booking-service to run
-// completed → paid. Fully idempotent + self-healing on booking_id:
-// a retried settle never double-records and heals a partial (payment
-// recorded but the paid-flip lost). Deps are injected for verification.
+// records the payout(s) — one per payee, since a fleet trip may split
+// the freight with its driver (D-7) — and asks booking-service to run
+// completed → paid. Fully idempotent + self-healing: a retried settle
+// never double-records and heals a partial (payment recorded but the
+// paid-flip lost). Deps are injected for verification.
 // -----------------------------------------------------------
 
 export type PaymentDeps = {
@@ -46,19 +47,127 @@ export function agreedPrice(booking: { quoted_price?: number | null; final_price
 // discount. One paisa.
 const AMOUNT_EPSILON = 0.01
 
-// resolvePayee — the payout follows the BID, not the steering wheel (Q15).
-// A fleet-won booking still carries driver_id (the assigned driver of record
-// for tracking/POD), but that driver is the fleet's employee and is paid by
-// the fleet, so fleet_owner_id wins whenever it is set. Returns null when the
-// booking names no bidder at all; callers decide whether that is fatal.
-export function resolvePayee(booking: { driver_id: string | null; fleet_owner_id?: string | null }): PayoutPayee | null {
+// A payee and what they are owed out of one settlement. Deliberately free of
+// booking_id/mode/status so a later disbursement layer (Razorpay Route, D-12 —
+// NOT this slice) can consume the same shape without going near the ledger.
+export type PayoutSplit = PayoutPayee & { amount: number }
+
+// resolvePayees — who gets paid, and how much, for ONE settled trip.
+//
+// The contract with the shipper is still with WHOEVER MADE THE BID (Q15): a
+// solo driver, or the fleet owner who bid on their fleet's behalf. What D-7
+// adds is that the bid money may then be shared with the driver who actually
+// ran the trip, per `fleet_drivers.revenue_share_pct` — a standing term of the
+// affiliation, set by the owner.
+//
+//   solo booking                 -> [driver 100%]
+//   fleet booking, share = 0     -> [fleet_owner 100%]   (salaried; today's behaviour)
+//   fleet booking, share = 30    -> [fleet_owner 70%, driver 30%]
+//   fleet booking, share = 100   -> [driver 100%]
+//
+// Returns [] when the booking names no bidder at all; callers decide whether
+// that is fatal. A payee whose share works out to nothing is dropped rather
+// than written as a ₹0 row — an empty payout is not a fact about the trip, it
+// is noise in the ledger and a disbursement the bank would reject.
+//
+// `driverSharePct` is a parameter, not a lookup, so this stays pure: the whole
+// split is testable without a database, and the caller decides whether reading
+// the affiliation is even appropriate (the saga path deliberately does not —
+// see onTripCompleted).
+export function resolvePayees(
+  booking: { driver_id: string | null; fleet_owner_id?: string | null },
+  amount: number,
+  driverSharePct = 0,
+): PayoutSplit[] {
   if (booking.fleet_owner_id) {
-    return { payee_type: 'fleet_owner', fleet_owner_id: booking.fleet_owner_id, driver_id: null }
+    const owner: PayoutPayee = { payee_type: 'fleet_owner', fleet_owner_id: booking.fleet_owner_id, driver_id: null }
+
+    // Clamped rather than trusted: the DB CHECK holds 0..100 today, but this
+    // number decides who gets the money and a bad one would either overpay the
+    // driver or hand the owner a negative payout.
+    const pct = Number.isFinite(driverSharePct) ? Math.min(Math.max(driverSharePct, 0), 100) : 0
+    if (pct === 0 || !booking.driver_id) return [{ ...owner, amount }]
+
+    // Split in whole PAISE, which is the precision `payouts.amount numeric(12,2)`
+    // actually stores. Doing it in rupee floats lets a 33.33% share land on a
+    // fraction of a paisa that the column then rounds independently per row —
+    // and two independently-rounded rows do not have to add up.
+    const totalPaise = Math.round(amount * 100)
+    const driverPaise = Math.round((totalPaise * pct) / 100)
+
+    // The OWNER absorbs the rounding remainder — always, in the same direction.
+    // Two reasons. The driver's cut is the number they were promised and can
+    // check on a calculator, so it is the one that should be exact; and the
+    // owner set the split, holds the shipper relationship and is the residual
+    // claimant on the trip, so the sub-paisa belongs on their side of the line.
+    // Taking it as a subtraction (not a second rounding) is what makes the two
+    // rows sum to the settled amount exactly rather than usually.
+    const ownerPaise = totalPaise - driverPaise
+    if (ownerPaise === 0) return [{ payee_type: 'driver', driver_id: booking.driver_id, fleet_owner_id: null, amount }]
+
+    return [
+      { ...owner, amount: ownerPaise / 100 },
+      { payee_type: 'driver', driver_id: booking.driver_id, fleet_owner_id: null, amount: driverPaise / 100 },
+    ]
   }
+
+  // No fleet: the driver bid and the driver is paid, at the settled amount
+  // untouched — no paise round-trip, so this stays byte-identical to pre-split.
   if (booking.driver_id) {
-    return { payee_type: 'driver', driver_id: booking.driver_id, fleet_owner_id: null }
+    return [{ payee_type: 'driver', driver_id: booking.driver_id, fleet_owner_id: null, amount }]
   }
-  return null
+  return []
+}
+
+// planPayoutWrites — turn "these are the payees" into "do exactly this to the
+// booking's payout rows". Pure, so the reconciliation is testable without a
+// database and without a settlement.
+//
+// The bug this exists to kill: settle() used to UPSERT only the rows it had
+// just computed, which silently assumed the computed set could never SHRINK.
+// It can. The saga (onTripCompleted) pre-creates a 'pending' row for the
+// bidder; a share of 100 then resolves to the driver alone, so nothing ever
+// overwrites the owner's stale pending row. The booking ends up holding payout
+// rows that sum to TWICE the settlement, and the back-compat `payout` wire
+// field — the number the shipper app renders — hands back the stale 'pending'
+// row. Reconciling the FULL set is the only thing that closes that: a payee
+// who no longer has a share loses their row.
+//
+// Deleting rather than zeroing is deliberate and matches resolvePayees, which
+// drops a zero-share payee instead of writing a ₹0 row: a payout row asserts
+// "this party is owed this money for this trip", and for a dropped payee that
+// assertion is simply false. Nothing has been disbursed — the pilot is
+// record-only (D-12) — so there is no transfer to reverse, only a wrong claim
+// to withdraw.
+//
+// Idempotent by construction: it is a function of (what is there, what should
+// be there), so replaying it once everything matches yields an empty plan.
+export type PayoutPlan = {
+  insert: PayoutRecord[]
+  update: PayoutRecord[]
+  remove: PayoutKey[]
+  /** Whether an UPDATE/DELETE may filter on payee_type (migration 0016). See PayoutKey. */
+  keyByPayeeType: boolean
+}
+
+export function planPayoutWrites(bookingId: string, existing: PayoutRecord[], desired: PayoutRecord[]): PayoutPlan {
+  // Which addressing the live table supports, read off the rows themselves
+  // rather than guessed: getPayouts() selects '*', so a row carrying a
+  // `payee_type` key proves migration 0016 has landed. With no rows there is
+  // nothing to address — every desired row is an INSERT — so the value is moot.
+  const keyByPayeeType = existing.some((r) => 'payee_type' in r)
+  // A pre-0016 row predates the column and IS the driver's, which is what the
+  // column's own DEFAULT says too.
+  const typeOf = (r: PayoutRecord) => r.payee_type ?? 'driver'
+
+  return {
+    keyByPayeeType,
+    insert: desired.filter((d) => !existing.some((e) => typeOf(e) === d.payee_type)),
+    update: desired.filter((d) => existing.some((e) => typeOf(e) === d.payee_type)),
+    remove: existing
+      .filter((e) => !desired.some((d) => d.payee_type === typeOf(e)))
+      .map((e) => ({ bookingId, payeeType: typeOf(e), keyByPayeeType })),
+  }
 }
 
 export async function settle(args: SettleArgs, actor: AuthenticatedUser, bearer: string, deps: PaymentDeps) {
@@ -74,8 +183,8 @@ export async function settle(args: SettleArgs, actor: AuthenticatedUser, bearer:
 
   // Idempotent full-retry: already settled + already flipped to paid.
   if (booking.status === 'paid' && existing) {
-    const payout = await deps.store.getPayout(args.bookingId)
-    return { booking_id: args.bookingId, status: 'paid', already_settled: true, payment: existing, payout }
+    const payouts = await deps.store.getPayouts(args.bookingId)
+    return { booking_id: args.bookingId, status: 'paid', already_settled: true, payment: existing, ...payoutView(booking, payouts) }
   }
 
   if (booking.status !== 'completed') {
@@ -131,28 +240,68 @@ export async function settle(args: SettleArgs, actor: AuthenticatedUser, bearer:
     // Resolved BEFORE the payment insert: a booking with no payee cannot be
     // paid out, and migration 016's CHECK would reject the payout row anyway —
     // better to refuse up front than to record money we cannot disburse.
-    const payee = resolvePayee(booking)
-    if (!payee) {
+    //
+    // The D-7 share is read here and only here. It governs how the freight is
+    // divided, so it must be the share in force when the money is recorded —
+    // not one cached from trip completion, by which time the owner may have
+    // renegotiated it. Reading it costs one indexed lookup on a path that
+    // already makes two cross-service HTTP calls.
+    const sharePct = booking.fleet_owner_id && booking.driver_id
+      ? await deps.store.getDriverRevenueSharePct(booking.fleet_owner_id, booking.driver_id)
+      : 0
+    const payees = resolvePayees(booking, args.amount, sharePct) // pilot: no platform fee — the payees split the whole settled amount
+    if (payees.length === 0) {
       throw new PaymentError('Booking has no payee (neither a driver nor a fleet owner)', 'INVALID_STATE', 409)
     }
 
-    // ORDER MATTERS: payout FIRST, payment second.
-    //
-    // `existing` (the payments row) is what short-circuits this whole block on a
-    // retry. If the payment were written first and the payout write then failed,
-    // the retry would find `existing` non-null, skip the block entirely, flip the
-    // booking to 'paid' and return 200 — leaving the payee's payout row missing
-    // forever, recoverable only by hand. Writing the payout first inverts that:
-    // a failure here leaves NO payments row, so the retry re-runs both writes.
-    // upsertPayout is idempotent on booking_id, so the replay is safe.
-    await deps.store.upsertPayout({
+    const desired: PayoutRecord[] = payees.map((payee) => ({
       booking_id: args.bookingId,
       ...payee,
-      amount: args.amount, // pilot: no platform fee — payout = settled amount
       mode: args.mode,
-      status: 'recorded',
+      status: 'recorded' as const,
       recorded_by: actor.userId,
-    })
+    }))
+
+    // ORDER MATTERS: payouts FIRST, payment second.
+    //
+    // `existing` (the payments row) is what short-circuits this whole block on a
+    // retry. If the payment were written first and a payout write then failed,
+    // the retry would find `existing` non-null, skip the block entirely, flip the
+    // booking to 'paid' and return 200 — leaving the payee's payout row missing
+    // forever, recoverable only by hand. Writing the payouts first inverts that:
+    // a failure here leaves NO payments row, so the retry re-runs every write.
+    //
+    // A split writes the payees one row at a time and is therefore not atomic
+    // ACROSS them — which the same inversion covers, because the plan below is a
+    // function of what is currently in the table: a crash halfway leaves no
+    // payments row, and the retry re-plans against the rows it already wrote and
+    // finishes the job. That, plus UNIQUE(booking_id, payee_type) from 0023
+    // catching a concurrent writer, is what stops a replay from double-paying.
+    const plan = planPayoutWrites(args.bookingId, await deps.store.getPayouts(args.bookingId), desired)
+
+    for (const row of plan.update) await deps.store.updatePayout(row, plan.keyByPayeeType)
+
+    // The reconciliation itself: a party this settlement does not pay must not
+    // keep a row from a previous, differently-shaped attempt (a share
+    // renegotiated to 100 between the saga's pre-create and settlement, or
+    // between a crashed settle and its retry).
+    //
+    // DELETES BEFORE INSERTS, so that the number of rows never transiently
+    // EXCEEDS what the booking ends up with. On a schema that still carries
+    // migration 011's UNIQUE(booking_id) — which this service must settle
+    // against, since deploy.yml ships it on merge and 0023 is applied by hand
+    // afterwards — inserting the new payee while the old one is still there
+    // would trip that constraint on a settlement the table can perfectly well
+    // hold (one payee, just a different one than last time).
+    //
+    // The window this opens, where a booking momentarily has no payout row, is
+    // not observable as a settled trip: the payments row is still unwritten and
+    // the booking is still 'completed', so a crash inside it reads as an
+    // unfinished settlement, which is what it is, and the retry re-plans against
+    // whatever survived and finishes.
+    for (const key of plan.remove) await deps.store.deletePayout(key)
+    for (const row of plan.insert) await deps.store.insertPayout(row)
+
     await deps.store.insertPayment({
       booking_id: args.bookingId,
       amount: args.amount,
@@ -194,15 +343,32 @@ export async function settle(args: SettleArgs, actor: AuthenticatedUser, bearer:
   if (booking.fleet_owner_id) emitTripEconomics(args.bookingId, deps.logger)
 
   const payment = existing ?? (await deps.store.getPayment(args.bookingId))
-  const payout = await deps.store.getPayout(args.bookingId)
-  return { booking_id: args.bookingId, status: 'paid', already_settled: !!existing, payment, payout }
+  const payouts = await deps.store.getPayouts(args.bookingId)
+  return { booking_id: args.bookingId, status: 'paid', already_settled: !!existing, payment, ...payoutView(booking, payouts) }
+}
+
+// payoutView — the settlement's payouts, shaped for the wire.
+//
+// `payouts` (the full list) is the new truth. `payout` stays because the
+// shipper app already reads it as a single object (shipper/src/lib/api.ts
+// PaymentStatus); dropping it would blank the settlement panel on a deploy
+// this slice is not allowed to coordinate with. It names the BIDDER's row —
+// the party the shipper actually contracted with — so the number the shipper
+// sees keeps meaning what it meant before splits existed, rather than becoming
+// whichever row the database happened to return first.
+export function payoutView(
+  booking: { fleet_owner_id?: string | null },
+  payouts: PayoutRecord[],
+): { payout: PayoutRecord | null; payouts: PayoutRecord[] } {
+  const bidderType = booking.fleet_owner_id ? 'fleet_owner' : 'driver'
+  return { payout: payouts.find((p) => p.payee_type === bidderType) ?? payouts[0] ?? null, payouts }
 }
 
 // -----------------------------------------------------------
 // onTripCompleted — outbox/saga consumer. When a trip completes,
 // booking-service best-effort emits `trip_completed`; this idempotently
-// pre-creates a 'pending' payout keyed on booking_id (retriable, at most
-// one payout per booking). NOT a cross-service RPC coupling tables. The
+// pre-creates a 'pending' payout for the bidder (retriable, at most one
+// payout per payee per booking). NOT a cross-service RPC coupling tables. The
 // settle path is self-healing, so a lost event never blocks settlement.
 // -----------------------------------------------------------
 
@@ -210,7 +376,19 @@ export async function onTripCompleted(
   args: { booking_id: string; driver_id: string | null; fleet_owner_id?: string | null; amount: number },
   deps: PaymentDeps,
 ) {
-  const payee = resolvePayee(args)
+  // No D-7 share here on purpose — the pre-created row is the BIDDER's, exactly
+  // as before splits existed. The amount is provisional (it is the trip's price;
+  // ops may settle a different figure) and the share is read at settlement, not
+  // at completion, so splitting here would be a provisional split of a
+  // provisional number against a term that may still change.
+  //
+  // Passing 0 keeps this path emitting exactly one row. That row is NOT assumed
+  // to be one settle() will keep: settle() reconciles the booking's whole payout
+  // set against the payees it resolves, so a bidder row that turns out to be
+  // owed nothing (share = 100 hands the freight to the driver) is removed rather
+  // than stranded at 'pending'. Getting that wrong is what let a booking hold
+  // rows summing to twice the settlement.
+  const [payee] = resolvePayees(args, args.amount, 0)
   if (!payee) {
     // Nothing to pre-create — settle() resolves the payee from the booking
     // itself and self-heals, so a payee-less event costs nothing but a log line.
@@ -221,7 +399,6 @@ export async function onTripCompleted(
   await deps.store.insertPendingPayoutIfAbsent({
     booking_id: args.booking_id,
     ...payee,
-    amount: args.amount,
     mode: null,
     status: 'pending',
     recorded_by: null,

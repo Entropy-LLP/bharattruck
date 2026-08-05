@@ -177,6 +177,40 @@ async function main() {
   const unpaid = allocateDriverWage(0, [{ booking_id: 't', distance_km: 500, wage_weight: 1 }])
   check('no recorded salary allocates nothing', unpaid.get('t') === 0)
 
+  console.log('\n── revenue under a D-7 fleet↔driver split ──')
+  // The truck's P&L is the FLEET OWNER's book. Before D-7 the whole freight was
+  // the owner's, because the bidder was the only payee and `payouts` held one
+  // row per booking. bt-payment-service now writes one row PER PAYEE, and the
+  // read here used maybeSingle() — which answers PGRST116 on two rows rather
+  // than returning either. resolveRevenue threw, rollUpTripEconomics threw, and
+  // emitTripEconomics is fire-and-forget, so every split fleet settlement lost
+  // its trip_economics row to a warning log.
+  const { fleetOwnerRevenue } = await import('../src/lib/economics.js')
+  const booking = { id: 'b-1', quoted_price: 5500, final_price: 6000 } as any
+  check('no payout rows yet -> the booking price (unchanged pre-D-7 fallback)',
+    fleetOwnerRevenue([], booking) === 6000, `(got ${fleetOwnerRevenue([], booking)})`)
+  check('salaried fleet trip -> the whole freight, exactly as before',
+    fleetOwnerRevenue([{ amount: 6000, payee_type: 'fleet_owner' }], booking) === 6000)
+  check('a 30% split books the OWNER\'s share, not the whole freight',
+    fleetOwnerRevenue([
+      { amount: 4200, payee_type: 'fleet_owner' },
+      { amount: 1800, payee_type: 'driver' },
+    ], booking) === 4200, `(got ${fleetOwnerRevenue([{ amount: 4200, payee_type: 'fleet_owner' }, { amount: 1800, payee_type: 'driver' }], booking)})`)
+  // share = 100 leaves no owner row at all. That is a real zero — the owner
+  // passed the freight straight through — and must NOT fall back to the booking
+  // price, which would book revenue the owner never received.
+  check('share = 100 -> zero owner revenue, not the booking price',
+    fleetOwnerRevenue([{ amount: 6000, payee_type: 'driver' }], booking) === 0,
+    `(got ${fleetOwnerRevenue([{ amount: 6000, payee_type: 'driver' }], booking)})`)
+  // A solo-driver booking never reaches here (rollUpTripEconomics returns early
+  // without a fleet_owner_id), but a row written before migration 0016 carries
+  // no payee_type and is the driver's by that column's own default.
+  check('a pre-0016 row without payee_type is not counted as the owner\'s',
+    fleetOwnerRevenue([{ amount: 6000 }], booking) === 0)
+  check('the split rows still sum to the settlement (owner + driver)',
+    fleetOwnerRevenue([{ amount: 4200, payee_type: 'fleet_owner' }, { amount: 1800, payee_type: 'driver' }], booking)
+    + 1800 === 6000)
+
   console.log('\n── guards ──')
   let threw = false
   try {

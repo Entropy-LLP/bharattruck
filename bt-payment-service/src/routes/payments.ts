@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyPluginOptions } from 'fastify'
 import { z } from 'zod'
 import { PaymentError } from '../lib/errors.js'
-import { settle, type PaymentDeps } from '../lib/payment-service.js'
+import { settle, payoutView, type PaymentDeps } from '../lib/payment-service.js'
 import { defaultBookingClient } from '../lib/booking-client.js'
 import { defaultPaymentStore } from '../lib/payment-store.js'
 
@@ -60,7 +60,9 @@ export async function paymentRoutes(app: FastifyInstance, opts: PaymentRouteOpti
   })
 
   // GET /payments/status/:booking_id — ops/admin or shipper-owner reads
-  // the recorded payment + payout for a booking.
+  // the recorded payment + payout(s) for a booking. `payout` is the bidder's
+  // row and `payouts` is every payee, so a shipper client written before the
+  // D-7 split existed keeps reading the same field with the same meaning.
   app.get('/status/:booking_id', async (req, reply) => {
     const params = z.object({ booking_id: z.string().uuid() }).safeParse(req.params)
     if (!params.success) {
@@ -72,10 +74,10 @@ export async function paymentRoutes(app: FastifyInstance, opts: PaymentRouteOpti
         throw new PaymentError('Not authorized to view settlement', 'FORBIDDEN', 403)
       }
       // Delegate ownership authz to booking-service (shipper must own it).
-      await deps.booking.getBooking(bookingId, req.headers.authorization!)
+      const booking = await deps.booking.getBooking(bookingId, req.headers.authorization!)
       const payment = await deps.store.getPayment(bookingId)
-      const payout = await deps.store.getPayout(bookingId)
-      return reply.send({ success: true, data: { booking_id: bookingId, payment, payout } })
+      const payouts = await deps.store.getPayouts(bookingId)
+      return reply.send({ success: true, data: { booking_id: bookingId, payment, ...payoutView(booking, payouts) } })
     } catch (err) {
       return handleError(reply, err)
     }
