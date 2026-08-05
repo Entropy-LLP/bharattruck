@@ -76,6 +76,12 @@ export const PLATFORM_RATE = 0.10
 // price_quotes row recorded the difference, so a row read back later could not
 // answer "was this quote the charge, or a reference?".
 //
+// Which is why the classification is only half the fix. quote_kind is worth
+// nothing unless the caller tells the server which booking it is quoting: an
+// auction stored as `binding` is not a missing label, it is a WRONG one, and a
+// wrong one written down. The shipper booking form therefore sends its
+// booking_type on every quote, and the round-trip is pinned in test/.
+//
 // This is not only a product decision. Under Indian GST, a platform that SETS
 // the freight price drifts toward being a "goods transport agency" — a tax and
 // cargo-liability characterisation, not a labelling exercise. Price DISCOVERY
@@ -91,7 +97,25 @@ export const PLATFORM_RATE = 0.10
 // reference rather than a rate the platform charges.
 // -----------------------------------------------------------
 
-export const BOOKING_TYPES = ['auction', 'instant', 'direct'] as const
+/**
+ * The booking_type union. MUST stay identical to the canonical declaration in
+ * bt-booking-service/src/lib/types.ts (`type BookingType = 'direct' | 'auction'`),
+ * which is also the CreateBookingBody enum, what shipper/ and driver/ declare, and
+ * the only two values bookings.booking_type has ever held in production.
+ *
+ * Two values, no more. An earlier draft of this file carried a third — 'instant' —
+ * that exists nowhere else in the system, and the damage was not the dead enum
+ * member: quoteKind() classifies everything that is not 'auction' as binding, so a
+ * value no caller can send simply never arrives, while the surrounding comments and
+ * tests describe a booking mode that does not exist. That reads as though the
+ * binding path were the exotic case ('instant'/'direct') when in fact 'direct' IS
+ * the binding case and the whole of it. Anyone reasoning about the advisory line
+ * from this file would have been reasoning about the wrong system.
+ *
+ * If a third booking mode is ever added, it lands in bt-booking-service first and
+ * is mirrored here — never the other way round.
+ */
+export const BOOKING_TYPES = ['direct', 'auction'] as const
 export type BookingType = (typeof BOOKING_TYPES)[number]
 
 /** Whether the quoted number is the charge (`binding`) or a benchmark (`advisory`). */
@@ -100,12 +124,21 @@ export type QuoteKind = 'advisory' | 'binding'
 /**
  * Classify a quote by the booking it was requested for.
  *
+ * 'direct' → binding: one named carrier, no bidding, so the quoted number is the
+ * freight. 'auction' → advisory: the charge is the winning bid.
+ *
  * Absent booking_type means `binding`. That is a COMPATIBILITY default, not a
- * legal opinion: every caller that predates this field — the shipper booking
- * form and the quote-lock saga in bt-booking-service, which resolves the charge
- * from the locked row — must keep behaving exactly as it does today. Widening
- * the default to advisory would silently unbind the instant/direct price lock,
- * which is the one thing this change must not do.
+ * legal opinion: a caller that predates this field — bt-booking-service's
+ * quote-lock saga, which resolves the charge from the locked row — must keep
+ * behaving exactly as it does today. Widening the default to advisory would
+ * silently unbind the direct price lock, which is the one thing this change must
+ * not do.
+ *
+ * The default is also the reason the shipper form must SEND its booking_type
+ * rather than lean on it. Production is overwhelmingly auctions, so a caller that
+ * stays silent does not get a harmless "unknown" — it gets a positive, stored
+ * assertion that the platform is charging that price, on precisely the bookings
+ * where it is not. See routes/pricing.ts and the shipper booking form.
  */
 export function quoteKind(bookingType?: BookingType): QuoteKind {
   return bookingType === 'auction' ? 'advisory' : 'binding'
