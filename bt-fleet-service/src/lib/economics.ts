@@ -533,18 +533,67 @@ async function resolveDistances(booking: BookingRow): Promise<{
   }
 }
 
-// resolveRevenue — the payout is the fleet's actual take (Q15: the money goes to
-// whoever bid). final_price / quoted_price is the fallback when the payout record
-// has not been written yet.
+// A payout row as this roll-up needs to read it. `payee_type` arrives in
+// migration 0016 and is optional here only because a row written before it
+// carries no value — never because the column may be missing on a table this
+// code reaches. rollUpTripEconomics returns early unless the booking names a
+// fleet_owner_id, and a fleet booking cannot exist before 0016, so every
+// payouts row this function ever sees comes from a post-0016 table.
+type PayoutShare = { amount: number; payee_type?: string | null }
+
+// fleetOwnerRevenue — the revenue side of a TRUCK's P&L, which is the fleet
+// owner's book and nobody else's.
+//
+// Before D-7 this was trivially the whole freight, because the whole freight
+// went to the bidder and `payouts` held exactly one row per booking. A D-7
+// revenue split makes that false: the freight is divided at settlement between
+// the owner and the driver who ran the trip, and the driver's cut never lands
+// on the owner's side of the ledger. Booking the full freight as the owner's
+// revenue would overstate the margin on every split trip by exactly the
+// driver's share — the fleet console's whole reason to exist is that number.
+//
+// The driver's cut is not netted off as a cost either: the wage line
+// (driver_wage_alloc_inr) is a MONTH-level allocation of a salary, and treating
+// a revenue share as if it were salary would double-count against a salaried
+// driver and corrupt the month-wide reallocation. Taking only the owner's rows
+// keeps the two mechanisms separate and each one true.
+//
+//   no payout rows at all -> not settled yet; fall back to the booking price
+//                            (unchanged pre-D-7 behaviour)
+//   owner row(s)          -> what the owner actually took
+//   driver row(s) only    -> share = 100: the owner passed the whole freight
+//                            through, so their revenue on this trip is 0
+//
+// That last case is why "no rows" and "no OWNER row" must not collapse into the
+// same branch. Zero is a fact about a share-100 trip; the booking price is a
+// stand-in for a trip that has not settled.
+export function fleetOwnerRevenue(payouts: PayoutShare[], booking: BookingRow): number {
+  if (payouts.length === 0) return Number(booking.final_price ?? booking.quoted_price)
+  // Summed rather than picked: 0023's UNIQUE(booking_id, payee_type) allows only
+  // one owner row, so this equals that row — but a sum cannot throw, and the
+  // whole reason this function was rewritten is that a read which throws here
+  // takes the entire trip_economics row down with it (emitTripEconomics is
+  // fire-and-forget, so the loss is silent).
+  return payouts
+    .filter((p) => (p.payee_type ?? 'driver') === 'fleet_owner')
+    .reduce((sum, p) => sum + Number(p.amount), 0)
+}
+
+// resolveRevenue — the owner's take on this trip (Q15: the money goes to whoever
+// bid; D-7: the bidder may then share it with their driver).
+//
+// NOT maybeSingle(). A D-7 split booking holds two payout rows and PostgREST's
+// maybeSingle() answers PGRST116 ("multiple rows returned") rather than either
+// of them, so this threw, rollUpTripEconomics threw, and the fire-and-forget
+// emit turned that into a log line — every split fleet settlement silently
+// losing the per-truck P&L row it exists to produce.
 async function resolveRevenue(booking: BookingRow): Promise<number> {
   const { data, error } = await getSupabase()
     .from('payouts')
-    .select('amount')
+    .select('amount, payee_type')
     .eq('booking_id', booking.id)
-    .maybeSingle()
   if (error) throw new Error(`payouts select failed: ${error.message}`)
-  if (data) return Number((data as { amount: number }).amount)
-  return Number(booking.final_price ?? booking.quoted_price)
+  return fleetOwnerRevenue((data ?? []) as PayoutShare[], booking)
 }
 
 // resolveActuals — what the driver actually spent (Q21). Categories are matched

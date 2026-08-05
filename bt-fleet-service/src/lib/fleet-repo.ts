@@ -362,6 +362,68 @@ export async function listPendingInvitesForDriver(
   }))
 }
 
+// countVehiclesOwnedByDriver — trucks this driver owns OUTRIGHT.
+//
+// `vehicles.driver_id` references drivers(id), and migration 0022's
+// vehicles_single_owner CHECK guarantees a truck has exactly one owner, so a hit
+// here is unambiguous ownership — not "is driving", not "is assigned to", OWNS.
+//
+// This is the discriminator that separates a commercial partner from an
+// employee. It is the fleet-service twin of driverOwnsAnyVehicle() in
+// bt-booking-service/src/lib/fleet.ts, and the two MUST agree: if they drift,
+// the app renders one product while the API enforces the other, which is the
+// exact class of bug the affiliation signal was added to fix.
+export async function countVehiclesOwnedByDriver(driverId: string): Promise<number> {
+  const supabase = getSupabase()
+  const { count, error } = await supabase
+    .from('vehicles')
+    .select('id', { count: 'exact', head: true })
+    .eq('driver_id', driverId)
+  if (error) throw new Error(`vehicles count failed: ${error.message}`)
+  return count ?? 0
+}
+
+// getAffiliationForDriver — the driver-side "who do I drive for?" lookup.
+//
+// This is the signal the driver app needs to know WHICH product it is: an
+// affiliated driver has no load board and never bids (founder Q14), so the app
+// must render assigned trips rather than a marketplace. Without it the client
+// cannot tell the two apart — `/invites/mine` only ever returns 'pending' rows,
+// so the moment a driver accepts, the affiliation becomes invisible to them.
+//
+// Keyed on status='active' to match isFleetAffiliatedDriver() in
+// bt-booking-service/src/lib/fleet.ts — the two MUST agree, or the client would
+// render one product while the API enforces the other.
+export async function getAffiliationForDriver(
+  driverId: string,
+): Promise<(FleetDriverRow & { company_name: string | null; fleet_city: string | null }) | null> {
+  const supabase = getSupabase()
+  const { data, error } = await supabase
+    .from('fleet_drivers')
+    .select(AFFILIATION_COLUMNS)
+    .eq('driver_id', driverId)
+    .eq('status', 'active')
+    .maybeSingle()
+  if (error) throw new Error(`fleet_drivers select failed: ${error.message}`)
+
+  const affiliation = asRowOrNull<FleetDriverRow>(data)
+  if (!affiliation) return null
+
+  const { data: owner, error: ownerErr } = await supabase
+    .from('fleet_owners')
+    .select('company_name, city')
+    .eq('id', affiliation.fleet_owner_id)
+    .maybeSingle()
+  if (ownerErr) throw new Error(`fleet_owners select failed: ${ownerErr.message}`)
+
+  const ownerRow = owner as { company_name: string; city: string | null } | null
+  return {
+    ...affiliation,
+    company_name: ownerRow?.company_name ?? null,
+    fleet_city: ownerRow?.city ?? null,
+  }
+}
+
 // getInviteForDriver — scoped by driver_id: a driver may only respond to an
 // invitation addressed to them.
 export async function getInviteForDriver(

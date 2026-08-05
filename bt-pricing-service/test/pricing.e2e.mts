@@ -8,6 +8,7 @@ delete process.env.DIESEL_PRICE_INR // ensure default 90 for the base cases
 
 import Fastify from 'fastify'
 import jwt from 'jsonwebtoken'
+import { readFile } from 'node:fs/promises'
 
 let passed = 0
 const failures: string[] = []
@@ -70,8 +71,39 @@ async function main() {
   r = await quote({ distance_km: 100, vehicle_type: 'hcv', load_type: 'general', weight_kg: 1000 }, tok())
   check('quote with token 200', r.statusCode === 200, `(got ${r.statusCode})`)
   const d = r.json().data
-  check('commercial split present (total_price=2200)', d?.total_price === 2200, `(got ${d?.total_price})`)
+  // HCV/100km: rate=round(36.714*1.63)=60 → base=6000, handling=1000, total=7000.
+  check('commercial split present (total_price=7000)', d?.total_price === 7000, `(got ${d?.total_price})`)
+  check('derived HCV rate is the founder market anchor (60/km)', d?.rate_per_km === 60, `(got ${d?.rate_per_km})`)
+  check('handling passed through at cost (1000)', d?.handling_fee === 1000, `(got ${d?.handling_fee})`)
   check('cost_breakdown present + matches HCV/100', d?.cost_breakdown?.operating_cost_total === 4672 && d?.cost_breakdown?.vehicle_class === 'HCV', JSON.stringify(d?.cost_breakdown))
+
+  console.log('\n── the regression guard: no class may be priced below cost ──')
+  // The original bug: a hand-written rate card (hcv: 22) sitting next to a cost
+  // engine that says an HCV costs ~36.7/km. Every class was underwater. Assert
+  // the property directly, across the whole matrix and at both a short and a
+  // long trip, so no future edit to either table can reintroduce it silently.
+  for (const vt of ['mini_truck', 'lcv', 'hcv', 'trailer'] as const) {
+    for (const km of [50, 1200]) {
+      const q = (await quote({ distance_km: km, vehicle_type: vt, load_type: 'general', weight_kg: 1000 }, tok())).json().data
+      const cost = q.cost_breakdown.operating_cost_total
+      check(`${vt}/${km}km: carrier receives ${q.driver_receives} > cost ${cost}`, q.driver_receives > cost, '')
+    }
+  }
+
+  console.log('\n── a fuel move flows through to the rate ──')
+  // The silent, one-directional failure the old hardcoded card had: diesel rises,
+  // cost rises, price does not, and the margin quietly vanishes.
+  const rateAt90 = (await quote({ distance_km: 100, vehicle_type: 'hcv', load_type: 'general', weight_kg: 1000 }, tok())).json().data.rate_per_km
+  process.env.DIESEL_PRICE_INR = '120'
+  const rateAt120 = (await quote({ distance_km: 100, vehicle_type: 'hcv', load_type: 'general', weight_kg: 1000 }, tok())).json().data.rate_per_km
+  delete process.env.DIESEL_PRICE_INR
+  check('diesel 90 → 120 raises the HCV rate', rateAt120 > rateAt90, `(${rateAt90} → ${rateAt120})`)
+
+  console.log('\n── per-type env override wins over the derived rate ──')
+  process.env.RATE_PER_KM_HCV = '75'
+  const overridden = (await quote({ distance_km: 100, vehicle_type: 'hcv', load_type: 'general', weight_kg: 1000 }, tok())).json().data
+  delete process.env.RATE_PER_KM_HCV
+  check('RATE_PER_KM_HCV=75 is used verbatim', overridden.rate_per_km === 75 && overridden.base_price === 7500, `(got ${overridden.rate_per_km}/${overridden.base_price})`)
 
   console.log('\n── class mapping assumptions (Q9-flagged) ──')
   r = await quote({ distance_km: 50, vehicle_type: 'mini_truck', load_type: 'general', weight_kg: 500 }, tok())
@@ -79,8 +111,198 @@ async function main() {
   r = await quote({ distance_km: 50, vehicle_type: 'trailer', load_type: 'general', weight_kg: 500 }, tok())
   check('trailer → HCV (assumption)', r.json().data?.cost_breakdown?.vehicle_class === 'HCV', JSON.stringify(r.json().data?.cost_breakdown?.vehicle_class))
 
+  console.log('\n── D-11: the platform price is ADVISORY on an auction ──')
+  // The platform does not have a price on an auction — the charge is the winning
+  // carrier's bid. Beyond the product decision, a platform that SETS the freight
+  // price drifts toward GTA characterisation under Indian GST, which is a tax and
+  // cargo-liability event (INDIA_FREIGHT_COMPLIANCE.md §1.3 red line 3, §9.4).
+  // Price discovery is safe; price setting is not. These checks are the guard on
+  // that line, so pin the classification rather than the arithmetic.
+  const base = { distance_km: 100, vehicle_type: 'hcv', load_type: 'general', weight_kg: 1000 }
+  const kindOf = async (booking_type?: string) =>
+    (await quote(booking_type ? { ...base, booking_type } : base, tok())).json().data
+
+  const auction = await kindOf('auction')
+  check('auction → advisory', auction.quote_kind === 'advisory', `(got ${auction.quote_kind})`)
+  check('direct → binding', (await kindOf('direct')).quote_kind === 'binding')
+
+  // 'direct' and 'auction' are the WHOLE union — bt-booking-service/src/lib/types.ts
+  // is the canonical declaration, shipper/ and driver/ mirror it, and the column has
+  // never held anything else. An earlier draft of this service invented a third,
+  // 'instant'. Pin its absence: a value this service accepts but no booking can ever
+  // BE is not harmless spare capacity, it is a second, fictional description of the
+  // binding path sitting next to the real one, and it is what the surrounding
+  // comments and tests then get written against.
+  const invented = await quote({ ...base, booking_type: 'instant' }, tok())
+  check("'instant' is not a booking_type in this system", invented.statusCode === 400, `(got ${invented.statusCode})`)
+
+  // The compatibility default. bt-booking-service's quote-lock saga resolves the
+  // charge from the locked row and sends no booking_type; if omission ever meant
+  // advisory, every direct price would silently come unbound.
+  const omitted = await kindOf()
+  check('booking_type omitted → binding (existing callers unchanged)', omitted.quote_kind === 'binding', `(got ${omitted.quote_kind})`)
+
+  // The failure mode a bare `=== 'auction'` invites: a typo, a capitalised value
+  // or a renamed enum member falls through to binding, and an auction quote
+  // quietly becomes a price the platform charges. Reject at the edge instead —
+  // a 400 is loud, a silent downgrade is not.
+  const typo = await quote({ ...base, booking_type: 'Auction' }, tok())
+  check('unknown booking_type rejected, never silently binding', typo.statusCode === 400, `(got ${typo.statusCode})`)
+
+  // Classification must not move the number. If advisory ever became a discount
+  // or a range, it would stop being the same benchmark the cost model produced —
+  // and the "shown == charged" guarantee on the binding path would be comparing
+  // against a different figure than the one the rate card justifies.
+  check(
+    'advisory and binding price the SAME number (label, not a discount)',
+    auction.total_price === omitted.total_price && auction.rate_per_km === omitted.rate_per_km,
+    `(${auction.total_price}/${auction.rate_per_km} vs ${omitted.total_price}/${omitted.rate_per_km})`,
+  )
+
+  // The disclosure has to travel with the quote. A client left to compose this
+  // itself eventually omits it, and an auction number shown without "this is a
+  // reference" is the exact fact pattern §1.3 warns about.
+  check('advisory basis names the carrier bid as the actual charge', /winning carrier/i.test(auction.basis), `(got ${auction.basis})`)
+  check('binding basis states it is the price charged', /price charged/i.test(omitted.basis), `(got ${omitted.basis})`)
+
   await app.close()
+  await advisoryRoundTripFromShipper()
+
   console.log(`\n${failures.length ? 'RESULT: FAIL' : 'RESULT: PASS'} — ${passed} checks passed, ${failures.length} failed`)
   if (failures.length) { failures.forEach(f => console.log('  ✗ ' + f)); process.exit(1) }
 }
+
+// -----------------------------------------------------------
+// D-11 round-trip: an auction quote requested THE WAY THE SHIPPER REQUESTS IT
+// must come back advisory AND be stored advisory.
+//
+// Every check above this point talks to a stand-in /quote mounted on QuoteBody, so
+// it proves computeQuote() classifies correctly and proves nothing about what the
+// product does. The defect this section exists for lived exactly in that gap: the
+// classifier was right, the real route was right, and the shipper's booking form
+// sent no booking_type at all. Absent means binding (a deliberate compatibility
+// default), production is ~94% auctions, so the effect was to write
+// `breakdown_json.quote_kind = 'binding'` — a positive, machine-readable assertion
+// that the platform charged that freight — onto the overwhelming majority of
+// quotes, on precisely the booking type where INDIA_FREIGHT_COMPLIANCE.md §1.3 red
+// line 3 says it must never be asserted. Nothing failed. Nothing 500'd. The suite
+// was green. The output was manufactured evidence against us.
+//
+// So this drives the REAL pricingRoutes with the REAL store, over the shipper's own
+// request shape (coords + cargo + booking_type, no distance_km — the shipper never
+// sends a distance), and asserts on the row that would hit the DB rather than only
+// on the response. Supabase is stubbed at fetch so no database is touched.
+// -----------------------------------------------------------
+async function advisoryRoundTripFromShipper() {
+  console.log('\n── D-11 round-trip: shipper call shape → real route → persisted row ──')
+
+  // getSupabase() is lazy, so setting these now (after the checks above) is enough.
+  process.env.SUPABASE_URL = 'http://supabase.stub'
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'stub-service-role-key'
+
+  // Capture what would have been INSERTed. The response is easy to get right and
+  // the stored row is what a later reader — an auditor, a settlement job — actually
+  // sees, so assert on the row.
+  const inserted: any[] = []
+  const realFetch = globalThis.fetch
+  globalThis.fetch = (async (input: any, init: any = {}) => {
+    const url = String(typeof input === 'string' ? input : input?.url ?? '')
+    if (!url.includes('/rest/v1/price_quotes')) return realFetch(input, init)
+    const sent = JSON.parse(init.body)
+    const row = {
+      id: `stub-${inserted.length + 1}`,
+      created_at: new Date().toISOString(),
+      consumed_at: null,
+      consumed_by_booking_id: null,
+      ...(Array.isArray(sent) ? sent[0] : sent),
+    }
+    inserted.push(row)
+    // PostgREST returns the representation; .single() reads one object.
+    return new Response(JSON.stringify(row), { status: 201, headers: { 'content-type': 'application/json' } })
+  }) as any
+
+  try {
+    const authPlugin = (await import('../src/plugins/auth.js')).default
+    const { pricingRoutes } = await import('../src/routes/pricing.js')
+
+    const app = Fastify({ logger: false })
+    await app.register(async (authed) => {
+      await authed.register(authPlugin)
+      await authed.register(pricingRoutes)
+    })
+    await app.ready()
+
+    // The shipper form's exact payload keys. Mumbai → Delhi so the derived distance
+    // is comfortably non-degenerate. Keep this in sync with handleGetQuote() in
+    // shipper/src/app/bookings/new/page.tsx — the static guard below is what tells
+    // you when it has drifted.
+    const shipperQuote = (booking_type?: string) => app.inject({
+      method: 'POST',
+      url: '/quote',
+      headers: { authorization: `Bearer ${tok()}` },
+      payload: {
+        source_lat: 19.076, source_lng: 72.8777,
+        dest_lat: 28.6139, dest_lng: 77.209,
+        vehicle_type: 'hcv',
+        load_type: 'general',
+        weight_kg: 1000,
+        ...(booking_type ? { booking_type } : {}),
+      },
+    })
+
+    const res = await shipperQuote('auction')
+    check('shipper auction quote succeeds against the real route', res.statusCode === 200, `(got ${res.statusCode} ${res.body.slice(0, 160)})`)
+    check('shipper auction quote responds advisory', res.json().data?.quote_kind === 'advisory', `(got ${res.json().data?.quote_kind})`)
+
+    // The whole point: the CLASSIFICATION IS WRITTEN DOWN. A response that says
+    // advisory while the row says binding leaves the durable record wrong, and the
+    // durable record is the part that would be read back against us.
+    const row = inserted.at(-1)
+    check('shipper auction quote PERSISTS advisory in breakdown_json', row?.breakdown_json?.quote_kind === 'advisory', `(got ${row?.breakdown_json?.quote_kind})`)
+    check('persisted advisory row still carries the disclosure sentence', /winning carrier/i.test(row?.breakdown_json?.basis ?? ''), `(got ${row?.breakdown_json?.basis})`)
+    // quoted_price is still written on an advisory quote — the row is the record of
+    // what the shipper was shown and when. It is just not an amount owed.
+    check('advisory row still records the benchmark it showed', typeof row?.quoted_price === 'number' && row.quoted_price > 0, `(got ${row?.quoted_price})`)
+
+    // The direct half, same route, so "advisory" is demonstrably driven by the input
+    // rather than by the real route having quietly stopped classifying at all.
+    const directRes = await shipperQuote('direct')
+    check('shipper direct quote PERSISTS binding', inserted.at(-1)?.breakdown_json?.quote_kind === 'binding', `(got ${inserted.at(-1)?.breakdown_json?.quote_kind})`)
+    check('advisory and binding still the same number through the real route',
+      directRes.json().data?.quoted_price === res.json().data?.quoted_price,
+      `(${res.json().data?.quoted_price} vs ${directRes.json().data?.quoted_price})`)
+
+    await app.close()
+  } finally {
+    globalThis.fetch = realFetch
+  }
+
+  // The static half. Everything above proves the SERVICE is correct when the caller
+  // sends booking_type; it cannot prove the caller sends it — and that omission was
+  // the entire defect. So read the shipper's booking form as text and pin the call
+  // site. A cross-package source assertion is unusual, but the coupling is real: the
+  // wire default is `binding`, so a silent shipper is not an unlabelled quote, it is
+  // a mislabelled one, and no test inside bt-pricing-service can see that happen.
+  //
+  // Known gap: CI path-filters the bt-pricing-service job on `bt-pricing-service/**`,
+  // so a shipper-only PR will not run this. It guards the service side and documents
+  // the contract; it is not a merge gate on the app.
+  const formPath = new URL('../../shipper/src/app/bookings/new/page.tsx', import.meta.url)
+  let form: string
+  try {
+    form = await readFile(formPath, 'utf8')
+  } catch {
+    // Hard failure, not a skip: tests run from the monorepo checkout, and a silent
+    // skip here would restore exactly the blind spot this check exists to close.
+    check('shipper booking form is readable (monorepo checkout)', false, `(not found at ${formPath.pathname})`)
+    return
+  }
+  const getQuoteCall = form.slice(form.indexOf('getPriceQuote({'), form.indexOf('setQuote(q)'))
+  check(
+    'shipper booking form SENDS booking_type when quoting',
+    /booking_type:\s*bookingType\b/.test(getQuoteCall),
+    '(the form knows its booking type; omitting it stores every auction as binding)',
+  )
+}
+
 main().catch(err => { console.error(err); process.exit(1) })

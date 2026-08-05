@@ -7,6 +7,7 @@ import { ownerRoutes } from './routes/owners.js'
 import { driverRoutes } from './routes/drivers.js'
 import { vehicleRoutes } from './routes/vehicles.js'
 import { assignmentRoutes } from './routes/assignment.js'
+import { auctionRoutes } from './routes/auctions.js'
 import { analyticsRoutes } from './routes/analytics.js'
 import { internalFleetRoutes } from './routes/internal.js'
 import { FleetError } from './lib/types.js'
@@ -55,6 +56,9 @@ async function bootstrap() {
       await fleet.register(vehicleRoutes,    { prefix: '/vehicles' })
       await fleet.register(analyticsRoutes,  { prefix: '/analytics' })
       // Bookings, the assign step and the live map sit at the /fleet root.
+      // Unprefixed, alongside assignmentRoutes: both own /fleet-level paths
+      // (/fleet/auctions, /fleet/bids, /fleet/live, /fleet/bookings).
+      await fleet.register(auctionRoutes)
       await fleet.register(assignmentRoutes)
     }, { prefix: '/fleet' })
   })

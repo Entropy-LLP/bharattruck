@@ -13,6 +13,10 @@ const LANGUAGES = [
   'Malayalam', 'Urdu', 'Assamese', 'Rajasthani',
 ] as const
 
+const FIELD =
+  'w-full rounded-xl border border-border bg-secondary px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground/60 outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/25'
+const FIELD_LABEL = 'text-sm font-medium text-foreground/75'
+
 export default function PersonalProfileStep() {
   const { user } = useAuth()
   const router = useRouter()
@@ -98,7 +102,7 @@ export default function PersonalProfileStep() {
 
         {/* Avatar preview */}
         <div className="flex flex-col items-center mb-6">
-          <div className="w-20 h-20 rounded-full bg-blue-600 flex items-center justify-center mb-2">
+          <div className="w-20 h-20 rounded-full bg-primary flex items-center justify-center mb-2">
             {photoUrl ? (
               <img
                 src={photoUrl}
@@ -107,20 +111,20 @@ export default function PersonalProfileStep() {
                 onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
               />
             ) : (
-              <span className="text-white font-bold text-2xl">
+              <span className="text-primary-foreground font-bold text-2xl">
                 {fullName ? fullName.charAt(0).toUpperCase() : user?.full_name?.charAt(0)?.toUpperCase() || '?'}
               </span>
             )}
           </div>
-          <p className="text-xs text-gray-400">Step 1 — Tell us about yourself</p>
+          <p className="text-xs text-muted-foreground">Step 1 — Tell us about yourself</p>
         </div>
 
         <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-5">
 
           {/* Full name */}
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="full-name" className="text-sm font-medium text-gray-700">
-              Full Name <span className="text-blue-600">*</span>
+            <label htmlFor="full-name" className={FIELD_LABEL}>
+              Full Name <span className="text-primary">*</span>
             </label>
             <input
               id="full-name"
@@ -129,15 +133,15 @@ export default function PersonalProfileStep() {
               onChange={e => setFullName(e.target.value)}
               placeholder="e.g. Rajesh Kumar"
               required
-              className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent transition-shadow"
+              className={FIELD}
             />
           </div>
 
           {/* Photo URL — temporary until file upload */}
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="photo-url" className="text-sm font-medium text-gray-700">
+            <label htmlFor="photo-url" className={FIELD_LABEL}>
               Profile Photo URL
-              <span className="text-gray-400 text-xs font-normal ml-1">(optional)</span>
+              <span className="text-muted-foreground text-xs font-normal ml-1">(optional)</span>
             </label>
             <input
               id="photo-url"
@@ -145,15 +149,15 @@ export default function PersonalProfileStep() {
               value={photoUrl}
               onChange={e => setPhotoUrl(e.target.value)}
               placeholder="https://..."
-              className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent transition-shadow"
+              className={FIELD}
             />
-            <p className="text-xs text-gray-400">File upload coming soon — paste a URL for now</p>
+            <p className="text-xs text-muted-foreground">File upload coming soon — paste a URL for now</p>
           </div>
 
           {/* Languages */}
           <div className="flex flex-col gap-1.5">
-            <label className="text-sm font-medium text-gray-700">
-              Languages Spoken <span className="text-blue-600">*</span>
+            <label className={FIELD_LABEL}>
+              Languages Spoken <span className="text-primary">*</span>
             </label>
             <div className="flex flex-wrap gap-2">
               {LANGUAGES.map(lang => {
@@ -165,8 +169,8 @@ export default function PersonalProfileStep() {
                     onClick={() => toggleLanguage(lang)}
                     className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
                       selected
-                        ? 'bg-blue-600 text-white border-blue-600'
-                        : 'bg-white text-gray-600 border-gray-200 hover:border-blue-300'
+                        ? 'bg-primary text-primary-foreground border-primary'
+                        : 'bg-card text-muted-foreground border-border hover:border-primary/50'
                     }`}
                   >
                     {lang}
@@ -175,14 +179,14 @@ export default function PersonalProfileStep() {
               })}
             </div>
             {languages.length > 0 && (
-              <p className="text-xs text-blue-600 mt-1">{languages.length} selected</p>
+              <p className="text-xs text-primary mt-1">{languages.length} selected</p>
             )}
           </div>
 
           {/* Home base city */}
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="home-city" className="text-sm font-medium text-gray-700">
-              Home Base City <span className="text-blue-600">*</span>
+            <label htmlFor="home-city" className={FIELD_LABEL}>
+              Home Base City <span className="text-primary">*</span>
             </label>
             <input
               id="home-city"
@@ -191,9 +195,9 @@ export default function PersonalProfileStep() {
               onChange={e => setHomeBaseCity(e.target.value)}
               placeholder="e.g. Mumbai, Nagpur, Delhi"
               required
-              className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent transition-shadow"
+              className={FIELD}
             />
-            <p className="text-xs text-gray-400">Where you usually start your trips from</p>
+            <p className="text-xs text-muted-foreground">Where you usually start your trips from</p>
           </div>
 
           {/* Actions */}
@@ -201,14 +205,14 @@ export default function PersonalProfileStep() {
             <button
               type="button"
               onClick={() => router.push('/onboarding/vehicle')}
-              className="flex-1 rounded-xl border border-gray-200 px-4 py-3 text-sm font-medium text-gray-500 hover:bg-gray-50 transition-colors"
+              className="flex-1 rounded-xl border border-border px-4 py-3 text-sm font-medium text-muted-foreground hover:bg-secondary transition-colors"
             >
               Skip for now
             </button>
             <button
               type="submit"
               disabled={submitting}
-              className="flex-1 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-700 active:scale-[0.98] disabled:opacity-60 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
+              className="flex-1 rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-primary-foreground hover:bg-primary/90 active:scale-[0.98] disabled:opacity-60 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
             >
               {submitting ? <><Spinner className="h-4 w-4" /> Saving…</> : 'Next'}
             </button>

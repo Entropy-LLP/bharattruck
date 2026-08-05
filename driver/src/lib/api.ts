@@ -11,6 +11,7 @@ import type {
   OnboardingStatus,
   VehicleBodyType,
   VehicleAxleConfig,
+  FleetAffiliation,
   FleetInvite,
 } from './types'
 
@@ -387,6 +388,18 @@ export function updateVehicle(
   })
 }
 
+/**
+ * Soft delete — the server only flips `is_active` to false, so the row survives
+ * and the trips it already ran keep their vehicle. Idempotent: removing an
+ * already-removed vehicle still 200s. 409s with `VEHICLE_IN_USE` while the
+ * truck is on a live trip.
+ */
+export function deleteVehicle(vehicleId: string): Promise<{ message: string }> {
+  return request<{ message: string }>(`/onboarding/vehicle/${vehicleId}`, {
+    method: 'DELETE',
+  })
+}
+
 export function submitLicense(
   body: SubmitLicenseInput,
 ): Promise<{ license: License }> {
@@ -571,6 +584,15 @@ export function resetPassword(token: string, password: string) {
 /** Pending invitations only — the server filters to `status='pending'`. */
 export function listMyFleetInvites(): Promise<FleetInvite[]> {
   return request<FleetInvite[]>('/fleet/drivers/invites/mine')
+}
+
+/**
+ * Whether this driver drives for a fleet — the signal the whole app branches on
+ * (see `FleetAffiliation`). Read once per session through `FleetAffiliationProvider`
+ * rather than called directly from screens.
+ */
+export function getMyFleetAffiliation(): Promise<FleetAffiliation> {
+  return request<FleetAffiliation>('/fleet/drivers/me/affiliation')
 }
 
 /**

@@ -6,6 +6,7 @@ import { redisPlugin } from './plugins/redis.js'
 import { authRoutes } from './routes/auth.js'
 import { onboardingRoutes } from './routes/onboarding.js'
 import { kycRoutes } from './routes/kyc.js'
+import { getSmsProvider } from './lib/sms.js'
 
 const app = Fastify({
   logger: {
@@ -16,6 +17,11 @@ const app = Fastify({
 })
 
 async function bootstrap() {
+  // Resolve the SMS provider here, not on the first OTP: whether phone codes are
+  // being delivered or merely logged is startup information. An operator must
+  // learn it from the boot banner, not from a user who never got their code.
+  getSmsProvider()
+
   await app.register(cors, { origin: true })
   await app.register(supabasePlugin)
   await app.register(redisPlugin)

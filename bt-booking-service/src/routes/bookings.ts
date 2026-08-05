@@ -5,6 +5,13 @@ import * as svc from '../lib/service.js'
 
 const UuidParamSchema = z.object({ id: z.string().uuid('id must be a valid UUID') })
 
+// The consignee inbox the POD delivery code is sent to. Trimmed before validating
+// so a pasted address with trailing whitespace is accepted rather than rejected as
+// malformed — this is typed on a phone, often at the drop point, under time pressure.
+const ReceiverEmailBodySchema = z.object({
+  receiver_email: z.string().trim().email('receiver_email must be a valid email address'),
+})
+
 function handleError(reply: FastifyReply, err: unknown) {
   if (err instanceof BookingError) {
     return reply.status(err.httpStatus).send({ success: false, error: err.message, code: err.code })
@@ -66,7 +73,7 @@ export async function bookingRoutes(app: FastifyInstance) {
     const id = parseId(reply, req.params)
     if (!id) return
     try {
-      const ctx = await svc.getPodContext(id, req.user)
+      const ctx = await svc.getPodContext(id, req.user, req.log)
       return reply.send({ success: true, data: ctx })
     } catch (err) {
       return handleError(reply, err)
@@ -83,12 +90,39 @@ export async function bookingRoutes(app: FastifyInstance) {
     }
   })
 
+  // PATCH /bookings/:id/receiver-email — shipper (or ops) sets the consignee inbox
+  //
+  // The unblocking route for a trip whose booking has no receiver_email: without
+  // one the driver's POD request has nowhere to send the delivery code, so the
+  // trip can never reach 'completed'. Separate from a general booking PATCH on
+  // purpose — every other field on a live booking is either price-locked or
+  // state-machine-driven, and this is the only one a shipper may safely change
+  // mid-trip.
+  app.patch('/:id/receiver-email', async (req, reply) => {
+    const id = parseId(reply, req.params)
+    if (!id) return
+    const body = ReceiverEmailBodySchema.safeParse(req.body)
+    if (!body.success) {
+      return reply.status(400).send({
+        success: false,
+        error: body.error.errors[0].message,
+        code: 'VALIDATION_ERROR',
+      })
+    }
+    try {
+      const booking = await svc.setReceiverEmail(id, body.data.receiver_email, req.user)
+      return reply.send({ success: true, data: booking })
+    } catch (err) {
+      return handleError(reply, err)
+    }
+  })
+
   // PATCH /bookings/:id/accept — driver accepts a pending booking
   app.patch('/:id/accept', async (req, reply) => {
     const id = parseId(reply, req.params)
     if (!id) return
     try {
-      const booking = await svc.acceptBooking(id, req.user)
+      const booking = await svc.acceptBooking(id, req.user, req.log)
       return reply.send({ success: true, data: booking })
     } catch (err) {
       return handleError(reply, err)
@@ -100,7 +134,7 @@ export async function bookingRoutes(app: FastifyInstance) {
     const id = parseId(reply, req.params)
     if (!id) return
     try {
-      const booking = await svc.startBooking(id, req.user)
+      const booking = await svc.startBooking(id, req.user, req.log)
       return reply.send({ success: true, data: booking })
     } catch (err) {
       return handleError(reply, err)
@@ -117,7 +151,7 @@ export async function bookingRoutes(app: FastifyInstance) {
     const id = parseId(reply, req.params)
     if (!id) return
     try {
-      const booking = await svc.cancelBooking(id, req.user)
+      const booking = await svc.cancelBooking(id, req.user, req.log)
       return reply.send({ success: true, data: booking })
     } catch (err) {
       return handleError(reply, err)

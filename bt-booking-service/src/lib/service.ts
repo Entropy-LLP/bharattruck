@@ -4,11 +4,12 @@ import { assertFleetAssignmentReady, assertValidTransition } from './state.js'
 import * as repo from './repository.js'
 import {
   hasLiveVehicleAssignment,
-  isFleetAffiliatedDriver,
+  isEmployedDriver,
   stripCommercialFields,
   type PriceMasked,
 } from './fleet.js'
 import { defaultPricingClient, type PricingClient } from './pricing-client.js'
+import * as notify from './notifications/emit.js'
 
 // -----------------------------------------------------------
 // createBooking — the price quote-lock saga.
@@ -149,30 +150,51 @@ export async function createBooking(
 }
 
 // -----------------------------------------------------------
-// PRICE HIDING (founder Q16) — the one rule in this slice that reaches into an
-// EXISTING driver payload, so it is gated as narrowly as possible.
+// resolveDriverScope — who the calling driver is, in the two terms the rest of
+// this file needs: their drivers.id, and whether a fleet employs them.
 //
-// A driver employed by a fleet is not the commercial party on the trip: their
-// owner bid and their owner gets paid, so they must not see quoted_price,
-// final_price or min_acceptable. A SOLO driver is the commercial party and
-// their payload must stay exactly as it is today — which is why the mask is
-// applied only behind an explicit, positive isFleetAffiliatedDriver() answer
-// (active affiliation only). No affiliation row, no drivers row, a non-driver
-// role, or a database without the fleet tables all resolve to "solo" and
-// return the untouched booking.
+// drivers.id (NOT the JWT's users.id) is what bookings.driver_id references, so
+// this lookup is the only way to ask "is this booking mine?".
+//
+// PRICE HIDING (founder Q16) is the rule this flag gates — the one rule in this
+// slice that reaches into an EXISTING driver payload, so it stays gated as
+// narrowly as possible. A driver EMPLOYED by a fleet is not the commercial
+// party on the trip: their owner bid and their owner gets paid, so they must
+// not see quoted_price, final_price or min_acceptable.
+//
+// "Employed" is now affiliation AND owning no truck, not affiliation alone
+// (docs/ARCHITECTURE_UNIFIED_IDENTITY.md §1.1). The old check masked the money
+// from an owner-driver whose truck is attached to a fleet, and took away their
+// load board — but they carry that truck's EMI, fuel and downtime, so they are
+// a stakeholder in what the trip earns, not staff.
+//
+// Everything else still resolves to the untouched solo payload: a non-driver
+// role, no drivers row, no affiliation row, or a database without the fleet
+// tables.
 // -----------------------------------------------------------
 
-async function fleetAffiliatedDriverId(actor: AuthenticatedUser): Promise<string | null> {
+async function resolveDriverScope(actor: AuthenticatedUser): Promise<repo.DriverListScope | null> {
   if (actor.role !== 'driver') return null
   const driverRow = await repo.getDriverByUserId(actor.userId)
   if (!driverRow) return null
-  return (await isFleetAffiliatedDriver(driverRow.id)) ? driverRow.id : null
+  return { driverId: driverRow.id, employed: await isEmployedDriver(driverRow.id) }
 }
 
 // -----------------------------------------------------------
 // getBooking
 // Returns booking with driver profile joined.
 // Shippers can only fetch their own bookings.
+//
+// A FLEET-AFFILIATED driver is scoped to the trips assigned to them, exactly
+// like listBookings. Masking the money alone was not enough: the list said
+// "assignments only" while a direct fetch by id still returned ANY booking, so
+// an employed driver could read the whole marketplace one UUID at a time — and
+// the app, seeing a readable booking with no quote of their own, offered them
+// the bid form for it. Scoping the read is what makes the two agree.
+//
+// Answered as 404 (not 403) so a fleet driver cannot probe which booking ids
+// exist. Solo drivers are untouched: the open pending load board is their
+// product, and browsing it is exactly what they are meant to do.
 // -----------------------------------------------------------
 
 export async function getBooking(
@@ -186,29 +208,46 @@ export async function getBooking(
   if (actor.role === 'shipper' && booking.shipper_id !== actor.userId) {
     throw new BookingError('Forbidden', 'FORBIDDEN', 403)
   }
-  if (await fleetAffiliatedDriverId(actor)) {
-    return stripCommercialFields(booking)
+
+  // Shipper/admin keep the payload they have always had — assigned_to_me is a
+  // driver-facing field and they are not drivers.
+  if (actor.role !== 'driver') return booking
+
+  // One driver lookup answers both questions below.
+  const driverRow = await repo.getDriverByUserId(actor.userId)
+  const assignedToMe = !!driverRow && booking.driver_id === driverRow.id
+
+  // Employed = affiliated AND owns no truck. An owner-driver attached to a fleet
+  // falls through to the solo path below: they keep the open load board and they
+  // keep the money, because the truck's cost sits with them.
+  if (driverRow && (await isEmployedDriver(driverRow.id))) {
+    if (!assignedToMe) {
+      throw new BookingError(`Booking ${id} not found`, 'NOT_FOUND', 404)
+    }
+    return { ...stripCommercialFields(booking), assigned_to_me: true }
   }
-  return booking
+
+  return { ...booking, assigned_to_me: assignedToMe }
 }
 
 // -----------------------------------------------------------
 // listBookings
-// Role-scoped filtering is handled inside the repository.
+// Role-scoped filtering is handled inside the repository; this layer only
+// resolves WHICH driver is calling and whether to mask the money.
 //
-// One exception: a FLEET-AFFILIATED driver has no load board (founder Q14) —
-// they cannot self-select work, so the open 'pending' list is replaced by the
-// trips their owner has actually assigned to them, with the money masked. A
-// solo driver still gets the same pending load board, unmasked.
+// A FLEET-AFFILIATED driver has no load board (founder Q14) — they cannot
+// self-select work, so the open 'pending' list is replaced by the trips their
+// owner has actually assigned to them, with the money masked.
+//
+// A SOLO driver keeps the pending load board, unmasked, and now also sees the
+// trips already assigned to them — without that they had no route into their
+// own accepted/in_transit trip at all (BIBLE §5.4 item 3).
 // -----------------------------------------------------------
 
 export async function listBookings(actor: AuthenticatedUser): Promise<PriceMasked<DbBooking>[]> {
-  const fleetDriverId = await fleetAffiliatedDriverId(actor)
-  if (!fleetDriverId) {
-    return repo.listBookings(actor)
-  }
-  const assigned = await repo.listBookings(actor, fleetDriverId)
-  return assigned.map(stripCommercialFields)
+  const scope = await resolveDriverScope(actor)
+  const bookings = await repo.listBookings(actor, scope ?? undefined)
+  return scope?.employed ? bookings.map(stripCommercialFields) : bookings
 }
 
 // -----------------------------------------------------------
@@ -220,6 +259,7 @@ export async function listBookings(actor: AuthenticatedUser): Promise<PriceMaske
 export async function acceptBooking(
   bookingId: string,
   actor: AuthenticatedUser,
+  log?: Logger,
 ): Promise<DbBooking> {
   if (actor.role !== 'driver') {
     throw new BookingError('Only drivers can accept bookings', 'FORBIDDEN', 403)
@@ -238,9 +278,14 @@ export async function acceptBooking(
   }
 
   // Self-accepting an open booking IS load-board self-selection, so it is
-  // closed to a fleet-employed driver for the same reason bidding is (Q14):
-  // their work is assigned by their owner. Solo drivers are unaffected.
-  if (await isFleetAffiliatedDriver(driverRow.id)) {
+  // closed to a fleet-EMPLOYED driver for the same reason bidding is (Q14):
+  // their work is assigned by their owner.
+  //
+  // An owner-driver attached to a fleet is NOT closed out. They own the truck,
+  // so self-selecting work with it is exactly what they are entitled to do —
+  // the fleet is one source of work for them, not the only one. Solo drivers
+  // are unaffected either way.
+  if (await isEmployedDriver(driverRow.id)) {
     throw new BookingError(
       'You drive for a fleet — your fleet owner takes loads and assigns them to you',
       'FORBIDDEN',
@@ -257,6 +302,8 @@ export async function acceptBooking(
       409,
     )
   }
+
+  await notify.emitBookingAccepted(updated, log)
   return updated
 }
 
@@ -276,8 +323,11 @@ export async function acceptBooking(
 export async function startBooking(
   bookingId: string,
   actor: AuthenticatedUser,
+  log?: Logger,
 ): Promise<DbBooking> {
-  return transitionAssignedBooking(bookingId, actor, 'in_transit')
+  const updated = await transitionAssignedBooking(bookingId, actor, 'in_transit')
+  await notify.emitTripStarted(updated, log)
+  return updated
 }
 
 async function transitionAssignedBooking(
@@ -328,6 +378,78 @@ async function transitionAssignedBooking(
 }
 
 // -----------------------------------------------------------
+// setReceiverEmail
+//
+// Lets the shipper (or ops) supply the consignee inbox on an EXISTING booking.
+//
+// Why this exists: receiver_email is required at creation today, but the column
+// is nullable and most live bookings predate that rule — 10 of 11 in-transit
+// trips have no receiver email. Without an address the driver's POD request has
+// nowhere to send the code, so the trip cannot reach 'completed' at all and the
+// payout it gates never happens. The driver app already told the shipper to
+// "add one before delivery can be confirmed"; this is the route that makes that
+// instruction actionable instead of a dead end.
+//
+// WHO: the owning shipper, or ops/admin (who unstick trips on both parties'
+// behalf). Deliberately NOT the driver: the consignee is the shipper's
+// counterparty, and letting the carrier redirect where the delivery code goes
+// would hand them both halves of the proof-of-delivery check.
+//
+// WHEN: any non-terminal status. Editing it on a completed/paid booking would
+// rewrite the audit trail of an already-proven delivery; cancelled has nothing
+// left to deliver.
+// -----------------------------------------------------------
+
+const RECEIVER_EMAIL_EDITABLE_STATUSES: BookingStatus[] = [
+  'pending', 'negotiating', 'accepted', 'in_transit',
+]
+
+export async function setReceiverEmail(
+  bookingId: string,
+  receiverEmail: string,
+  actor: AuthenticatedUser,
+): Promise<DbBooking> {
+  const booking = await repo.getBookingById(bookingId)
+  if (!booking) {
+    throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
+  }
+
+  if (actor.role === 'shipper') {
+    if (booking.shipper_id !== actor.userId) {
+      throw new BookingError('Forbidden', 'FORBIDDEN', 403)
+    }
+  } else if (actor.role !== 'admin') {
+    throw new BookingError(
+      'Only the shipper who owns this booking (or ops) can set the receiver email',
+      'FORBIDDEN',
+      403,
+    )
+  }
+
+  if (!RECEIVER_EMAIL_EDITABLE_STATUSES.includes(booking.status)) {
+    throw new BookingError(
+      `The receiver email cannot be changed on a '${booking.status}' booking`,
+      'INVALID_TRANSITION',
+      409,
+    )
+  }
+
+  const updated = await repo.setReceiverEmail(
+    bookingId,
+    receiverEmail,
+    RECEIVER_EMAIL_EDITABLE_STATUSES,
+  )
+  if (!updated) {
+    throw new BookingError(
+      'Booking could not be updated — its status changed concurrently',
+      'INVALID_TRANSITION',
+      409,
+    )
+  }
+  return updated
+}
+
+// -----------------------------------------------------------
 // getPodContext
 // Authorizes a driver's request to issue a receiver-OTP POD and
 // returns the context bt-cargo-ledger needs (status + the
@@ -349,6 +471,7 @@ export type PodContext = {
 export async function getPodContext(
   bookingId: string,
   actor: AuthenticatedUser,
+  log?: Logger,
 ): Promise<PodContext> {
   if (actor.role !== 'driver') {
     throw new BookingError('Only the assigned driver can request a POD OTP', 'FORBIDDEN', 403)
@@ -376,6 +499,16 @@ export async function getPodContext(
     )
   }
 
+  // The driver is standing at the drop with no address to send the code to, and
+  // the shipper is the ONLY party who can fix it — but nothing in the product
+  // tells them. Returning the empty context and leaving both sides waiting is how
+  // a trip silently dead-ends short of 'completed' (and short of the payout it
+  // gates). Emit is idempotent per booking, so a driver retrying the button does
+  // not spam the shipper.
+  if (!booking.receiver_email) {
+    await notify.emitReceiverEmailMissing(booking, log)
+  }
+
   return { booking_id: booking.id, status: booking.status, receiver_email: booking.receiver_email }
 }
 
@@ -389,7 +522,7 @@ export async function getPodContext(
 // driver actor; we transition on the booking's own driver_id.
 // -----------------------------------------------------------
 
-export async function completeBookingViaPod(bookingId: string): Promise<DbBooking> {
+export async function completeBookingViaPod(bookingId: string, log?: Logger): Promise<DbBooking> {
   const booking = await repo.getBookingById(bookingId)
   if (!booking) {
     throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
@@ -408,6 +541,11 @@ export async function completeBookingViaPod(bookingId: string): Promise<DbBookin
       409,
     )
   }
+
+  // The one notification the trip cannot be considered closed without: both sides
+  // learn the receiver's OTP landed. Idempotent on the booking, so the payout saga
+  // replaying this internal call cannot double-mail anyone.
+  await notify.emitTripCompleted(updated, log)
   return updated
 }
 
@@ -423,7 +561,18 @@ export async function completeBookingViaPod(bookingId: string): Promise<DbBookin
 // means a replay after the flip returns 409, never a double-apply.
 // -----------------------------------------------------------
 
-export async function markBookingPaid(bookingId: string): Promise<DbBooking> {
+export type SettlementDetail = {
+  amount?: number | null
+  method?: string | null
+  paymentId?: string | null
+  payoutStatus?: string | null
+}
+
+export async function markBookingPaid(
+  bookingId: string,
+  detail?: SettlementDetail,
+  log?: Logger,
+): Promise<DbBooking> {
   const booking = await repo.getBookingById(bookingId)
   if (!booking) {
     throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
@@ -442,6 +591,19 @@ export async function markBookingPaid(bookingId: string): Promise<DbBooking> {
       409,
     )
   }
+
+  // Receipt to the payer, payout notice to the payee. The amount is taken from the
+  // settlement the caller actually recorded when supplied; it falls back to the
+  // booking's own price so an older bt-payment-service that posts no body still
+  // produces a truthful receipt rather than none at all.
+  const amount = detail?.amount ?? updated.final_price ?? updated.quoted_price
+  await notify.emitPaymentSettled(
+    updated,
+    { amount, method: detail?.method ?? null, paymentId: detail?.paymentId ?? null },
+    log,
+  )
+  await notify.emitPayoutRecorded(updated, { amount, status: detail?.payoutStatus ?? null }, log)
+
   return updated
 }
 
@@ -471,6 +633,7 @@ function assertOps(actor: AuthenticatedUser): void {
 export async function forceCompleteBooking(
   bookingId: string,
   actor: AuthenticatedUser,
+  log?: Logger,
 ): Promise<{ booking: DbBooking; fromStatus: BookingStatus }> {
   assertOps(actor)
 
@@ -495,6 +658,11 @@ export async function forceCompleteBooking(
       409,
     )
   }
+
+  // Someone's trip just changed underneath them with neither party acting. Both
+  // sides are told — an unexplained override is how a support fix becomes a
+  // support ticket.
+  await notify.emitOpsOverride(updated, 'force_complete', log)
   return { booking: updated, fromStatus }
 }
 
@@ -502,6 +670,7 @@ export async function reassignBooking(
   bookingId: string,
   driverId: string,
   actor: AuthenticatedUser,
+  log?: Logger,
 ): Promise<{ booking: DbBooking; fromDriverId: string | null }> {
   assertOps(actor)
 
@@ -520,6 +689,8 @@ export async function reassignBooking(
   if (!updated) {
     throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
   }
+
+  await notify.emitOpsOverride(updated, 'reassign', log)
   return { booking: updated, fromDriverId }
 }
 
@@ -533,6 +704,7 @@ export async function reassignBooking(
 export async function cancelBooking(
   bookingId: string,
   actor: AuthenticatedUser,
+  log?: Logger,
 ): Promise<DbBooking> {
   const booking = await repo.getBookingById(bookingId)
   if (!booking) {
@@ -560,5 +732,11 @@ export async function cancelBooking(
       409,
     )
   }
+
+  // Tell whoever did NOT cancel. `updated` has already been nulled of nothing here —
+  // driver_id survives the cancel — so the carrier is still resolvable. An admin
+  // cancelling is treated as the shipper side, since the carrier is the party who
+  // needs to stop planning for the load.
+  await notify.emitBookingCancelled(updated, actor.role === 'driver' ? 'driver' : 'shipper', log)
   return updated
 }

@@ -1,4 +1,4 @@
-import type { Booking, Quote, NegotiationEntry } from './types'
+import type { Booking, BookingType, Quote, NegotiationEntry } from './types'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
 const TOKEN_KEY = 'bt_token'
@@ -296,7 +296,10 @@ export interface CreateBookingPayload {
   // Consignee inbox the delivery-confirmation code is emailed to. Required —
   // a booking without it can never be confirmed as delivered by the receiver.
   receiver_email: string
-  booking_type: 'direct' | 'auction'
+  // The shared union, not a re-typed literal. This field and PriceQuoteInput's
+  // must be the SAME type: they are two halves of one booking, and the quote is
+  // only labelled correctly if it was priced for the booking that is then created.
+  booking_type: BookingType
   target_driver_id?: string
   auction_deadline?: string
 }
@@ -314,6 +317,25 @@ export function createBooking(payload: CreateBookingPayload): Promise<Booking> {
 export function cancelBooking(id: string): Promise<Booking> {
   return request<Booking>(`/bookings/${id}/cancel`, {
     method: 'PATCH',
+  })
+}
+
+/**
+ * Set (or correct) the consignee inbox the delivery code is emailed to.
+ *
+ * `receiver_email` is required when creating a booking, but the column is
+ * nullable and most existing bookings predate that rule — and without an address
+ * the driver's proof-of-delivery request has nowhere to send the code, so the
+ * trip can never be confirmed delivered. This is the only field on a live booking
+ * a shipper may change mid-trip; everything else is price-locked or driven by the
+ * trip state machine.
+ *
+ * Server rejects it once the booking is completed/paid/cancelled.
+ */
+export function setReceiverEmail(id: string, receiverEmail: string): Promise<Booking> {
+  return request<Booking>(`/bookings/${id}/receiver-email`, {
+    method: 'PATCH',
+    body: JSON.stringify({ receiver_email: receiverEmail }),
   })
 }
 
@@ -341,6 +363,18 @@ export interface PriceQuoteInput {
   vehicle_type: PriceQuoteVehicleType
   load_type: PriceQuoteLoadType
   weight_kg: number
+  /**
+   * What the quote is for — the SAME union as CreateBookingPayload.booking_type,
+   * imported rather than re-spelled. Two literal unions describing one field is
+   * how they drift, and a drifted value here would be silently classified as
+   * binding by the server rather than rejected.
+   *
+   * Optional on the wire so a caller written before D-11 still works, but always
+   * send it: on an auction the platform has no price of its own, and the omitted
+   * default is `binding` — the wrong answer for most bookings, written into the
+   * persisted quote (see PriceQuote.quote_kind).
+   */
+  booking_type?: BookingType
 }
 
 export interface PriceQuoteBreakdown {
@@ -364,11 +398,80 @@ export interface PriceQuote {
   // Commercial split (superset of what pricing returns today; the UI renders these).
   base_price: number
   weight_surcharge: number
+  /**
+   * Fixed per-trip loading/handling cost, passed through at cost. Billed on top
+   * of the per-km base — a purely distance-based price left it uncovered, and
+   * the shorter the trip the bigger the hole.
+   *
+   * The cost-side twin of this number is already rendered from
+   * `breakdown.handling`, so the UI needs no change to show it.
+   */
+  handling_fee: number
+  /** The rate actually applied, derived from the cost model. Lets the UI show its working. */
+  rate_per_km: number
   total_price: number
   platform_fee: number
   shipper_pays: number
   driver_receives: number
   version: string
+  /**
+   * Whether `quoted_price` is the charge (`binding`) or a benchmark (`advisory`).
+   *
+   * On an auction it is advisory: the shipper pays the winning carrier's bid,
+   * and this number is a reference. Optional because a server that predates
+   * D-11 does not send it — resolve a missing value through quoteKindOf(), which
+   * needs the booking type the quote was requested for.
+   */
+  quote_kind?: 'advisory' | 'binding'
+  /** Server-authored sentence explaining where the number came from. */
+  basis?: string
+}
+
+/**
+ * What this quote IS, for display.
+ *
+ * Prefer the server's classification: it is the one that was persisted, and the
+ * panel should show the record rather than the caller's intention.
+ *
+ * `requestedFor` is the booking type the quote was fetched for, and it is what
+ * makes the missing-field case safe. The services deploy independently, so the
+ * app can be live against a pricing service that predates D-11 and returns no
+ * quote_kind at all. Defaulting that to `binding` — mirroring the SERVER's wire
+ * default — would put "Locked Price ... this is the price charged" over an
+ * auction estimate, which is the platform asserting it charges a freight rate it
+ * does not set (INDIA_FREIGHT_COMPLIANCE.md §1.3 red line 3). The wire default
+ * exists to protect old CALLERS from a behaviour change; it is not a safe
+ * display default, and the two must not be conflated. The form always knows
+ * which it asked for, so fall back to that.
+ */
+export function quoteKindOf(quote: PriceQuote, requestedFor?: BookingType): 'advisory' | 'binding' {
+  if (quote.quote_kind) return quote.quote_kind
+  return requestedFor === 'auction' ? 'advisory' : 'binding'
+}
+
+/**
+ * Heading for the quote panel.
+ *
+ * "Locked Price" over an auction estimate is a claim the platform is charging
+ * that number, which it is not — the charge is the winning carrier's bid.
+ */
+export function priceQuoteHeading(quote: PriceQuote, requestedFor?: BookingType): string {
+  return quoteKindOf(quote, requestedFor) === 'advisory' ? 'Estimated Price' : 'Locked Price'
+}
+
+/**
+ * The sentence shown under the quote.
+ *
+ * Prefers the server's `basis` so the disclosure travels with the number it
+ * describes and cannot drift from the arithmetic. The local copy is the fallback
+ * for a pre-D-11 server, and is resolved through quoteKindOf() for the reason
+ * given there — an auction must never fall back to the binding sentence.
+ */
+export function priceQuoteBasis(quote: PriceQuote, requestedFor?: BookingType): string {
+  if (quote.basis) return quote.basis
+  return quoteKindOf(quote, requestedFor) === 'advisory'
+    ? "Reference estimate — you pay the winning carrier's bid, not this number."
+    : 'This is the price charged for this booking.'
 }
 
 export function getPriceQuote(payload: PriceQuoteInput): Promise<PriceQuote> {

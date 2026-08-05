@@ -4,8 +4,11 @@ import bcrypt from 'bcrypt'
 import jwt from 'jsonwebtoken'
 import { OAuth2Client } from 'google-auth-library'
 import nodemailer from 'nodemailer'
+import { randomInt } from 'node:crypto'
 import type { JwtPayload } from '../lib/authenticate.js'
 import { authenticate } from '../lib/authenticate.js'
+import { consume, isLockedOut, recordFailure, clearFailures, envInt } from '../lib/rate-limit.js'
+import { getSmsProvider } from '../lib/sms.js'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -14,6 +17,38 @@ const REFRESH_TTL_S = 7 * 24 * 3600   // 7 days
 const OTP_TTL_S     = 600             // 10 minutes
 const MAGIC_TTL_S   = 900             // 15 minutes
 const PWRESET_TTL_S = 30 * 60         // 30 minutes — password-reset link validity
+
+// ── Throttles ─────────────────────────────────────────────────────────────────
+// Env-overridable so ops can retune during the pilot without a redeploy.
+//
+// Keyed on the EMAIL, never on the client IP. `req.ip` here is the bt-gateway
+// container — Fastify is not configured with trustProxy — so an IP-keyed limit
+// would collapse every user onto one counter and lock the whole pilot out at
+// once. The forwarded headers are no better: X-Forwarded-For is appended to by
+// nginx, so its left-most entry is attacker-controlled and an attacker would
+// simply rotate it. The identity is the thing worth protecting and the thing
+// that cannot be spoofed.
+
+/** Wrong passwords tolerated per account before password login is refused. */
+const LOGIN_FAIL_LIMIT    = envInt('LOGIN_FAIL_LIMIT', 10)
+const LOGIN_FAIL_WINDOW_S = envInt('LOGIN_FAIL_WINDOW_S', 15 * 60)
+
+/** Wrong codes tolerated per address before the live OTP is burned. */
+const OTP_VERIFY_LIMIT = envInt('OTP_VERIFY_LIMIT', 5)
+
+/** Messages sent to one address per hour, across every email-producing route. */
+const EMAIL_SEND_LIMIT    = envInt('EMAIL_SEND_LIMIT', 5)
+const EMAIL_SEND_WINDOW_S = envInt('EMAIL_SEND_WINDOW_S', 3600)
+
+/**
+ * Total messages this service may send in a day. The per-address throttle alone
+ * does not stop the drain the founder flagged: registration accepts any address,
+ * so an attacker spreads one send across ten thousand different addresses and
+ * never trips a per-address counter — they just exhaust the SMTP quota, and then
+ * no real user can receive a verification code either. This is the ceiling that
+ * actually binds, regardless of how the attacker distributes the load.
+ */
+const SMTP_DAILY_BUDGET = envInt('SMTP_DAILY_BUDGET', 500)
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -24,19 +59,103 @@ function issueTokens(userId: string, role: string): { access_token: string; refr
   return { access_token, refresh_token }
 }
 
+// crypto.randomInt, not Math.random: this six-digit string is a bearer
+// credential — it verifies an email and mints a session — and Math.random is a
+// seeded PRNG whose stream is recoverable from observed outputs. Same range,
+// same format, no predictability.
 function randomOtp(): string {
-  return String(Math.floor(100000 + Math.random() * 900000))
+  return String(randomInt(100000, 1000000))
 }
 
-function getMailer() {
-  return nodemailer.createTransport({
-    host: process.env.SMTP_HOST ?? 'smtp.gmail.com',
-    port: Number(process.env.SMTP_PORT ?? 587),
-    secure: false,
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS,
-    },
+// -----------------------------------------------------------
+// guardEmailSend — one gate in front of every outbound message.
+//
+// Returns false when this address has had its fill for the hour, or when the
+// service has spent its daily send budget. Callers decide how to answer: routes
+// that already refuse to confirm whether an address exists absorb it silently,
+// the rest return 429.
+//
+// The budget is charged only once the per-address check passes, so a single
+// attacker hammering one address cannot also eat the global allowance.
+// -----------------------------------------------------------
+
+type SendVerdict = { allowed: boolean; retryAfterS: number }
+
+async function guardEmailSend(app: FastifyInstance, email: string): Promise<SendVerdict> {
+  const perAddress = await consume(app.redis, `email_send:${email}`, EMAIL_SEND_LIMIT, EMAIL_SEND_WINDOW_S)
+  if (!perAddress.allowed) {
+    app.log.warn({ email, count: perAddress.count }, 'email send throttled for address')
+    return { allowed: false, retryAfterS: perAddress.retryAfterS }
+  }
+
+  // Date-stamped key + 25h TTL: rolls over on its own at UTC midnight and
+  // cannot leave a stale counter behind if the service is down at the boundary.
+  const day = new Date().toISOString().slice(0, 10)
+  const budget = await consume(app.redis, `smtp_budget:${day}`, SMTP_DAILY_BUDGET, 25 * 3600)
+  if (!budget.allowed) {
+    // Loud: past this point no real user can receive a verification code
+    // either, so it needs to reach whoever is watching the logs.
+    app.log.error({ email, spent: budget.count, budget: SMTP_DAILY_BUDGET }, 'daily SMTP budget exhausted — outbound email suspended')
+    return { allowed: false, retryAfterS: budget.retryAfterS }
+  }
+  return { allowed: true, retryAfterS: 0 }
+}
+
+// Built once for the process, not once per email. Every send here used to call
+// createTransport() again, which throws away the connection pool and pays a fresh
+// TCP + TLS handshake per message — on a login-OTP path where the user is watching a
+// spinner. Lazy so a service with no SMTP configured never constructs one at all.
+//
+// Port 465 is implicit TLS; 587 is STARTTLS, which nodemailer upgrades to when
+// secure=false. Deriving `secure` from the port means a provider swap to a 465-only
+// host cannot silently attempt a plaintext handshake.
+//
+// NOTE: this mirrors smtpTransportOptions() in @bharattruck/shared/notifications,
+// which is the canonical copy. This service is not yet on the shared package —
+// migrating it is a separate, CTO-sequenced change (see packages/shared/README.md).
+let mailerInstance: nodemailer.Transporter | null = null
+
+function getMailer(): nodemailer.Transporter {
+  if (!mailerInstance) {
+    const port = Number(process.env.SMTP_PORT ?? 587)
+    mailerInstance = nodemailer.createTransport({
+      host: process.env.SMTP_HOST ?? 'smtp.gmail.com',
+      port,
+      secure: port === 465,
+      auth: {
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS,
+      },
+    })
+  }
+  return mailerInstance
+}
+
+// -----------------------------------------------------------
+// notifyPasswordChanged — queue the "your password was changed" security notice.
+//
+// Posted to bt-booking-service's outbox rather than sent inline: unlike the OTP and
+// reset-link emails above, nobody is waiting on this one, and it must not be able to
+// fail or delay the password update that has already been committed. Same plain-fetch,
+// skip-silently-when-unconfigured shape as the existing cross-service emit helpers
+// (bt-booking-service/src/lib/payment-emit.ts, bt-payment-service/src/lib/fleet-emit.ts).
+// -----------------------------------------------------------
+
+function notifyPasswordChanged(userId: string, log?: { warn(o: unknown, m: string): void }): void {
+  const base = process.env.BOOKING_SERVICE_URL
+  const secret = process.env.INTERNAL_SERVICE_SECRET
+  if (!base || !secret) return
+
+  void fetch(`${base}/internal/notifications`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-internal-secret': secret },
+    body: JSON.stringify({
+      event: 'password_changed',
+      user_id: userId,
+      changed_at: new Date().toISOString(),
+    }),
+  }).catch((err) => {
+    log?.warn({ err, user_id: userId }, 'password-changed notification emit failed (password was still updated)')
   })
 }
 
@@ -85,6 +204,62 @@ async function sendPasswordResetEmail(email: string, link: string) {
       `<p><a href="${link}">Reset your password</a> (expires in 30 minutes).</p>` +
       `<p>If you did not request this, ignore this email — your password is unchanged.</p>`,
   })
+}
+
+// ── Per-role front-end links ──────────────────────────────────────────────────
+//
+// Each persona is a separate Next app on its own origin, so an emailed link has to be
+// built from the *account's* role, not from whichever app happened to take the request:
+// a driver who types their address into the shipper app still belongs on the driver app.
+
+const RESET_PATH = '/auth/reset'
+
+function magicLinkBase(role: string | undefined): string {
+  if (role === 'driver') {
+    return process.env.DRIVER_MAGIC_LINK_URL ?? 'http://localhost:3002/auth/callback'
+  }
+  if (role === 'fleet_owner') {
+    // The fleet console has no /auth pages yet, so fleet owners fall through to the
+    // shipper app. Its callback and reset pages are role-agnostic — they only exchange
+    // a token — so the flow completes correctly; only the branding is off. Setting
+    // FLEET_MAGIC_LINK_URL takes over the moment those pages exist.
+    return process.env.FLEET_MAGIC_LINK_URL
+      ?? process.env.SHIPPER_MAGIC_LINK_URL
+      ?? 'http://localhost:3000/auth/callback'
+  }
+  return process.env.SHIPPER_MAGIC_LINK_URL ?? 'http://localhost:3000/auth/callback'
+}
+
+/**
+ * Where a password-reset link should land for this role.
+ *
+ * An explicit *_RESET_PASSWORD_URL always wins. Without one we DERIVE the reset page
+ * from the role's magic-link URL by swapping the path — we no longer fall back to the
+ * magic-link URL *verbatim*, which is what shipped before.
+ *
+ * That old fallback is why reset was dead in production: every reset email pointed at
+ * /auth/callback, and that page hands its token straight to /auth/magic-link/verify,
+ * where a 'pwreset' token fails the `type !== 'magic'` check. The mail arrived and the
+ * link opened — it just could never complete a reset. Deriving the path keeps the two
+ * flows from sharing a landing page again, even if only one of the vars is ever set.
+ */
+function resetLinkBase(role: string | undefined): string {
+  const explicit = role === 'driver'      ? process.env.DRIVER_RESET_PASSWORD_URL
+                 : role === 'fleet_owner' ? process.env.FLEET_RESET_PASSWORD_URL
+                 :                          process.env.SHIPPER_RESET_PASSWORD_URL
+  if (explicit) return explicit
+
+  try {
+    const url = new URL(magicLinkBase(role))
+    url.pathname = RESET_PATH
+    url.search = ''
+    url.hash = ''
+    return url.toString()
+  } catch {
+    // magicLinkBase only returns a non-URL if someone set a malformed env var; a
+    // localhost link is a visibly-broken dev link rather than a silently-wrong prod one.
+    return `http://localhost:3000${RESET_PATH}`
+  }
 }
 
 // fleet_owners.company_name is NOT NULL, so fall through the identity fields we actually
@@ -209,12 +384,19 @@ export async function authRoutes(app: FastifyInstance) {
     const otp = randomOtp()
     await app.redis.set(`phone_otp:${phone}`, otp, 'EX', OTP_TTL_S)
 
-    if (process.env.OTP_DEV_MODE === 'true' || process.env.NODE_ENV === 'development') {
-      console.log(`[DEV] Phone OTP for +91${phone}: ${otp}`)
-    } else {
-      // Production: integrate Twilio or MSG91 here
-      // await sendSms(phone, otp)
-      console.log(`[WARN] No SMS provider configured — OTP for ${phone}: ${otp}`)
+    // One seam for every phone OTP (D-14). Console until TRAI DLT registration
+    // clears, real SMS the moment the env vars exist — see lib/sms.ts. Stored in
+    // Redis BEFORE the send so a provider that accepts the message but answers
+    // slowly cannot leave a delivered code with nothing to verify it against.
+    try {
+      await getSmsProvider().sendOtp(phone, otp)
+    } catch (err) {
+      // The rate-limit attempt above is deliberately NOT refunded: a provider
+      // outage is exactly when a retry loop would hammer both the provider and
+      // this service. The code stays in Redis and its TTL keeps running, so a
+      // send that actually did go out despite the error still verifies.
+      app.log.error({ err, phone }, 'phone OTP send failed — no code was delivered')
+      return reply.status(502).send({ success: false, error: 'Could not send the code right now. Try again shortly.' })
     }
 
     return reply.send({ success: true, data: { message: 'OTP sent', expires_in: OTP_TTL_S } })
@@ -229,11 +411,25 @@ export async function authRoutes(app: FastifyInstance) {
     }
     const { phone, otp } = body.data
 
+    // A six-digit code with no guess cap is a 10^6 space an attacker can walk
+    // in minutes, and it mints a full session. Cap the guesses, then burn the
+    // code: the attacker has to request a new one, which /send-otp already
+    // limits to 5/hour, so the reachable search space collapses to ~25 guesses
+    // an hour instead of unbounded.
+    const guessKey = `otp_guess:${phone}`
+    const gate = await isLockedOut(app.redis, guessKey, OTP_VERIFY_LIMIT)
+    if (!gate.allowed) {
+      return reply.status(429).send({ success: false, error: 'Too many incorrect codes. Request a new OTP.', retry_after_s: gate.retryAfterS })
+    }
+
     const stored = await app.redis.get(`phone_otp:${phone}`)
     if (!stored || stored !== otp) {
+      const used = await recordFailure(app.redis, guessKey, OTP_TTL_S)
+      if (used >= OTP_VERIFY_LIMIT) await app.redis.del(`phone_otp:${phone}`)
       return reply.status(401).send({ success: false, error: 'Invalid or expired OTP' })
     }
     await app.redis.del(`phone_otp:${phone}`)
+    await clearFailures(app.redis, guessKey)
 
     // Upsert user by phone
     let { data: user } = await app.supabase
@@ -286,7 +482,13 @@ export async function authRoutes(app: FastifyInstance) {
 
     if (existing) {
       if (!existing.email_verified) {
-        // Resend OTP so the user can complete verification
+        // Resend OTP so the user can complete verification. Throttled like any
+        // other send — replaying this branch is the cheapest way to make the
+        // service mail an address it has already mailed.
+        const gate = await guardEmailSend(app, email)
+        if (!gate.allowed) {
+          return reply.status(429).send({ success: false, error: 'Too many verification emails requested. Try again later.', retry_after_s: gate.retryAfterS })
+        }
         const otp = randomOtp()
         await app.redis.set(`email_otp:${email}`, otp, 'EX', OTP_TTL_S)
         await sendOtpEmail(email, otp)
@@ -297,6 +499,14 @@ export async function authRoutes(app: FastifyInstance) {
         })
       }
       return reply.status(409).send({ success: false, error: 'Email already registered', code: 'EMAIL_EXISTS' })
+    }
+
+    // Checked BEFORE the row is written: a registration that cannot send its
+    // verification code would otherwise leave an unverifiable account behind
+    // and still burn a users row per request.
+    const sendGate = await guardEmailSend(app, email)
+    if (!sendGate.allowed) {
+      return reply.status(429).send({ success: false, error: 'Too many verification emails requested. Try again later.', retry_after_s: sendGate.retryAfterS })
     }
 
     const password_hash = await bcrypt.hash(password, 12)
@@ -333,11 +543,21 @@ export async function authRoutes(app: FastifyInstance) {
     }
     const { email, otp } = body.data
 
+    // Same guess cap as the phone OTP — this code also mints a session.
+    const guessKey = `email_otp_guess:${email}`
+    const gate = await isLockedOut(app.redis, guessKey, OTP_VERIFY_LIMIT)
+    if (!gate.allowed) {
+      return reply.status(429).send({ success: false, error: 'Too many incorrect codes. Request a new one.', retry_after_s: gate.retryAfterS })
+    }
+
     const stored = await app.redis.get(`email_otp:${email}`)
     if (!stored || stored !== otp) {
+      const used = await recordFailure(app.redis, guessKey, OTP_TTL_S)
+      if (used >= OTP_VERIFY_LIMIT) await app.redis.del(`email_otp:${email}`)
       return reply.status(401).send({ success: false, error: 'Invalid or expired verification code' })
     }
     await app.redis.del(`email_otp:${email}`)
+    await clearFailures(app.redis, guessKey)
 
     const { data: user, error } = await app.supabase
       .from('users')
@@ -374,23 +594,59 @@ export async function authRoutes(app: FastifyInstance) {
     }
     const { email, password } = body.data
 
+    // Brute-force / credential-stuffing gate. Checked before the DB read and
+    // before bcrypt.compare — a 12-round hash is deliberately expensive, so an
+    // unthrottled login endpoint is also a CPU amplification target.
+    //
+    // Only wrong passwords count and a success clears the tally, so a user who
+    // knows their password is never affected by someone else's attempts.
+    //
+    // Accepted trade-off: an attacker who knows an address can lock its owner
+    // out of PASSWORD login for the window. That is the standard cost of a
+    // lockout, and it is bounded here — magic-link and forgot-password still
+    // work, so the account is never actually unreachable.
+    const failKey = `login_fail:${email}`
+    const gate = await isLockedOut(app.redis, failKey, LOGIN_FAIL_LIMIT)
+    if (!gate.allowed) {
+      return reply.status(429).send({
+        success: false,
+        error: 'Too many failed sign-in attempts. Try again later, or sign in with a magic link.',
+        code: 'TOO_MANY_ATTEMPTS',
+        retry_after_s: gate.retryAfterS,
+      })
+    }
+
     const { data: user } = await app.supabase
       .from('users')
       .select('*')
       .eq('email', email)
       .maybeSingle()
 
+    // Unknown address and wrong password are charged identically: branching
+    // only on the real-account path would turn the counter into an account
+    // enumeration oracle, undoing the identical 401 above it.
     if (!user || !user.password_hash) {
+      await recordFailure(app.redis, failKey, LOGIN_FAIL_WINDOW_S)
       return reply.status(401).send({ success: false, error: 'Invalid email or password' })
     }
 
     const match = await bcrypt.compare(password, user.password_hash)
     if (!match) {
+      await recordFailure(app.redis, failKey, LOGIN_FAIL_WINDOW_S)
       return reply.status(401).send({ success: false, error: 'Invalid email or password' })
     }
 
+    // The password was right, so this actor is the account owner.
+    await clearFailures(app.redis, failKey)
+
     if (!user.email_verified) {
-      // Issue a fresh OTP so they can verify
+      // Issue a fresh OTP so they can verify. Correct credentials still do not
+      // buy unmetered sends — this is otherwise a mail loop anyone holding one
+      // valid password can run indefinitely.
+      const sendGate = await guardEmailSend(app, email)
+      if (!sendGate.allowed) {
+        return reply.status(429).send({ success: false, error: 'Too many verification emails requested. Try again later.', retry_after_s: sendGate.retryAfterS })
+      }
       const otp = randomOtp()
       await app.redis.set(`email_otp:${email}`, otp, 'EX', OTP_TTL_S)
       await sendOtpEmail(email, otp)
@@ -439,6 +695,14 @@ export async function authRoutes(app: FastifyInstance) {
       return reply.status(400).send({ success: false, error: 'Email is already verified' })
     }
 
+    // Absorbed silently, matching the unknown-address branch above: a 429 that
+    // only ever appears for real, unverified accounts would re-open the
+    // enumeration hole that branch exists to close.
+    const gate = await guardEmailSend(app, email)
+    if (!gate.allowed) {
+      return reply.send({ success: true, data: { message: 'If that email is registered, a code was sent.', expires_in: OTP_TTL_S } })
+    }
+
     const otp = randomOtp()
     await app.redis.set(`email_otp:${email}`, otp, 'EX', OTP_TTL_S)
     await sendOtpEmail(email, otp)
@@ -454,6 +718,14 @@ export async function authRoutes(app: FastifyInstance) {
       return reply.status(400).send({ success: false, error: body.error.errors[0].message })
     }
     const { email, role, callback_url } = body.data
+
+    // Gated before the upsert: this route creates an account for any address it
+    // is handed, so without a throttle one loop both fills `users` with junk
+    // rows and drains the SMTP quota.
+    const gate = await guardEmailSend(app, email)
+    if (!gate.allowed) {
+      return reply.status(429).send({ success: false, error: 'Too many sign-in links requested. Try again later.', retry_after_s: gate.retryAfterS })
+    }
 
     // Upsert: create account if doesn't exist
     let { data: user } = await app.supabase
@@ -483,10 +755,7 @@ export async function authRoutes(app: FastifyInstance) {
 
     // Prefer the callback URL provided by the frontend (it knows its own origin).
     // Fall back to per-role env vars so production deployments can override without a code change.
-    const defaultRedirect = (user.role ?? role) === 'driver'
-      ? (process.env.DRIVER_MAGIC_LINK_URL ?? 'http://localhost:3002/auth/callback')
-      : (process.env.SHIPPER_MAGIC_LINK_URL ?? 'http://localhost:3000/auth/callback')
-    const redirectBase = callback_url ?? defaultRedirect
+    const redirectBase = callback_url ?? magicLinkBase(user.role ?? role)
     const link = `${redirectBase}?token=${encodeURIComponent(linkToken)}`
     await sendMagicLinkEmail(email, link)
 
@@ -558,10 +827,12 @@ export async function authRoutes(app: FastifyInstance) {
     const { email, callback_url } = body.data
     const generic = { success: true, data: { message: 'If an account exists for that email, a reset link has been sent.' } }
 
-    const rateKey = `pwreset_rate:${email}`
-    const attempts = await app.redis.incr(rateKey)
-    if (attempts === 1) await app.redis.expire(rateKey, 3600)
-    if (attempts > 5) return reply.send(generic) // silently absorb — do not reveal the cap
+    // Was an inline per-email counter; folded into the shared gate so this
+    // route also draws down the global daily send budget rather than being the
+    // one mail-producing path that can drain the quota around it.
+    // Still silently absorbed — do not reveal the cap.
+    const gate = await guardEmailSend(app, email)
+    if (!gate.allowed) return reply.send(generic)
 
     const { data: user } = await app.supabase
       .from('users')
@@ -580,10 +851,7 @@ export async function authRoutes(app: FastifyInstance) {
       // Single-use: reset-password checks this key matches AND deletes it, so a token
       // cannot be replayed and a second request invalidates the first.
       await app.redis.set(`pwreset:${user.id}`, resetToken, 'EX', PWRESET_TTL_S)
-      const base = callback_url
-        ?? (user.role === 'driver'
-              ? (process.env.DRIVER_RESET_PASSWORD_URL ?? process.env.DRIVER_MAGIC_LINK_URL ?? 'http://localhost:3002/auth/reset')
-              : (process.env.SHIPPER_RESET_PASSWORD_URL ?? process.env.SHIPPER_MAGIC_LINK_URL ?? 'http://localhost:3000/auth/reset'))
+      const base = callback_url ?? resetLinkBase(user.role)
       const link = `${base}?token=${encodeURIComponent(resetToken)}`
       try {
         await sendPasswordResetEmail(email, link)
@@ -634,6 +902,11 @@ export async function authRoutes(app: FastifyInstance) {
     // Burn the reset token + revoke sessions opened under the old password.
     await app.redis.del(`pwreset:${decoded.userId}`)
     await app.redis.del(`refresh:${decoded.userId}`)
+
+    // Security notice. This is the email that tells a user their account was taken
+    // over: a reset they did not request is invisible to them without it, because the
+    // reset link itself goes to whoever asked for it.
+    notifyPasswordChanged(decoded.userId, req.log)
 
     return reply.send({ success: true, data: { message: 'Password updated. Please sign in with your new password.' } })
   })

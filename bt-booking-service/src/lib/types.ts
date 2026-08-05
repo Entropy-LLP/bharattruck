@@ -82,6 +82,39 @@ export type DbQuote = {
 }
 
 // -----------------------------------------------------------
+// QuoteCarrier — the party behind a bid, resolved for display
+// -----------------------------------------------------------
+
+// A quote row identifies its bidder only by id, and WHICH id depends on the
+// party kind (driver_id XOR fleet_owner_id). Neither is resolvable by the
+// shipper app: drivers.id/fleet_owners.id are server-side identities it never
+// holds. So the shipper had nothing to render but a raw uuid — and once fleet
+// owners could bid, `driver_id` came back NULL and the column it was reading
+// did not exist at all. Resolving the party here is what makes a bid
+// attributable to a carrier the shipper can actually choose between.
+
+export type QuoteCarrier = {
+  kind: 'driver' | 'fleet'
+  id: string
+  /**
+   * Display name — `users.full_name` for a solo driver, `company_name` for a
+   * fleet. Nullable: a driver row whose user has no name on file is a live case
+   * (the seeded demo drivers are exactly that), so the client must still have a
+   * fallback rather than treat this as guaranteed.
+   */
+  name: string | null
+  /** Driver-only. A fleet bid names no truck — that is chosen at assignment. */
+  truck_number: string | null
+  average_rating: number | null
+  total_trips: number | null
+}
+
+export type QuoteWithCarrier = DbQuote & {
+  /** Null only if the referenced party row has since been deleted. */
+  carrier: QuoteCarrier | null
+}
+
+// -----------------------------------------------------------
 // DbNegotiation — append-only log of price offers/counters
 // -----------------------------------------------------------
 
@@ -123,6 +156,22 @@ export type DriverProfile = {
 
 export type BookingWithProfiles = DbBooking & {
   driver?: DriverProfile | null
+
+  /**
+   * Driver-facing only: is the CALLER the driver assigned to this trip?
+   *
+   * Server-computed because the client cannot work it out — `driver_id` is a
+   * `drivers.id`, and the app only ever holds the `users.id` from its JWT. The
+   * driver app needs the answer to decide whether to show the trip lifecycle
+   * (start / navigate / POD) or the marketplace bid form, and its previous
+   * stand-in for it — "do I own a quote on this booking?" — was wrong for BOTH
+   * personas: a fleet driver never owns a quote (their owner bids), and a solo
+   * driver who took a load with PATCH /accept has no quote row either. Both
+   * were shown a bid form for a trip they were already driving.
+   *
+   * Absent for shipper/admin callers, who are not drivers.
+   */
+  assigned_to_me?: boolean
 }
 
 // -----------------------------------------------------------

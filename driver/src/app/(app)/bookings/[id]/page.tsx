@@ -18,6 +18,7 @@ import {
   ApiError,
 } from '@/lib/api'
 import { buildNavDeepLink } from '@/lib/nav'
+import { useFleetAffiliation } from '@/lib/fleet-affiliation'
 import type { PodContext, RouteData, PetrolPump } from '@/lib/api'
 import type { Booking, Quote, NegotiationEntry } from '@/lib/types'
 import { formatPrice, formatDate, formatDateTime, relativeTime, getCountdown } from '@/lib/utils'
@@ -31,6 +32,8 @@ import { SubtreeBoundary } from '@/components/maps/map-guard'
 export default function BookingDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params)
   const router = useRouter()
+  const { affiliation, isReady: affiliationReady } = useFleetAffiliation()
+  const isFleetDriver = affiliation.is_employed
   const [booking, setBooking] = useState<Booking | null>(null)
   const [myQuote, setMyQuote] = useState<Quote | null>(null)
   const [history, setHistory] = useState<NegotiationEntry[]>([])
@@ -39,9 +42,12 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
 
   const fetchData = useCallback(async () => {
     try {
+      // A fleet driver has no quote of their own to fetch — their owner is the
+      // bidder, so /quotes would always answer [] for them. Skipping the call
+      // keeps the "no quote" answer from being mistaken for "free to bid".
       const [bookingData, quotesData] = await Promise.all([
         getBooking(id),
-        getQuotes(id),
+        isFleetDriver ? Promise.resolve([] as Quote[]) : getQuotes(id),
       ])
       setBooking(bookingData)
       const quote = quotesData.length > 0 ? quotesData[0] : null
@@ -65,11 +71,14 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
     } finally {
       setLoading(false)
     }
-  }, [id, router])
+  }, [id, router, isFleetDriver])
 
+  // Wait for the affiliation answer before the first fetch: it decides whether
+  // /quotes is even called, and re-fetching on a late answer would double-load.
   useEffect(() => {
+    if (!affiliationReady) return
     fetchData()
-  }, [fetchData])
+  }, [affiliationReady, fetchData])
 
   // Auto-refresh every 10s when quote is submitted or countered
   useEffect(() => {
@@ -80,13 +89,17 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
     return () => clearInterval(interval)
   }, [myQuote, fetchData])
 
-  if (loading || !booking) {
+  if (!affiliationReady || loading || !booking) {
     return (
       <div className="flex items-center justify-center py-20">
         <Spinner />
       </div>
     )
   }
+
+  // Resolved once so the header card and the action section cannot disagree
+  // about whether this is a trip or a load.
+  const assignedToMe = isAssignedToMe(booking, myQuote)
 
   return (
     // A single booking is reading/form content, so it keeps a narrow measure
@@ -104,32 +117,158 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
       </button>
 
       {/* Booking Details */}
-      <BookingDetailsCard booking={booking} />
+      <BookingDetailsCard
+        booking={booking}
+        assignedToMe={assignedToMe}
+        fleetName={isFleetDriver ? affiliation.company_name : null}
+      />
 
-      {/* Quote Section */}
-      {myQuote ? (
-        <QuoteStatusSection
-          booking={booking}
-          quote={myQuote}
-          history={history}
-          showHistory={showHistory}
-          onToggleHistory={() => setShowHistory(v => !v)}
-          onRefresh={fetchData}
-        />
-      ) : (
-        <SubmitQuoteForm booking={booking} onSubmitted={fetchData} />
-      )}
+      <BookingActionSection
+        booking={booking}
+        myQuote={myQuote}
+        history={history}
+        assignedToMe={assignedToMe}
+        isFleetDriver={isFleetDriver}
+        fleetName={affiliation.company_name}
+        showHistory={showHistory}
+        onToggleHistory={() => setShowHistory(v => !v)}
+        onRefresh={fetchData}
+      />
+    </div>
+  )
+}
+
+// --- What this screen offers: a trip to drive, or a load to bid on ---
+//
+// THE RULE (founder Q14): a driver employed by a fleet does not self-select
+// work. Their owner wins the load and assigns it to them, so this screen must
+// never offer them a quote form — not on their own trip, and not on anything
+// else.
+//
+// The decision is made from the TRIP (`assigned_to_me` + status), never from
+// quote ownership. Keying it off "do I own a quote?" is what put a "Submit Your
+// Quote" form on an in_transit trip that was already assigned: a fleet driver
+// never owns a quote, so the screen read that absence as "free to bid". A solo
+// driver who took a load with PATCH /accept has no quote row either and hit the
+// same wall.
+
+/**
+ * Is this trip mine to drive?
+ *
+ * `assigned_to_me` is the authoritative answer and the only one that works for
+ * a fleet driver. It is optional on the type because an older bt-booking-service
+ * does not send it — so during a rolling deploy (app updated, API not yet) fall
+ * back to the inference this screen used before: "I hold the winning quote".
+ * That fallback is exactly the old branching, wrong in exactly the old ways
+ * (a fleet driver has no quote, so it answers false for them and they get the
+ * read-only notice rather than a bid form) — never worse than today, and it
+ * keeps a solo driver's Start Trip / POD screen from vanishing mid-deploy.
+ */
+function isAssignedToMe(booking: Booking, myQuote: Quote | null): boolean {
+  if (booking.assigned_to_me !== undefined) return booking.assigned_to_me
+  if (!myQuote) return false
+  return (
+    (booking.status === 'accepted' && myQuote.status === 'accepted') ||
+    booking.status === 'in_transit' ||
+    booking.status === 'completed' ||
+    booking.status === 'paid'
+  )
+}
+
+function BookingActionSection({
+  booking,
+  myQuote,
+  history,
+  assignedToMe,
+  isFleetDriver,
+  fleetName,
+  showHistory,
+  onToggleHistory,
+  onRefresh,
+}: {
+  booking: Booking
+  myQuote: Quote | null
+  history: NegotiationEntry[]
+  assignedToMe: boolean
+  isFleetDriver: boolean
+  fleetName: string | null
+  showHistory: boolean
+  onToggleHistory: () => void
+  onRefresh: () => void
+}) {
+  // The trip I am driving — whoever won it and however it was won.
+  if (assignedToMe) {
+    return <TripLifecycleSection booking={booking} quote={myQuote} onRefresh={onRefresh} />
+  }
+
+  // Not my trip and I drive for a fleet: there is nothing to do here. The API
+  // scopes an affiliated driver's reads to their own assignments, so this is
+  // defence-in-depth for a stale tab rather than a screen reached in normal use.
+  if (isFleetDriver) {
+    return <FleetNoBiddingNotice fleetName={fleetName} />
+  }
+
+  // Solo driver, open marketplace — unchanged.
+  return myQuote ? (
+    <QuoteStatusSection
+      booking={booking}
+      quote={myQuote}
+      history={history}
+      showHistory={showHistory}
+      onToggleHistory={onToggleHistory}
+      onRefresh={onRefresh}
+    />
+  ) : (
+    <SubmitQuoteForm booking={booking} onSubmitted={onRefresh} />
+  )
+}
+
+function FleetNoBiddingNotice({ fleetName }: { fleetName: string | null }) {
+  return (
+    <div className="bg-card rounded-2xl border border-border p-6 text-center shadow-sm">
+      <div className="w-12 h-12 rounded-2xl bg-secondary flex items-center justify-center mx-auto mb-3">
+        <svg className="w-6 h-6 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+        </svg>
+      </div>
+      <h3 className="font-bold text-foreground mb-1">This load isn&apos;t yours to bid on</h3>
+      <p className="text-sm text-muted-foreground">
+        {fleetName ? `${fleetName} bids` : 'Your fleet owner bids'} for loads and assigns the trips to
+        you. Your assigned trips are on the Trips tab.
+      </p>
     </div>
   )
 }
 
 // --- Booking Details Card ---
 
-function BookingDetailsCard({ booking }: { booking: Booking }) {
+function BookingDetailsCard({
+  booking,
+  assignedToMe,
+  fleetName,
+}: {
+  booking: Booking
+  assignedToMe: boolean
+  fleetName: string | null
+}) {
+  // Auction/direct and the closing countdown describe how the load is WON. For a
+  // fleet driver that is their owner's business, not theirs — the same reason the
+  // API strips the money (founder Q16) — and on a trip already assigned there is
+  // nothing left to win either way. Shown only where it can still be acted on.
+  const showBiddingInfo = !fleetName && !assignedToMe
+  const showCountdown = showBiddingInfo && booking.booking_type === 'auction'
   const countdown = booking.auction_deadline ? getCountdown(booking.auction_deadline) : null
 
   return (
     <div className="bg-card rounded-2xl border border-border p-4 shadow-sm space-y-4">
+      {fleetName && assignedToMe && (
+        <div className="flex items-center gap-2 rounded-xl bg-primary/8 border border-primary/20 px-3 py-2">
+          <svg className="w-4 h-4 text-primary shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <p className="text-xs font-semibold text-primary">Assigned to you by {fleetName}</p>
+        </div>
+      )}
       {/* Route */}
       <div className="flex items-start gap-3">
         <div className="flex flex-col items-center mt-1">
@@ -174,6 +313,7 @@ function BookingDetailsCard({ booking }: { booking: Booking }) {
             <p className="text-base font-bold text-emerald-400 mt-0.5">{formatPrice(booking.quoted_price)}</p>
           </div>
         )}
+        {showBiddingInfo && (
         <div>
           <p className="text-xs text-muted-foreground/70 uppercase tracking-wide">Type</p>
           <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold mt-0.5 ${
@@ -182,6 +322,7 @@ function BookingDetailsCard({ booking }: { booking: Booking }) {
             {booking.booking_type === 'auction' ? 'Auction' : 'Direct'}
           </span>
         </div>
+        )}
       </div>
 
       {booking.special_instructions && (
@@ -191,7 +332,7 @@ function BookingDetailsCard({ booking }: { booking: Booking }) {
         </div>
       )}
 
-      {booking.booking_type === 'auction' && countdown && (
+      {showCountdown && countdown && (
         <div className="flex items-center gap-2 pt-2 border-t border-border/60">
           <svg className="w-4 h-4 text-orange-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -288,7 +429,78 @@ function SubmitQuoteForm({ booking, onSubmitted }: { booking: Booking; onSubmitt
   )
 }
 
+// --- Trip Lifecycle Section ---
+//
+// Everything that happens AFTER a trip is assigned: start, drive, deliver, get
+// paid. Reached from `assigned_to_me` alone, so it serves a fleet driver whose
+// owner won the load, a solo driver who won on price, and a solo driver who took
+// the load straight off the board with PATCH /accept.
+//
+// `quote` is optional and only ever a fallback for displaying the amount: two of
+// those three routes have no quote row at all, and a fleet driver's money fields
+// are stripped by the API anyway (founder Q16), so the payout simply does not
+// render for them.
+
+function TripLifecycleSection({
+  booking,
+  quote,
+  onRefresh,
+}: {
+  booking: Booking
+  quote: Quote | null
+  onRefresh: () => void
+}) {
+  const payout = booking.final_price ?? quote?.amount ?? null
+
+  if (booking.status === 'in_transit') {
+    return <ActiveTripSection booking={booking} onRefresh={onRefresh} />
+  }
+
+  if (booking.status === 'paid') {
+    return (
+      <div className="bg-emerald-500/10 rounded-2xl border-2 border-emerald-400 p-6 text-center shadow-sm">
+        <svg className="w-10 h-10 text-emerald-500 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        <h3 className="text-xl font-bold text-emerald-300 mb-1">Payment Received</h3>
+        <p className="text-sm text-emerald-400">Shipper has confirmed payment.</p>
+        {payout !== null && (
+          <p className="text-lg font-bold text-emerald-400 mt-3">{formatPrice(payout)}</p>
+        )}
+      </div>
+    )
+  }
+
+  if (booking.status === 'completed') {
+    return (
+      <div className="bg-emerald-500/10 rounded-2xl border-2 border-green-400 p-6 text-center shadow-sm">
+        <h3 className="text-xl font-bold text-emerald-300 mb-1">Trip Completed</h3>
+        <p className="text-sm text-emerald-400">Delivered successfully. Awaiting payment.</p>
+        {payout !== null && (
+          <p className="text-lg font-bold text-emerald-400 mt-3">{formatPrice(payout)}</p>
+        )}
+      </div>
+    )
+  }
+
+  if (booking.status === 'cancelled') {
+    return (
+      <div className="bg-secondary rounded-2xl border border-border p-6 text-center opacity-75">
+        <h3 className="text-lg font-semibold text-muted-foreground mb-1">Trip cancelled</h3>
+        <p className="text-sm text-muted-foreground/70">This trip is no longer active.</p>
+      </div>
+    )
+  }
+
+  // accepted (and any pre-departure state): load up and start.
+  return <AcceptedTripSection booking={booking} payout={payout} onRefresh={onRefresh} />
+}
+
 // --- Quote Status Section ---
+//
+// The negotiation states only. Once a trip is awarded and assigned it belongs to
+// TripLifecycleSection above, which is chosen on `assigned_to_me` before this
+// component is ever reached.
 
 function QuoteStatusSection({
   booking,
@@ -337,45 +549,6 @@ function QuoteStatusSection({
     } finally {
       setWithdrawing(false)
     }
-  }
-
-  // --- Accepted: start trip ---
-  if (quote.status === 'accepted' && booking.status === 'accepted') {
-    return (
-      <AcceptedTripSection booking={booking} quote={quote} onRefresh={onRefresh} />
-    )
-  }
-
-  // --- In Transit: active trip ---
-  if (booking.status === 'in_transit') {
-    return (
-      <ActiveTripSection booking={booking} onRefresh={onRefresh} />
-    )
-  }
-
-  // --- Paid ---
-  if (booking.status === 'paid') {
-    return (
-      <div className="bg-emerald-500/10 rounded-2xl border-2 border-emerald-400 p-6 text-center shadow-sm">
-        <svg className="w-10 h-10 text-emerald-500 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-        </svg>
-        <h3 className="text-xl font-bold text-emerald-300 mb-1">Payment Received</h3>
-        <p className="text-sm text-emerald-400">Shipper has confirmed payment.</p>
-        <p className="text-lg font-bold text-emerald-400 mt-3">{formatPrice(booking.final_price ?? quote.amount)}</p>
-      </div>
-    )
-  }
-
-  // --- Completed ---
-  if (booking.status === 'completed') {
-    return (
-      <div className="bg-emerald-500/10 rounded-2xl border-2 border-green-400 p-6 text-center shadow-sm">
-        <h3 className="text-xl font-bold text-emerald-300 mb-1">Trip Completed</h3>
-        <p className="text-sm text-emerald-400">Delivered successfully. Awaiting payment.</p>
-        <p className="text-lg font-bold text-emerald-400 mt-3">{formatPrice(booking.final_price ?? quote.amount)}</p>
-      </div>
-    )
   }
 
   // --- Rejected / Withdrawn / Expired: muted ---
@@ -649,11 +822,12 @@ function NavigateButton({ booking }: { booking: Booking }) {
 
 function AcceptedTripSection({
   booking,
-  quote,
+  payout,
   onRefresh,
 }: {
   booking: Booking
-  quote: Quote
+  /** null when the API masked the money (fleet driver) or no quote exists. */
+  payout: number | null
   onRefresh: () => void
 }) {
   const [starting, setStarting] = useState(false)
@@ -678,7 +852,8 @@ function AcceptedTripSection({
       <div className="bg-emerald-500/10 rounded-2xl border-2 border-green-400 p-5 shadow-sm">
         <h3 className="text-lg font-bold text-emerald-300 mb-1">You got the job!</h3>
         <p className="text-sm text-emerald-400 mb-4">
-          {formatPrice(booking.final_price ?? quote.amount)} &middot; Pickup {formatDate(booking.pickup_date)}
+          {payout !== null && <>{formatPrice(payout)} &middot; </>}
+          Pickup {formatDate(booking.pickup_date)}
         </p>
 
         <div className="bg-card rounded-xl p-3 space-y-2 text-sm mb-4">

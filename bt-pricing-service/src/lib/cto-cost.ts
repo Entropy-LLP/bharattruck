@@ -53,6 +53,18 @@ export const VEHICLE_TYPE_TO_CLASS: Record<string, VehicleClass> = {
   trailer: 'HCV',    // ASSUMPTION (Q9)
 }
 
+// variableCostPerKm — what one kilometre actually costs to run, before the
+// fixed per-trip handling base. This is the floor the commercial rate card must
+// clear; see ratePerKm() in pricing.ts, which derives from it.
+//
+// Reads the live diesel price rather than a constant, so a fuel move flows
+// straight through to the quote instead of quietly eating the margin.
+export function variableCostPerKm(vehicleClass: VehicleClass): number {
+  return dieselPriceInr() / MILEAGE_KMPL[vehicleClass]
+    + DRIVER_WAGE_PER_DAY / AVG_KM_PER_DAY
+    + OPEX_PER_KM[vehicleClass]
+}
+
 export type CostBreakdown = {
   vehicle_class: VehicleClass
   distance_km: number

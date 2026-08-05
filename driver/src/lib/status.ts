@@ -1,4 +1,4 @@
-import type { QuoteStatus } from './types'
+import type { BookingStatus, QuoteStatus } from './types'
 
 export const quoteStatusConfig: Record<QuoteStatus, { label: string; color: string }> = {
   submitted: { label: 'Submitted', color: 'bg-yellow-100 text-yellow-800' },
@@ -7,4 +7,20 @@ export const quoteStatusConfig: Record<QuoteStatus, { label: string; color: stri
   rejected:  { label: 'Rejected',  color: 'bg-red-100 text-red-800' },
   withdrawn: { label: 'Withdrawn', color: 'bg-gray-100 text-gray-500' },
   expired:   { label: 'Expired',   color: 'bg-gray-100 text-gray-500' },
+}
+
+/**
+ * Trip status as the DRIVER reads it — phrased as what to do next, not as the
+ * lifecycle name. A fleet driver's list is assigned trips rather than a load
+ * board, so this is the column that matters to them: money is masked for them
+ * (founder Q16) and there is nothing to bid on.
+ */
+export const bookingStatusConfig: Record<BookingStatus, { label: string; color: string }> = {
+  pending:    { label: 'Awaiting award', color: 'bg-secondary text-muted-foreground' },
+  negotiating:{ label: 'In negotiation', color: 'bg-amber-500/15 text-amber-500' },
+  accepted:   { label: 'Ready to start', color: 'bg-emerald-500/15 text-emerald-500' },
+  in_transit: { label: 'In transit',     color: 'bg-purple-500/15 text-purple-400' },
+  completed:  { label: 'Delivered',      color: 'bg-emerald-500/15 text-emerald-500' },
+  paid:       { label: 'Paid',           color: 'bg-emerald-500/15 text-emerald-500' },
+  cancelled:  { label: 'Cancelled',      color: 'bg-secondary text-muted-foreground' },
 }

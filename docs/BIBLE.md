@@ -49,6 +49,15 @@ everything to one level, and each tier keeps its *own* governance rule intact:
 | **Living current-state** | §5 | **The one section every session should update.** Superseded the old habit of writing a brand-new "handoff" doc every few days that re-described state from scratch (see §0.3) — now there's one table to keep current instead of five going stale in parallel. |
 | **Historical record** | Appendices A–D | Append-only logs / point-in-time snapshots. Don't rewrite history — add a new dated entry. |
 
+**Companion file — `docs/INDIA_FREIGHT_COMPLIANCE.md`** (added 2026-08-03). Legal/regulatory reference
+for e-way bills, LR/consignment notes and POD: what the platform may and may not do without becoming a
+**GTA**, the e-way bill integration model (ASP-on-GSP), document retention, and the evidentiary design
+for photo/QR POD. It lives outside this file for the same reason the Maps PLAN did — it is sourced,
+citation-heavy research with its own verified/unverified confidence marks, and flattening it into a
+tier here would destroy the thing that makes it safe to use. **Read it before touching any
+document-generation, POD or pricing-presentation code**; §1.3 in particular sets three commercial red
+lines that constrain `bt-pricing-service` and `bt-payment-service`, not just the document layer.
+
 ### 0.2 The self-iteration rule
 
 This file goes stale the same way its predecessors did if nobody maintains it — that's the exact
@@ -243,9 +252,25 @@ edit a stuck booking). *Acceptance:* ops approves a real KYC, watches a real tri
 intervenes on a stuck trip — all against real platform data.
 
 **5.9 Notifications** (`bt-booking-service` + infra) — Notify on: new load, new quote/counter,
-award/loss, status changes, payment events, KYC result. At least one channel — see §5's open-decisions
-note (still undecided as of the last check). *Acceptance:* a driver is notified of a new matching load
-and an award without the app open.
+award/loss, status changes, payment events, KYC result. At least one channel. *Acceptance:* a driver is
+notified of a new matching load and an award without the app open.
+
+**Channel decided (2026-07-31): EMAIL.** This closes §5 open-decision #6 for MVP — email needed no
+vendor onboarding (WhatsApp Business takes weeks) and the SMTP transport already existed for auth OTPs.
+SMS/WhatsApp remain post-MVP additions on the same outbox.
+
+Shape: a durable **outbox** (`notification_outbox`, migration 021) in `bt-booking-service`, drained by
+a dispatcher with retry/backoff, dead-lettering and a delivery audit trail. Other services post to
+`POST /internal/notifications`; that route owns audience resolution (the `drivers.id` → `users.id` hop).
+**Login/POD OTPs are deliberately NOT in the outbox** — a human is blocked on those, so they stay
+synchronous inline sends. 15 events wired (marketplace, trip lifecycle, payments, fleet invites,
+password-changed); per-category opt-out + RFC 8058 one-click unsubscribe; transactional mail cannot be
+muted. Not yet wired: digests/reports. See `docs/tasks/feat-email-notifications.md`.
+
+> **Operational gate:** the dispatcher only runs when something invokes it. On Cloud Run that means a
+> **Cloud Scheduler job** hitting `/internal/notifications/dispatch` — see §7.1. Without it, mail queues
+> silently and nothing errors. `GET /health` reports `email: smtp|console` to make the related
+> mis-config visible.
 
 **5.10 Platform/Infrastructure** (cross-cutting) — API gateway routes `/api/*` to every service; DB
 migrations in version control; real env config (no secret behind `NEXT_PUBLIC_`); both apps build
@@ -325,7 +350,7 @@ net (make override actions first-class); non-literate driver UX (icon-led flows,
 | 1-3 | Payments demo mode / Razorpay custody / registered entity | Tangled up in the escrow/RL reversal — see §2's scope note. Founder re-confirmation still needed. |
 | 4 | GPS ingest transport: Kafka vs Redis | **Resolved: Redis pub/sub** (D-010, §3.2) — lighter, kept for the pilot. |
 | 5 | Auth: finish Supabase Auth migration vs. keep custom JWT | **Resolved: kept custom HS256 JWT** — see §5. |
-| 6 | Notification channel: SMS vs WhatsApp vs both | **Still open** as of the last check (§5) — decide before the W7/W8 pilot; WhatsApp Business onboarding can take weeks. |
+| 6 | Notification channel: SMS vs WhatsApp vs both | **Resolved 2026-07-31 — EMAIL ships as the MVP channel** (§5.9). Chosen because it needed no vendor onboarding and the SMTP transport already existed for auth OTPs. SMS/WhatsApp are post-MVP additions on the same outbox; WhatsApp Business onboarding still takes weeks, so start it early if it is wanted for the pilot. |
 | 7 | Contract semantics: single direct booking vs. standing/recurring | **Resolved: single direct contract per load** at MVP; recurring stayed post-MVP. |
 | 8 | Blockchain choice + anchoring wallet | **Resolved OUT of the first Completed Paid Trip** (Appendix A §0 ruling #3) — the "which chain" question is moot until it resumes. |
 | 9 | Exact 2-3 supported truck classes | **Resolved: MCV / HCV** (aligned to the frozen tracking fuel-estimate decision, D-009). |
@@ -1587,11 +1612,72 @@ three env shapes and asserts nginx syntax.
   group. Both are needed — Cloud Build allows only **60 operation-GET requests/min per project**, and
   `gcloud builds submit` polls while waiting. Two runs overlapping (two PRs merged a minute apart)
   produced 6 concurrent builds and killed one service in each run.
+- ⚠️ **MERGING PRs BACK-TO-BACK SILENTLY LOSES DEPLOYS.** `cancel-in-progress: false` does *not* mean
+  every run eventually executes: GitHub holds **at most ONE pending run per concurrency group**, and
+  each newly-queued run **cancels the one already waiting**. Merging 4 PRs inside a minute (2026-08-02,
+  PRs #36–#39) ran the 1st, ran the 4th, and **cancelled #37 and #38 after ~8s each** — so
+  `bt-auth-service` and `bt-pricing-service` were merged to `main` but never deployed, with CI all
+  green and nothing flagging it. Because CD is path-filtered per commit, a later unrelated merge does
+  **not** pick them up; those services stay stale until someone notices.
+  **So: after any batch merge, always check `gh run list --workflow=deploy.yml` for `cancelled`** and
+  re-run each one (`gh run rerun <id>`, one at a time, waiting for each to finish). Re-running works —
+  it replays that commit's own path filter. Better still, merge one PR, wait for its deploy, then
+  merge the next. Verify what is actually live with the revision's commit label:
+  `gcloud run services describe <svc> --region=asia-south1 --project=<proj>
+  --format='value(status.latestReadyRevisionName, spec.template.metadata.labels.commit-sha)'`
+  — the sha must match the merge commit.
 
 **Repair scripts** (idempotent, in `scripts/deploy/`): `wire-cicd.sh` (WIF trust + deployer roles +
 seed `bt-fleet-service` env + gateway wiring) · `fix-empty-env.sh` (repairs empty env values).
 
 ### 5.4 Known issues
+
+**OPEN 2026-08-02 — the gateway's own 429 is an HTML page, and the apps cannot parse it.**
+`bt-gateway/nginx.conf` rate-limits `/api/auth/` with `limit_req zone=otp_zone burst=10 nodelay`
+(`otp_zone` = 5r/m, keyed on `$binary_remote_addr`). When it trips, nginx returns its stock
+`<html>…429 Too Many Requests…</html>` body. Both apps' `api.ts` call `res.json()` on every response,
+so the HTML throws and the user is shown **"Server error — please try again"** instead of anything
+about rate limiting. A user who fat-fingers their password a few times in quick succession hits this.
+Fix is a gateway `error_page 429` returning the `{success:false, code:…}` envelope the apps expect —
+not an app-side change, since every service behind the gateway has the same exposure.
+Confirmed live 2026-08-02 by probing `/api/auth/email/login` with a nonexistent address: attempts
+1–10 → 401, 11th → nginx's HTML 429.
+
+> Note the layering, which is correct and worth keeping: **nginx limits by IP, the auth service limits
+> by identity.** `$binary_remote_addr` at the nginx hop IS the real client (verified: a single-IP probe
+> trips it, so it is not collapsing every user onto one bucket), whereas Fastify's `req.ip` is the
+> gateway container because there is no `trustProxy` — which is why the service-level throttles
+> (`LOGIN_FAIL_LIMIT` etc.) are keyed on the email instead. The two are complementary, not redundant.
+
+**Resolved 2026-07-31 — a fleet-owner bid white-screened the shipper's booking page.**
+The shipper labelled each bid with `quote.driver_id.slice(0, 8)`. Migration 016 made
+`quotes.driver_id` nullable and added `fleet_owner_id` under
+`num_nonnulls(driver_id, fleet_owner_id) = 1`, so a fleet bid leaves `driver_id` NULL — every fleet
+bid took the whole page down with `Cannot read properties of null (reading 'slice')`. The shipper's
+`Quote` type still declared `driver_id: string`, so TypeScript never flagged it: **the frontend types
+are hand-maintained copies of the backend's and drift silently — when a migration changes a column's
+nullability, grep the apps for that column, do not trust the app's own type.** Fixed by resolving the
+bidding party server-side (`listQuotesForBooking` now returns a `carrier` object: kind + name +
+truck/rating), because a uuid prefix was never renderable anyway — `drivers.id`/`fleet_owners.id` are
+identities the apps never hold. Two more spots carried the same solo-driver assumption and were fixed
+with it: negotiation history labelled a fleet's counter-offer "Driver", and the trip panel announced
+"Driver Assigned" the moment a fleet won — but a fleet wins as a *company* and `bookings.driver_id`
+stays NULL until the owner pairs a truck in `bt-fleet-service`, so it now reads "Carrier Booked" /
+"Awaiting Truck". Pinned by `bt-booking-service/test/quote-carrier.unit.mts`.
+
+**Resolved 2026-07-31 — POD was unreachable for almost every live trip.**
+`bookings.receiver_email` is required at creation but the column is nullable, and almost nothing in
+the live DB has one: **10 of 11 `in_transit`, 15 of 15 `accepted`, and 621 of 622 `paid` bookings had
+no receiver email** (2 rows out of 676 total did). Without an address the driver's POD request has
+nowhere to send the delivery code, so those trips could not reach `completed` through POD at all —
+only via an ops force-complete, which bypasses the receiver-OTP proof that `§2` puts on the *never
+cut* list. Worse, the column was settable **exactly once, at booking creation**: the driver app told
+the shipper to "add one before delivery can be confirmed" and no route in the platform could do it.
+Fixed by `PATCH /bookings/:id/receiver-email` (shipper-owner or ops; refused on
+completed/paid/cancelled), a shipper-app editor, and a `receiver_email_missing` notification so the
+shipper learns their driver is blocked instead of both sides waiting. The historical rows are not
+backfilled — a receiver address cannot be invented — so an old stuck trip still needs the shipper (or
+ops) to supply one.
 
 **Resolved 2026-07-28 — do NOT re-report these:**
 - CD failing on every push (WIF trust never migrated) — **fixed**, 12/12 green.
@@ -1612,6 +1698,40 @@ seed `bt-fleet-service` env + gateway wiring) · `fix-empty-env.sh` (repairs emp
 - Nine test files never ran in CI (no `test` script) — **fixed**, all now run.
 - `POD_OTP_PEPPER` unset in prod — **set 2026-07-28**.
 
+**Resolved 2026-07-31 — fleet drivers were shown the marketplace on their own trips:**
+- A fleet-employed driver opening a trip **already assigned to them and `in_transit`** got a
+  **"Submit Your Quote" form**. Reported against Dinesh Chauhan (Shree Balaji Roadlines) on booking
+  `f5000000-…-a003`. **620 of 620** bookings assigned to active fleet drivers were affected — every
+  fleet driver, every trip.
+- **Root cause: the driver booking screen decided what to render from QUOTE OWNERSHIP, not from trip
+  assignment.** The whole trip lifecycle (Start Trip / GPS / POD / Navigate) lived inside
+  `QuoteStatusSection`, reachable only when `getQuotes()` returned the driver's own quote. A fleet
+  driver **never** owns a quote — their owner is the bidder (Q14) — so the screen read that absence as
+  "free to bid". The same trap hit a **solo** driver who took a load with `PATCH /accept`: no quote
+  row either. Q16 price-masking was working correctly and hid the money, which is why the screenshot
+  showed a bid form with no price.
+- Three gaps fed it, all now closed:
+  1. `getBooking` masked the money for a fleet driver but **did not scope which bookings they could
+     read** — `listBookings` returned assignments only while a fetch by id returned ANY booking, so an
+     employed driver could read the whole marketplace one UUID at a time. Now 404s anything not
+     assigned to them (404, not 403, so ids cannot be probed).
+  2. Nothing told the client a driver was fleet-affiliated. `/fleet/drivers/invites/mine` returns
+     `status='pending'` rows ONLY, so an ACCEPTED affiliation was invisible to the app. Added
+     **`GET /fleet/drivers/me/affiliation`** (bt-fleet-service owns `fleet_drivers`; already routed by
+     the gateway's `/api/fleet/` block, no nginx change). Keyed on `status='active'` to match
+     `isFleetAffiliatedDriver()` — **the two must stay in agreement**.
+  3. `GET /bookings/:id` now stamps **`assigned_to_me`** for driver callers (server-computed: the app
+     holds `users.id` from its JWT and cannot compare it to `bookings.driver_id`, which is a
+     `drivers.id`). Absent for shipper/admin.
+- Driver app now branches on affiliation: `/available` is "My Trips" with a status column, the
+  `My Quotes` tab is hidden, and auction/countdown/price furniture is suppressed. The screen picks the
+  trip lifecycle from `assigned_to_me`, falling back to the old quote inference when the field is
+  absent so a **rolling deploy** (app ahead of API) does not strand a solo driver on "waiting for
+  shipper". The shell holds its loading state until affiliation resolves — the provider reads the
+  token straight from `localStorage` so that lookup RACES `getMe()` instead of queueing behind it —
+  otherwise the SOLO default flashes marketplace chrome at a fleet driver on every page load.
+  Covered by `bt-booking-service/test/fleet-driver-scope.e2e.mts` (23 checks).
+
 **Still open:**
 1. **The driver app's UI is the weakest surface in the product.** Measured 2026-07-28: server-side is
    fine (55 ms warm TTFB) but the initial payload is **710 KB**. Shipper is 708 KB and the fleet
@@ -1625,23 +1745,44 @@ seed `bt-fleet-service` env + gateway wiring) · `fix-empty-env.sh` (repairs emp
    replacement** — that file powers `handleNavigate()`, the Google-Maps deep-link handoff, which is a
    FROZEN Maps contract item. A driver on that build cannot start navigation. Decide: rebase +
    restore nav, or close and re-apply the visual changes onto current `main`.
-3. **Direct bookings are invisible to the assigned driver** (from 2026-07-20, still open, highest
-   product impact). The driver flow is quote-based throughout; a direct booking has no quote row, so
-   it never appears in any driver list.
-4. **Driver's onboarding wizard is built but unreachable** — no in-app link. Blocks a real driver
+3. **RESOLVED 2026-07-31 — fleet bidding is wired.** The fleet console can now see open loads,
+   place/replace/withdraw bids, reply to counter-offers and read a per-bid price history
+   (`GET /api/fleet/auctions`, `GET /api/fleet/bids`; writes reuse the existing
+   `/bookings/:id/quotes*` routes). Two bugs fixed with it: `GET /bookings` was returning EVERY
+   booking on the platform to any `fleet_owner` account (the role matched no branch in
+   `listBookings` and fell through to the unfiltered admin path), and `negotiations.actor_role`
+   rejected `fleet_owner`, so fleet bid history had never recorded a single row (migration 0020).
+4. **RESOLVED 2026-07-31 — direct bookings are visible to the assigned SOLO driver.** Open since
+   2026-07-20, the last piece of the quote-based-driver-flow bug. The fleet fix earlier the same day
+   closed the **detail screen** (`assigned_to_me`) and the **fleet** driver's list, leaving the LIST
+   for a solo driver: `repository.listBookings` filtered a non-fleet driver to `status='pending'`, so
+   a booking left the only list they could see the instant it became theirs — targeted directly at
+   them, or won and moved on to `accepted`/`in_transit`. The detail screen rendered such a trip
+   correctly **if they could reach its URL**; nothing linked to it.
+   The driver branch is now three cases, not two:
+   - **fleet-employed** → assignments only, masked (unchanged, Q14/Q16);
+   - **solo** → `status='pending'` **OR** `driver_id = <their drivers.id>`, unmasked;
+   - **no `drivers` row** → the original pending-only query, unchanged.
+   The union matters: a solo driver is both a bidder and the haulier, so returning only their
+   assignments would have traded one broken screen for another and removed their ability to find
+   work. It needs the caller's `drivers.id` resolved for solo drivers too — `fleetAffiliatedDriverId()`
+   became `resolveDriverScope()`, returning `{ driverId, fleetAffiliated }` from the same two lookups
+   (no extra queries). Covered by `bt-booking-service/test/driver-list-scope.e2e.mts` (18 checks),
+   which asserts the union rather than just the new arm.
+5. **Driver's onboarding wizard is built but unreachable** — no in-app link. Blocks a real driver
    entering insurance/bank details, which the payout path needs.
-5. **`bt-ops-web` auth and data are still stubbed.**
-6. **The rate card is roughly a third of market.** `RATE_PER_KM.hcv` is ₹22/km against a computed
+6. **`bt-ops-web` auth and data are still stubbed.**
+7. **The rate card is roughly a third of market.** `RATE_PER_KM.hcv` is ₹22/km against a computed
    operating cost of ₹36.71/km and a real fr8.in market rate of ₹58–60/km (32ft MXL; published band
    ₹45–85/km; Mumbai–Delhi ₹83,500 / 1414 km). The cost engine is right; the rate card is wrong.
    Every fleet owner onboarded will see negative margins on paper until this is addressed.
-7. **The deployer SA still trusts 14 RETIRED repos**, none archived on GitHub — any of them can still
+8. **The deployer SA still trusts 14 RETIRED repos**, none archived on GitHub — any of them can still
    mint a token and deploy to production. Remove those principalSets and/or archive the repos.
-8. **RLS enabled but unpoliced on most tables** — not a live hole (services use `service_role`, which
+9. **RLS enabled but unpoliced on most tables** — not a live hole (services use `service_role`, which
    bypasses RLS) but undecided.
-9. Gateway 301-redirects `/api/bookings` (no trailing slash) to `http://` — scheme downgrade.
-10. **Maps failure handling — fixed in `fleet/`, still open in `shipper/` and (when built)
-    `driver/`.** The fleet console now has `fleet/src/components/map-guard.tsx`: a render
+10. Gateway 301-redirects `/api/bookings` (no trailing slash) to `http://` — scheme downgrade.
+11. **Maps failure handling — fixed in `fleet/` and `driver/`, still open in `shipper/`.**
+    The fleet console now has `fleet/src/components/map-guard.tsx`: a render
     watchdog plus an error boundary, so a rejected key costs the map and nothing else.
     `driver/` now carries a copy too (D-019). `shipper/src/components/maps/LiveTrackMap.tsx` is
     the LAST one still handling only a *missing* key — **copy the guard across** (D-013: copy per
@@ -1655,16 +1796,16 @@ seed `bt-fleet-service` env + gateway wiring) · `fix-empty-env.sh` (repairs emp
       StrictMode's double-mount makes cleanup #1 uninstall probe #2.
     - The only dependable signal is **whether tiles actually painted** (`tilesloaded` within 8 s).
       Every cause — bad key, quota, blocked domain, renamed error — collapses to that one state.
-11. Shipper has no PWA manifest/service worker (driver has both).
-12. Dead tables + stray PostGIS extension in the live schema.
-13. Leftover `:rootctx-test` image tags in Artifact Registry from CD verification builds.
+12. Shipper has no PWA manifest/service worker (driver has both).
+13. Dead tables + stray PostGIS extension in the live schema.
+14. Leftover `:rootctx-test` image tags in Artifact Registry from CD verification builds.
 
 ### 5.5 Open founder decisions
 
 - **Escrow/RL scope reversal needs re-confirmation** — see §2's banner.
 - **The kartik decision** (payment + pricing, Appendix D) — pending.
 - **The rate card** (§5.4 item 6) — needs a number from the founder.
-- **Notification channel** (SMS vs WhatsApp vs FCM) — undecided.
+- **Notification channel** — **decided 2026-07-31: email** (§5.9, open-decision #6). SMS/WhatsApp/FCM remain post-MVP additions on the same outbox.
 - **Registered entity** for Surepass (real KYC) + Razorpay — blocks both.
 - **PMO tool's GitHub autotrack is stale** — points at the 11 retired standalone repos.
 
@@ -1815,6 +1956,35 @@ To refresh the URL table (services get added/removed): `gcloud run services list
 - **Prefer `read_page` → `ref_N` clicks over raw coordinate clicks.** A coordinate click on a tab button
   has silently no-op'd (likely a toast/overlay shifting layout). When a click seems to do nothing,
   re-run `read_page` and click by `ref` instead of nudging coordinates.
+- **…but `read_page` can return `(empty page)` / `Viewport: 0x0` on a page that renders fine**
+  (seen 2026-07-31 on the driver app, Next 16 + Turbopack dev). `computer{action:"screenshot"}` showed
+  the full UI at the same moment. When that happens, fall back to screenshots + coordinate clicks;
+  coordinates are in the **screenshot's** space (the reported "Screenshot size", e.g. 800×450), NOT
+  the CSS-pixel space of the image you see.
+- **A LOCAL dev server CANNOT call the live Cloud Run gateway from this browser** — the fetch dies as
+  a bare `TypeError: Failed to fetch` (CORS; the gateway does not allow `http://localhost:*` origins),
+  and the login form just says "Login failed" with **no entry in `read_network_requests`**. The same
+  request succeeds from `curl`, so "curl works, browser doesn't" is this, not bad credentials. So the
+  `*-dev` launch configs pointed at the live gateway are **not usable for UI testing in this tool**.
+  Workarounds: test the **deployed** app (§6.2), or point `NEXT_PUBLIC_API_URL` at a local mock that
+  sends `Access-Control-Allow-Origin: *`. The mock route shapes worth knowing: the client calls the
+  booking LIST as **`/api/bookings/` with a trailing slash** (`api.ts listBookings`) but the detail as
+  `/api/bookings/:id` without one, and it reads auth from `localStorage` keys **`bt_driver_token`** /
+  `bt_driver_refresh_token` (settable via `javascript_tool` to skip the login form entirely). A mock
+  with switchable personas is the only practical way to see both the fleet-driver and solo-driver
+  builds of the driver app side by side.
+- **To preview a WORKTREE, the worktree must live under the repo root.** `preview_start` resolves
+  `.claude/launch.json` from the **primary working directory only** — a config added to the
+  worktree's own copy is invisible ("No server named …"), and an absolute `cwd` is rejected outright
+  ("cwd must be a relative path within the project root"). So a `../bt-wt-*` sibling worktree cannot
+  be previewed at all. Create it at **`.claude/worktrees/<name>`** instead and point the launch entry
+  at `.claude/worktrees/<name>/<app>` — that path is relative and inside the root, so it works.
+  Remember `npm ci` in the new worktree; it starts with no `node_modules`. (Learned 2026-07-31
+  shipper-QA'ing a branch while another session held the main checkout.)
+- **The shipper's localStorage auth keys are `bt_token` / `bt_refresh_token`** — *not* the
+  `bt_driver_*` keys listed above, which are the driver app's. Setting the shipper's pair via
+  `javascript_tool` skips its login form the same way. A mock never validates the token, so any
+  non-empty string works.
 - **Both apps' login screens default to the "Phone" tab.** Phone OTP has no SMS provider wired
   (console-logs only) — dead end for testing. Click **"Email"** and use the demo creds (§6.4). Both
   login pages also have a "Dev: Paste JWT directly" collapsible — faster than the form if you already
@@ -1874,6 +2044,15 @@ last two are the interesting ones — they exercise the affiliation edges.
 | Arjun Nair | `arjun@bharattruck.in` | `arjun-2026` | **pending invite** — tests the driver-consent accept flow |
 | Kailash Meena | `kailash@bharattruck.in` | `kailash-2026` | **left fleet** — tests access revocation |
 
+> **Re-confirmed 2026-07-31 (curl, live gateway):** `dinesh-2026` and `vikram-2026` both return
+> `success: true`. The `<firstname>-2026` pattern holds for the fleet drivers.
+>
+> ⚠️ **A "Login failed" toast in the browser does NOT mean the password is wrong.** From a
+> *local* dev server these creds fail in-browser with a bare "Login failed" and **zero** network
+> entries — that is the CORS wall described in §6.3, not bad credentials. Verify with `curl` before
+> concluding a password is broken (this bit once on 2026-07-31 and nearly got a good password
+> recorded here as dead).
+>
 > **Password caveat (verified 2026-07-28):** the fleet-driver logins DO work with `<firstname>-2026`
 > (vikram-2026 confirmed via real login). The two `@bharattruck.in` shipper logins
 > `anand.textiles`/`deccan.steels` returned 401 for `anand-2026`/`deccan-2026` — their real passwords
@@ -2044,8 +2223,9 @@ Required env by service (names only — values are shared secrets already on boo
 
 | Service | Required env (beyond NODE_ENV/PORT) |
 |---|---|
-| `bt-auth-service` | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `REDIS_URL`, `JWT_SECRET`, `JWT_REFRESH_SECRET`, `ENCRYPTION_KEY` |
-| `bt-booking-service` | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `REDIS_URL`, `JWT_SECRET`, `INTERNAL_SERVICE_SECRET`, `PRICING_SERVICE_URL`, `PAYMENT_SERVICE_URL`, `CARGO_LEDGER_URL` |
+| `bt-auth-service` | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `REDIS_URL`, `JWT_SECRET`, `JWT_REFRESH_SECRET`, `ENCRYPTION_KEY`, the **SMTP set** (login OTP / magic link / password reset are sent inline from here), and `BOOKING_SERVICE_URL` + `INTERNAL_SERVICE_SECRET` (for the password-changed security notice) |
+| `bt-booking-service` | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `REDIS_URL`, `JWT_SECRET`, `INTERNAL_SERVICE_SECRET`, `PRICING_SERVICE_URL`, `PAYMENT_SERVICE_URL`, `CARGO_LEDGER_URL`, plus the **notification set** (migration 021): the **SMTP set** (`SMTP_HOST`,`SMTP_PORT`,`SMTP_USER`,`SMTP_PASS`,`SMTP_FROM`,`EMAIL_DEV_MODE=false`) + `SHIPPER_APP_BASE_URL`, `DRIVER_APP_BASE_URL`, `NOTIFICATIONS_PUBLIC_BASE_URL`. This service hosts the outbox dispatcher for the whole platform — without the SMTP set it silently runs in console-log mode (`GET /health` reports `email:"console"` when it does). Do **not** set `NOTIFICATIONS_DISPATCH_INTERVAL_MS` on Cloud Run — see the scheduler note below. |
+| `bt-fleet-service` | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `REDIS_URL`, `JWT_SECRET`, `INTERNAL_SERVICE_SECRET`, and `BOOKING_SERVICE_URL` (fleet invites post to the notification outbox; without it an invite is only visible in-app) |
 | `bt-pricing-service` | `JWT_SECRET` (only — see §7.2's ticket-vs-code correction) |
 | `bt-payment-service` | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `JWT_SECRET`, `INTERNAL_SERVICE_SECRET`, `BOOKING_SERVICE_URL` |
 | `bt-cargo-ledger` | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `REDIS_URL`, `INTERNAL_SERVICE_SECRET`, `BOOKING_SERVICE_URL`, `BLOCKCHAIN_ENABLED=false`, and the **SMTP set** (`SMTP_HOST`,`SMTP_PORT`,`SMTP_USER`,`SMTP_PASS`,`SMTP_FROM`,`EMAIL_DEV_MODE=false`) — required for POD OTP to actually reach the receiver, not fall back to console-only logging |
@@ -2054,6 +2234,24 @@ Required env by service (names only — values are shared secrets already on boo
 Cross-service URLs: after the first deploy, read each with `gcloud run services describe <svc>
 --format='value(status.url)'` and set via `--update-env-vars` (merge, never `--set-env-vars` — that
 replaces the whole env).
+
+**Notification dispatch on Cloud Run (required, easy to miss).** Queued email is drained by a worker
+that only runs when something invokes it. Cloud Run freezes the container between requests unless
+CPU-always-allocated is set, so the in-process timer (`NOTIFICATIONS_DISPATCH_INTERVAL_MS`) does **not**
+reliably fire there — leave it unset in prod. Create a Cloud Scheduler job instead:
+
+```
+gcloud scheduler jobs create http bt-notification-dispatch \
+  --location=asia-south1 --schedule="* * * * *" \
+  --uri="https://<bt-booking-service-url>/internal/notifications/dispatch" \
+  --http-method=POST \
+  --headers="x-internal-secret=<INTERNAL_SERVICE_SECRET>"
+```
+
+Safe to run concurrently with anything else draining: rows are claimed with a compare-and-swap, so an
+overlapping tick finds nothing to do rather than sending duplicates. **Without this job, notifications
+queue up in `notification_outbox` and are never sent** — and nothing errors, which is exactly how the
+POD OTP shipped looking green while being undeliverable (§5.4 item 10).
 
 **2. Gateway:**
 ```bash

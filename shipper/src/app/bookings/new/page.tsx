@@ -6,11 +6,15 @@ import { toast } from 'sonner'
 import {
   createBooking,
   getPriceQuote,
+  priceQuoteBasis,
+  priceQuoteHeading,
+  quoteKindOf,
   ApiError,
   type PriceQuote,
   type PriceQuoteLoadType,
   type PriceQuoteVehicleType,
 } from '@/lib/api'
+import type { BookingType } from '@/lib/types'
 import Navbar from '@/components/Navbar'
 import Spinner from '@/components/Spinner'
 
@@ -37,7 +41,7 @@ export default function NewBookingPage() {
   const router = useRouter()
   const [submitting, setSubmitting] = useState(false)
   const [quoting, setQuoting] = useState(false)
-  const [bookingType, setBookingType] = useState<'direct' | 'auction'>('auction')
+  const [bookingType, setBookingType] = useState<BookingType>('auction')
 
   // Quote-affecting fields are controlled so we can (a) build the quote request
   // and (b) invalidate a stale lock the moment any of them changes. The route
@@ -59,6 +63,18 @@ export default function NewBookingPage() {
   // stale price can never be submitted.
   function invalidateQuote() {
     if (quote) setQuote(null)
+  }
+
+  // booking_type is a quote-affecting field now that the server classifies the
+  // quote by it, so switching the toggle has to drop the lock like any other.
+  // Without this the shipper could price as an auction (persisted advisory) and
+  // submit as direct, leaving the consumed price_quotes row asserting the exact
+  // opposite of the booking it paid for — the same defect as the one this change
+  // fixes, only pointed the other way.
+  function changeBookingType(next: BookingType) {
+    if (next === bookingType) return
+    setBookingType(next)
+    invalidateQuote()
   }
 
   async function handleGetQuote() {
@@ -86,9 +102,19 @@ export default function NewBookingPage() {
         vehicle_type: vehicleType,
         load_type: loadType,
         weight_kg: weight,
+        // The server cannot infer this, and omitting it is not neutral: the wire
+        // default is `binding`, so an auction quoted without it is PERSISTED as
+        // a binding one — a stored claim that the platform charges that freight,
+        // on the one booking type where it must never claim that
+        // (INDIA_FREIGHT_COMPLIANCE.md §1.3 red line 3). The form already knows
+        // the answer; it just used to keep it to itself and re-label the panel
+        // locally, which fixed the pixels and left the record wrong.
+        booking_type: bookingType,
       })
       setQuote(q)
-      toast.success('Price locked')
+      // The server decides whether the number is locked; bookingType is only the
+      // fallback for a pre-D-11 server (see quoteKindOf).
+      toast.success(quoteKindOf(q, bookingType) === 'advisory' ? 'Estimate ready' : 'Price locked')
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'Failed to get a quote')
     } finally {
@@ -100,7 +126,9 @@ export default function NewBookingPage() {
     e.preventDefault()
 
     if (!quote) {
-      toast.error('Get a locked price quote before creating the booking')
+      // "a price quote", not "a locked price": on an auction it is not locked, and
+      // the copy in this flow should never imply the platform is pricing the trip.
+      toast.error('Get a price quote before creating the booking')
       return
     }
 
@@ -313,8 +341,14 @@ export default function NewBookingPage() {
               {quote && (
                 <div className="mt-4 rounded-lg border border-green-200 bg-emerald-500/10 p-4">
                   <div className="flex items-baseline justify-between">
+                    {/* The QUOTE decides the wording, not this form's toggle: the
+                        toggle is what the shipper is about to book, quote_kind is
+                        what the server actually classified and stored, and the panel
+                        should show the record. bookingType is passed only as the
+                        fallback for a server that predates D-11 and sends no
+                        quote_kind — see quoteKindOf(). */}
                     <span className="text-sm font-semibold text-foreground">
-                      {bookingType === 'auction' ? 'Estimated Price' : 'Locked Price'}
+                      {priceQuoteHeading(quote, bookingType)}
                     </span>
                     <span className="text-lg font-bold text-emerald-400">{inr(quote.quoted_price)}</span>
                   </div>
@@ -327,19 +361,16 @@ export default function NewBookingPage() {
                     <div className="flex justify-between border-t border-green-200 pt-1"><dt>Platform fee</dt><dd>{inr(quote.platform_fee)}</dd></div>
                     <div className="flex justify-between text-muted-foreground"><dt>Vehicle class</dt><dd>{quote.breakdown.vehicle_class}</dd></div>
                   </dl>
+                  {/* The server authors this sentence (PriceQuote.basis) and ships it
+                      with the number it describes, so the disclosure cannot drift from
+                      the arithmetic or be dropped by a client that forgot it mattered.
+                      priceQuoteBasis() falls back to matching local copy only against a
+                      server that predates D-11. Expiry is appended here because it is a
+                      property of this lock, not of the pricing posture. */}
                   <p className="mt-3 text-[11px] text-muted-foreground">
-                    {bookingType === 'auction' ? (
-                      <>
-                        This is a reference estimate for an auction booking — the final charge is the
-                        winning driver&apos;s awarded bid, not this locked price. Estimate valid until{' '}
-                        {new Date(quote.expires_at).toLocaleString('en-IN')}.
-                      </>
-                    ) : (
-                      <>
-                        This price is locked and will be charged on booking. Valid until{' '}
-                        {new Date(quote.expires_at).toLocaleString('en-IN')}.
-                      </>
-                    )}
+                    {priceQuoteBasis(quote, bookingType)}{' '}
+                    {quoteKindOf(quote, bookingType) === 'advisory' ? 'Estimate' : 'Price'} valid until{' '}
+                    {new Date(quote.expires_at).toLocaleString('en-IN')}.
                   </p>
                 </div>
               )}
@@ -374,17 +405,20 @@ export default function NewBookingPage() {
                   type="radio"
                   name="booking_type_radio"
                   checked={bookingType === 'auction'}
-                  onChange={() => setBookingType('auction')}
+                  onChange={() => changeBookingType('auction')}
                   className="text-primary"
                 />
-                <span className="text-sm">Auction (open to all drivers)</span>
+                {/* Fleet owners bid on auctions too — "all drivers" understates who
+                    the load actually goes out to. Direct stays driver-only: it
+                    targets one drivers.id. */}
+                <span className="text-sm">Auction (open to all carriers)</span>
               </label>
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="radio"
                   name="booking_type_radio"
                   checked={bookingType === 'direct'}
-                  onChange={() => setBookingType('direct')}
+                  onChange={() => changeBookingType('direct')}
                   className="text-primary"
                 />
                 <span className="text-sm">Direct (specific driver)</span>

@@ -93,7 +93,7 @@ export async function quoteRoutes(app: FastifyInstance) {
     const quoteId = parseUuid(reply, rawQuoteId, 'quoteId')
     if (!quoteId) return
     try {
-      const booking = await quoteSvc.acceptQuote(bookingId, quoteId, req.user)
+      const booking = await quoteSvc.acceptQuote(bookingId, quoteId, req.user, req.log)
       return reply.send({ success: true, data: booking })
     } catch (err) {
       return handleError(reply, err)
@@ -108,7 +108,7 @@ export async function quoteRoutes(app: FastifyInstance) {
     const quoteId = parseUuid(reply, rawQuoteId, 'quoteId')
     if (!quoteId) return
     try {
-      const quote = await quoteSvc.rejectQuote(bookingId, quoteId, req.user)
+      const quote = await quoteSvc.rejectQuote(bookingId, quoteId, req.user, req.log)
       return reply.send({ success: true, data: quote })
     } catch (err) {
       return handleError(reply, err)
@@ -123,7 +123,7 @@ export async function quoteRoutes(app: FastifyInstance) {
     const quoteId = parseUuid(reply, rawQuoteId, 'quoteId')
     if (!quoteId) return
     try {
-      const quote = await quoteSvc.withdrawQuote(bookingId, quoteId, req.user)
+      const quote = await quoteSvc.withdrawQuote(bookingId, quoteId, req.user, req.log)
       return reply.send({ success: true, data: quote })
     } catch (err) {
       return handleError(reply, err)

@@ -19,13 +19,14 @@ import type {
   DbBooking,
   DbNegotiation,
   DbQuote,
+  QuoteWithCarrier,
   SubmitQuoteBody,
 } from './types.js'
 import { BookingError } from './types.js'
 import { assertValidQuoteTransition } from './state.js'
 import * as repo from './repository.js'
 import * as quoteRepo from './quote-repository.js'
-import * as jobs from './jobs.js'
+import * as notify from './notifications/emit.js'
 import {
   bidderOfQuote,
   isFleetAffiliatedDriver,
@@ -138,8 +139,9 @@ export async function submitQuote(
     message:    body.message ?? null,
   }, log)
 
-  // Fire-and-forget notification
-  jobs.notifyShipper(bookingId, 'NEW_QUOTE')
+  // Tell the shipper a bid landed. Queued, never sent inline — see notifications/emit.ts
+  // for why this cannot fail the bid.
+  await notify.emitQuoteReceived(booking, quote, log)
 
   return quote
 }
@@ -202,12 +204,15 @@ export async function counterQuote(
     message:    body.message ?? null,
   }, log)
 
-  // Notify the other party
-  if (actor.role === 'shipper') {
-    jobs.notifyDriver(bookingId)
-  } else {
-    jobs.notifyShipper(bookingId, 'COUNTER_OFFER')
-  }
+  // Notify the other party. `updated` (not `quote`) carries the new amount and the
+  // bumped updated_at the dedupe key is built from, so each round of a negotiation
+  // is a distinct notification rather than a duplicate of the first.
+  await notify.emitQuoteCountered(
+    booking,
+    updated,
+    actor.role === 'shipper' ? 'shipper' : 'carrier',
+    log,
+  )
 
   return updated
 }
@@ -224,6 +229,7 @@ export async function acceptQuote(
   bookingId: string,
   quoteId: string,
   actor: AuthenticatedUser,
+  log?: Logger,
 ): Promise<DbBooking> {
   if (actor.role !== 'shipper') {
     throw new BookingError('Only shippers can accept quotes', 'FORBIDDEN', 403)
@@ -260,9 +266,14 @@ export async function acceptQuote(
     throw new BookingError('Booking was already awarded — race condition', 'ALREADY_AWARDED', 409)
   }
 
-  // Fire-and-forget notifications + blockchain anchor
-  jobs.notifyDriver(bookingId)
-  jobs.anchorToBlockchain(bookingId, { event: 'AWARDED', quoteId, amount: quote.amount })
+  // Tell the winner they won, and every other live bidder that they did not. The
+  // losing side matters: a carrier who never hears back holds capacity for a load
+  // they are not getting.
+  //
+  // (The blockchain anchor that used to be called here went with jobs.ts — the
+  // hash-anchor ledger is a committed MVP cut, see CLAUDE.md, and the stub had
+  // never done anything.)
+  await notify.emitQuoteAwarded(awarded, quote, log)
 
   return awarded
 }
@@ -276,6 +287,7 @@ export async function rejectQuote(
   bookingId: string,
   quoteId: string,
   actor: AuthenticatedUser,
+  log?: Logger,
 ): Promise<DbQuote> {
   if (actor.role !== 'shipper') {
     throw new BookingError('Only shippers can reject quotes', 'FORBIDDEN', 403)
@@ -302,7 +314,7 @@ export async function rejectQuote(
     throw new BookingError('Quote could not be updated — it may have changed', 'INVALID_TRANSITION', 409)
   }
 
-  jobs.notifyDriver(bookingId)
+  await notify.emitQuoteRejected(booking, updated, log)
 
   return updated
 }
@@ -317,6 +329,7 @@ export async function withdrawQuote(
   bookingId: string,
   quoteId: string,
   actor: AuthenticatedUser,
+  log?: Logger,
 ): Promise<DbQuote> {
   if (actor.role !== 'driver' && !isFleetOwnerActor(actor)) {
     throw new BookingError('Only drivers or fleet owners can withdraw quotes', 'FORBIDDEN', 403)
@@ -339,6 +352,12 @@ export async function withdrawQuote(
     throw new BookingError('Quote could not be updated — it may have changed', 'INVALID_TRANSITION', 409)
   }
 
+  // The shipper was counting on this bid; a silent withdrawal leaves them waiting on
+  // an option that no longer exists. Booking lookup is inside the emit's own guard,
+  // so a missing booking here cannot fail the withdrawal.
+  const booking = await repo.getBookingById(bookingId)
+  if (booking) await notify.emitQuoteWithdrawn(booking, updated, log)
+
   return updated
 }
 
@@ -352,7 +371,7 @@ export async function withdrawQuote(
 export async function listQuotes(
   bookingId: string,
   actor: AuthenticatedUser,
-): Promise<DbQuote[]> {
+): Promise<QuoteWithCarrier[]> {
   const booking = await repo.getBookingById(bookingId)
   if (!booking) {
     throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)

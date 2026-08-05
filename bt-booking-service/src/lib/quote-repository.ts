@@ -45,7 +45,15 @@
 // ============================================================
 
 import { supabase } from './supabase.js'
-import type { AuthenticatedUser, DbBooking, DbNegotiation, DbQuote, QuoteStatus } from './types.js'
+import type {
+  AuthenticatedUser,
+  DbBooking,
+  DbNegotiation,
+  DbQuote,
+  QuoteCarrier,
+  QuoteStatus,
+  QuoteWithCarrier,
+} from './types.js'
 import { BookingError } from './types.js'
 import type { Bidder } from './fleet.js'
 
@@ -115,6 +123,33 @@ export async function getQuoteById(quoteId: string): Promise<DbQuote | null> {
 }
 
 // -----------------------------------------------------------
+// listLosingQuotes
+// Every OTHER quote still in play on a booking at the moment one wins —
+// i.e. the bidders who need telling they lost.
+//
+// Deliberately NOT role-scoped, unlike listQuotesForBooking: this is a
+// server-side notification lookup with no actor, and its result never reaches
+// a bidder's eyes (only their own address does). Restricted to the live
+// statuses so a bidder who already withdrew or was rejected earlier is not
+// told a second time that they lost.
+// -----------------------------------------------------------
+
+export async function listLosingQuotes(
+  bookingId: string,
+  winningQuoteId: string,
+): Promise<DbQuote[]> {
+  const { data, error } = await supabase
+    .from('quotes')
+    .select('*')
+    .eq('booking_id', bookingId)
+    .neq('id', winningQuoteId)
+    .in('status', ['submitted', 'countered'])
+
+  if (error) throw new Error(`DB list losing quotes failed: ${error.message}`)
+  return (data ?? []) as DbQuote[]
+}
+
+// -----------------------------------------------------------
 // listQuotesForBooking
 // Role-scoped: a bidder only sees its own quote (blind auction),
 // shippers and admins see all quotes for the booking. `bidder` is the
@@ -126,10 +161,10 @@ export async function listQuotesForBooking(
   bookingId: string,
   actor: AuthenticatedUser,
   bidder?: Bidder,
-): Promise<DbQuote[]> {
+): Promise<QuoteWithCarrier[]> {
   let query = supabase
     .from('quotes')
-    .select('*')
+    .select(QUOTE_WITH_CARRIER_SELECT)
     .eq('booking_id', bookingId)
     .order('submitted_at', { ascending: false })
 
@@ -146,7 +181,84 @@ export async function listQuotesForBooking(
 
   const { data, error } = await query
   if (error) throw new Error(`DB list quotes failed: ${error.message}`)
-  return (data ?? []) as DbQuote[]
+  return ((data ?? []) as unknown as QuoteCarrierRow[]).map(toQuoteWithCarrier)
+}
+
+// -----------------------------------------------------------
+// Carrier resolution for listQuotesForBooking
+//
+// One embedded read rather than a second round trip per quote. The two embeds
+// are disjoint by the quotes_exactly_one_bidder check, so exactly one of them
+// is non-null on any given row. Both FK constraints are named explicitly —
+// quotes has one FK to each table, but naming them keeps the embed from
+// silently re-resolving if another is ever added (same house style as
+// repository.ts's booking→driver join).
+// -----------------------------------------------------------
+
+const QUOTE_WITH_CARRIER_SELECT = `
+  *,
+  driver:drivers!quotes_driver_id_fkey (
+    id,
+    truck_number,
+    average_rating,
+    total_trips,
+    user:users!drivers_user_id_fkey ( full_name )
+  ),
+  fleet_owner:fleet_owners!quotes_fleet_owner_id_fkey ( id, company_name )
+`
+
+type QuoteCarrierRow = DbQuote & {
+  driver?: {
+    id: string
+    truck_number: string | null
+    // PostgREST returns numeric columns as strings ("0.00"), so these are
+    // widened here and normalised in toNumber rather than trusted as numbers.
+    average_rating: number | string | null
+    total_trips: number | string | null
+    user?: { full_name: string | null } | null
+  } | null
+  fleet_owner?: { id: string; company_name: string | null } | null
+}
+
+function toNumber(value: number | string | null | undefined): number | null {
+  if (value === null || value === undefined) return null
+  const n = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
+/**
+ * Strips the join keys off the row and folds them into one `carrier`, so the
+ * wire shape stays DbQuote + carrier and the client never has to know which of
+ * the two id columns was the populated one.
+ *
+ * Exported for the unit suite — it is the whole mapping, and it is worth
+ * pinning without a live Postgres.
+ */
+export function toQuoteWithCarrier(row: QuoteCarrierRow): QuoteWithCarrier {
+  const { driver, fleet_owner, ...quote } = row
+
+  let carrier: QuoteCarrier | null = null
+  if (fleet_owner) {
+    carrier = {
+      kind: 'fleet',
+      id: fleet_owner.id,
+      name: fleet_owner.company_name ?? null,
+      truck_number: null,
+      average_rating: null,
+      total_trips: null,
+    }
+  } else if (driver) {
+    carrier = {
+      kind: 'driver',
+      id: driver.id,
+      name: driver.user?.full_name ?? null,
+      truck_number: driver.truck_number ?? null,
+      average_rating: toNumber(driver.average_rating),
+      total_trips: toNumber(driver.total_trips),
+    }
+  }
+
+  return { ...quote, carrier }
 }
 
 // -----------------------------------------------------------

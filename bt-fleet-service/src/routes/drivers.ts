@@ -2,6 +2,8 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import {
   findDriverByPhone,
+  getAffiliationForDriver,
+  countVehiclesOwnedByDriver,
   getFleetDriverById,
   getInviteForDriver,
   hydrateDriverIdentities,
@@ -15,6 +17,7 @@ import {
 import { hasLiveAssignmentForDriver } from '../lib/assignment.js'
 import { addDriverToFleetSet, removeDriverFromFleetSet } from '../lib/redis.js'
 import { FleetError, parseOrThrow, type FleetDriverStatus } from '../lib/types.js'
+import { emitNotification } from '../lib/notify-emit.js'
 
 // -----------------------------------------------------------
 // driverRoutes — the fleet roster (mounted at /fleet/drivers).
@@ -60,6 +63,15 @@ export async function driverRoutes(app: FastifyInstance) {
     const driver = await findDriverByPhone(body.driver_phone)
     const affiliation = await inviteDriver(owner.id, driver.driver_id, req.user.userId)
 
+    // The invite is only actionable if the driver hears about it — until now it was
+    // visible ONLY to a driver who happened to open the in-app inbox.
+    emitNotification({
+      event: 'fleet_invite',
+      invite_id: affiliation.id,
+      driver_id: driver.driver_id,
+      fleet_owner_id: owner.id,
+    }, req.log)
+
     return reply.status(201).send({
       success: true,
       data: { ...affiliation, driver: { ...driver } },
@@ -87,6 +99,61 @@ export async function driverRoutes(app: FastifyInstance) {
     return reply.send({ success: true, data: invites })
   })
 
+  // GET /fleet/drivers/me/affiliation — driver-side "who am I, commercially?"
+  //
+  // The capability signal the driver app renders from. Nothing else tells it
+  // which product to show: /invites/mine returns 'pending' rows only, so an
+  // ACCEPTED affiliation is invisible there.
+  //
+  // `is_employed` — NOT `is_fleet_affiliated` — is the field clients must branch
+  // on. Affiliation alone was the wrong signal: it also caught the owner-driver
+  // whose own truck is attached to a fleet, hiding the money from the person
+  // paying that truck's EMI and taking away the load board they need to fill an
+  // empty return leg. Employment is affiliation AND owning no truck
+  // (docs/ARCHITECTURE_UNIFIED_IDENTITY.md §1.1), and it is what
+  // isEmployedDriver() in bt-booking-service enforces server-side. The two MUST
+  // agree or the app renders one product while the API allows another.
+  //
+  // is_fleet_affiliated and owns_vehicles are both still returned: the first for
+  // backward compatibility with clients not yet updated (they keep today's
+  // behaviour), the second because the app has a legitimate use for it beyond
+  // this rule — an owner-driver needs their bank account for payouts, whereas a
+  // salaried employee is paid by their fleet and does not.
+  app.get('/me/affiliation', async (req, reply) => {
+    const driver = await requireDriver(req.user)
+    const [affiliation, ownedVehicles] = await Promise.all([
+      getAffiliationForDriver(driver.id),
+      countVehiclesOwnedByDriver(driver.id),
+    ])
+    const ownsVehicles = ownedVehicles > 0
+
+    return reply.send({
+      success: true,
+      data: affiliation
+        ? {
+            is_fleet_affiliated: true,
+            is_employed:    !ownsVehicles,
+            owns_vehicles:  ownsVehicles,
+            owned_vehicle_count: ownedVehicles,
+            fleet_owner_id: affiliation.fleet_owner_id,
+            company_name:   affiliation.company_name,
+            fleet_city:     affiliation.fleet_city,
+            since:          affiliation.responded_at ?? affiliation.invited_at,
+          }
+        : {
+            is_fleet_affiliated: false,
+            // Unaffiliated is never employed, whether or not they own a truck.
+            is_employed:    false,
+            owns_vehicles:  ownsVehicles,
+            owned_vehicle_count: ownedVehicles,
+            fleet_owner_id: null,
+            company_name:   null,
+            fleet_city:     null,
+            since:          null,
+          },
+    })
+  })
+
   // POST /fleet/drivers/invites/:id/respond — driver accepts or rejects (role=driver).
   app.post('/invites/:id/respond', async (req, reply) => {
     const driver = await requireDriver(req.user)
@@ -105,6 +172,16 @@ export async function driverRoutes(app: FastifyInstance) {
     if (status === 'active') {
       await syncFleetSet(app, 'add', updated.fleet_owner_id, updated.driver_id)
     }
+
+    // The owner is waiting on this answer to plan capacity.
+    emitNotification({
+      event: 'fleet_invite_answered',
+      invite_id: updated.id,
+      driver_id: updated.driver_id,
+      fleet_owner_id: updated.fleet_owner_id,
+      response: status === 'active' ? 'accepted' : 'declined',
+    }, req.log)
+
     return reply.send({ success: true, data: updated })
   })
 
