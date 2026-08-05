@@ -372,6 +372,8 @@ export function getTripHistory(bookingId: string) {
     point_count: number
     points: { lat: number; lng: number; speed_kmh: number | null; heading: number | null; recorded_at: string }[]
   }>(`/tracking/history/${bookingId}`)
+}
+
 // ── Auction bidding ───────────────────────────────────────────
 //
 // READS come from bt-fleet-service, WRITES from bt-booking-service, and the split is
