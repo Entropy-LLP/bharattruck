@@ -175,6 +175,65 @@ export async function isFleetAffiliatedDriver(driverId: string): Promise<boolean
 }
 
 // -----------------------------------------------------------
+// driverOwnsAnyVehicle
+//
+// Does this driver own a truck outright? `vehicles.driver_id` references
+// drivers(id), and migration 0022 guarantees a vehicle has exactly one owner,
+// so a hit here means unambiguous ownership — not "is driving", not "is
+// assigned to", OWNS.
+//
+// This is the discriminator that separates a commercial partner from an
+// employee (see isEmployedDriver below). It fails CLOSED to "owns nothing" on a
+// missing relation, which preserves the pre-0022 behaviour exactly: on a
+// database without the vehicles table every affiliated driver is an employee,
+// which is what shipped before this change.
+// -----------------------------------------------------------
+
+export async function driverOwnsAnyVehicle(driverId: string): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('vehicles')
+    .select('id')
+    .eq('driver_id', driverId)
+    .limit(1)
+
+  if (error) {
+    if (isMissingRelation(error)) return false
+    throw new Error(`Vehicle ownership lookup failed: ${error.message}`)
+  }
+  return (data?.length ?? 0) > 0
+}
+
+// -----------------------------------------------------------
+// isEmployedDriver — THE gate for price-hiding and load-board removal.
+//
+// Replaces the bare isFleetAffiliatedDriver() check, which was too broad. The
+// rule is now (docs/ARCHITECTURE_UNIFIED_IDENTITY.md §1.1):
+//
+//     Commercial visibility follows ASSET OWNERSHIP, not affiliation.
+//
+// A driver is an EMPLOYEE — money hidden, no load board — only when they are
+// affiliated to a fleet AND own no truck of their own. That is the person the
+// original rule was written for: their owner bids, their owner is paid, and
+// work arrives as an assignment.
+//
+// An OWNER-DRIVER attached to a fleet is a different party entirely. They carry
+// the truck's EMI, fuel, maintenance and downtime, so they are a stakeholder in
+// what the trip earns, and hiding the money from them was simply wrong. They
+// also keep the marketplace: affiliation ADDS a source of work, it does not
+// replace self-selection. This is the Indian attached-vehicle model, which the
+// affiliation-only check could not express.
+//
+// The affiliation lookup runs FIRST and short-circuits: a solo driver never
+// reaches the vehicles query, so the common path costs exactly what it did
+// before.
+// -----------------------------------------------------------
+
+export async function isEmployedDriver(driverId: string): Promise<boolean> {
+  if (!(await isFleetAffiliatedDriver(driverId))) return false
+  return !(await driverOwnsAnyVehicle(driverId))
+}
+
+// -----------------------------------------------------------
 // hasLiveVehicleAssignment
 // A live pairing is a vehicle_assignments row that has not been released.
 // Only ever consulted for a booking that already carries fleet_owner_id, so a
