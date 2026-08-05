@@ -18,7 +18,7 @@ export type NavItem = {
  */
 export const NAV: NavItem[] = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { href: '/map',       label: 'Live Map',  icon: Map },
+  { href: '/map',       label: 'Live Fleet', icon: Map },
 
   { href: '/vehicles',  label: 'Trucks',    icon: Truck, startsGroup: true },
   { href: '/drivers',   label: 'Drivers',   icon: Users },

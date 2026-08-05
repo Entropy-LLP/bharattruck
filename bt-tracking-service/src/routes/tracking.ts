@@ -7,18 +7,36 @@ import {
   driverLocationKey,
   routeKey,
   etaKey,
+  pumpsKey,
+  historyKey,
   ROUTE_TTL_SECONDS,
   ETA_TTL_SECONDS,
+  PUMPS_TTL_SECONDS,
+  HISTORY_TTL_SECONDS,
 } from '../lib/redis.js'
 import { getOrCompute, computeAndSet } from '../lib/cache.js'
-import { computeRoute, computeEta, type ComputedRoute } from '../lib/google.js'
+import { computeRoute, computeEta, searchPetrolPumps, type ComputedRoute } from '../lib/google.js'
 import {
   getBookingForTracking,
   getBookingFleetColumns,
   getDriverByUserId,
   upsertTripRoute,
   getAlerts,
+  getLocationHistory,
+  getStoredRoute,
+  getTelemetry,
+  listGeofenceEvents,
+  getVehicleForFuel,
+  type GeofenceEventRow,
 } from '../lib/repository.js'
+import { decodePolyline, distanceToPolylineMeters, haversineMeters } from '../lib/geo.js'
+import { resolveMileage, computeFuel } from '../lib/fuel.js'
+import {
+  OFF_ROUTE_METERS,
+  IDLE_SECONDS,
+  NEAR_DROP_METERS,
+  SPEEDING_KMH,
+} from '../lib/evaluator.js'
 import {
   TrackingError,
   type AuthenticatedUser,
@@ -27,6 +45,30 @@ import {
 } from '../lib/types.js'
 
 const BookingIdParam = z.object({ bookingId: z.string().uuid() })
+
+// §3.1 §4.3 pins the default at 500 and the ceiling at 2000. A 1400 km trip at ~1 point
+// per 12 s is ~7000 breadcrumbs, so the cap is a real truncation, not a formality — the
+// response reports point_count so a caller can page with `since` when it hits the ceiling.
+const HISTORY_DEFAULT_LIMIT = 500
+
+const HistoryQuery = z.object({
+  since: z.string().datetime({ offset: true }).optional(),
+  limit: z.coerce.number().int().min(1).max(2000).default(HISTORY_DEFAULT_LIMIT),
+})
+
+const PumpsQuery = z.object({
+  // 8 is LOCKED by D-011 as the default; the cap keeps one caller from widening the Places
+  // bill for everyone.
+  limit: z.coerce.number().int().min(1).max(20).default(8),
+  radius_m: z.coerce.number().int().min(500).max(50000).default(5000),
+})
+
+const FuelQuery = z.object({
+  vehicle_class: z.enum(['SCV', 'LCV', 'MCV', 'HCV']).optional(),
+  mileage_kmpl: z.coerce.number().positive().max(50).optional(),
+  diesel_price: z.coerce.number().positive().max(1000).optional(),
+  distance_km: z.coerce.number().nonnegative().max(10000).optional(),
+})
 
 function parseBookingId(params: unknown): string {
   const parsed = BookingIdParam.safeParse(params)
@@ -218,4 +260,347 @@ export async function trackingRoutes(app: FastifyInstance) {
       },
     })
   })
+
+  // #3 GET /tracking/history/:bookingId — traveled breadcrumb trail (§3.1 §4.3).
+  //
+  // READ-ONLY on location_history (D-007). Empty is a legitimate answer — a booking whose
+  // driver has not started moving returns point_count 0, never a 404, so the map's trail
+  // layer has one code path instead of two.
+  app.get('/history/:bookingId', async (req, reply) => {
+    const bookingId = parseBookingId(req.params)
+    const booking = await loadBookingOrThrow(bookingId)
+    await assertCanAccess(booking, req.user)
+
+    const q = HistoryQuery.safeParse(req.query)
+    if (!q.success) throw new TrackingError(q.error.errors[0].message, 'VALIDATION_ERROR', 400)
+
+    // Only the unfiltered first page is cached; a `since` cursor is per-caller and would
+    // poison the shared key for everyone else on the same booking.
+    const cacheable = !q.data.since && q.data.limit === HISTORY_DEFAULT_LIMIT
+
+    const load = async () => {
+      const points = await getLocationHistory(bookingId, { since: q.data.since, limit: q.data.limit })
+      return { point_count: points.length, points }
+    }
+
+    if (!cacheable) {
+      return reply.send({ success: true, data: { booking_id: bookingId, ...(await load()), cached: false } })
+    }
+
+    const { value, cached } = await getOrCompute(historyKey(bookingId), HISTORY_TTL_SECONDS, load)
+    return reply.send({ success: true, data: { booking_id: bookingId, ...value, cached } })
+  })
+
+  // #4 GET /tracking/pumps/:bookingId — top-8 nearest petrol pumps (§3.1 §4.4, D-011).
+  //
+  // Anchored at the truck's live position, degrading to its last breadcrumb and then to the
+  // pickup point. A driver whose GPS just dropped still needs to find diesel, and pumps near
+  // the last known position beat an error page.
+  app.get('/pumps/:bookingId', async (req, reply) => {
+    const bookingId = parseBookingId(req.params)
+    const booking = await loadBookingOrThrow(bookingId)
+    await assertCanAccess(booking, req.user)
+
+    const q = PumpsQuery.safeParse(req.query)
+    if (!q.success) throw new TrackingError(q.error.errors[0].message, 'VALIDATION_ERROR', 400)
+
+    const anchor = await resolvePumpAnchor(booking)
+
+    // Cached on the ROUNDED anchor, not the booking: a truck doing 60 km/h leaves a 5 km
+    // search radius in five minutes, so a booking-keyed cache would hand back pumps well
+    // behind the driver. ~1.1 km cells at 2 decimal places, which is the right granularity
+    // for a fuel stop and still collapses a whole dhaba stop into one Places call.
+    const cell = `${anchor.point.lat.toFixed(2)},${anchor.point.lng.toFixed(2)}`
+    const key = `${pumpsKey(bookingId)}:${cell}:${q.data.limit}:${q.data.radius_m}`
+
+    const { value, cached } = await getOrCompute(key, PUMPS_TTL_SECONDS, async () => {
+      const found = await searchPetrolPumps(anchor.point, q.data.radius_m, q.data.limit)
+      return found
+        .map((p) => ({ ...p, distance_m: Math.round(haversineMeters(anchor.point, { lat: p.lat, lng: p.lng })) }))
+        .sort((a, b) => a.distance_m - b.distance_m)
+        .slice(0, q.data.limit)
+    })
+
+    return reply.send({
+      success: true,
+      data: {
+        booking_id: bookingId,
+        origin: anchor.point,
+        origin_source: anchor.source,
+        limit: q.data.limit,
+        radius_m: q.data.radius_m,
+        pump_count: value.length,
+        pumps: value,
+        cached,
+      },
+    })
+  })
+
+  // #5 GET /tracking/fuel/:bookingId — fuel + DEF estimate (§3.1 §4.5, D-009/D-015).
+  //
+  // Pure arithmetic, no Google call. Distance defaults to the cached route's planned
+  // distance; once the truck has actually driven, `basis=driven` uses real telemetry, which
+  // is the number that matches the diesel actually burned.
+  app.get('/fuel/:bookingId', async (req, reply) => {
+    const bookingId = parseBookingId(req.params)
+    const booking = await loadBookingOrThrow(bookingId)
+    await assertCanAccess(booking, req.user)
+
+    const q = FuelQuery.safeParse(req.query)
+    if (!q.success) throw new TrackingError(q.error.errors[0].message, 'VALIDATION_ERROR', 400)
+
+    const overridden: string[] = []
+    for (const k of ['distance_km', 'mileage_kmpl', 'diesel_price', 'vehicle_class'] as const) {
+      if (q.data[k] !== undefined) overridden.push(k)
+    }
+
+    const distance = await resolveFuelDistance(bookingId, q.data.distance_km)
+    const fleetCols = await getBookingFleetColumns(bookingId)
+    const vehicle = await getVehicleForFuel(fleetCols.vehicle_id)
+    const lookup = await resolveMileage(vehicle)
+
+    const estimate = computeFuel({
+      distanceKm: distance.km,
+      lookup,
+      mileageOverride: q.data.mileage_kmpl,
+      dieselPriceOverride: q.data.diesel_price,
+      overridden,
+    })
+
+    return reply.send({
+      success: true,
+      data: {
+        booking_id: bookingId,
+        vehicle_id: fleetCols.vehicle_id,
+        distance_basis: distance.basis,
+        distance_note: distance.note,
+        ...estimate,
+      },
+    })
+  })
+
+  // #6 GET /tracking/alerts/:bookingId — route alerts (§3.1 §4.6, D-012).
+  //
+  // Two halves, deliberately. `alerts` is the DURABLE log the evaluator wrote at the moment
+  // each condition crossed its threshold — the only record that survives the truck moving on.
+  // `current` is recomputed here from the live position, so a booking whose evaluator never
+  // ran (anything predating D-014) still gets a useful answer instead of an empty list.
+  app.get('/alerts/:bookingId', async (req, reply) => {
+    const bookingId = parseBookingId(req.params)
+    const booking = await loadBookingOrThrow(bookingId)
+    await assertCanAccess(booking, req.user)
+
+    const [stored, live, telemetry] = await Promise.all([
+      getAlerts(bookingId),
+      booking.driver_id ? getLiveLocation(booking.driver_id) : Promise.resolve(null),
+      getTelemetry(bookingId),
+    ])
+
+    let current: {
+      lat: number
+      lng: number
+      deviation_m: number | null
+      off_route: boolean | null
+      distance_to_drop_m: number
+      near_drop: boolean
+      idle_seconds: number | null
+      idle: boolean | null
+    } | null = null
+
+    if (live) {
+      const at = { lat: live.lat, lng: live.lng }
+      const path = await loadCachedRoutePath(bookingId)
+      const deviation = path.length > 1 ? distanceToPolylineMeters(at, path) : null
+      const toDrop = haversineMeters(at, { lat: booking.dest_lat, lng: booking.dest_lng })
+      const idleFor = telemetry?.stopped_since
+        ? Math.round((Date.now() - new Date(telemetry.stopped_since).getTime()) / 1000)
+        : null
+
+      current = {
+        lat: live.lat,
+        lng: live.lng,
+        deviation_m: deviation === null ? null : Math.round(deviation),
+        off_route: deviation === null ? null : deviation > OFF_ROUTE_METERS,
+        distance_to_drop_m: Math.round(toDrop),
+        near_drop: toDrop <= NEAR_DROP_METERS,
+        idle_seconds: idleFor,
+        idle: idleFor === null ? null : idleFor >= IDLE_SECONDS,
+      }
+    }
+
+    return reply.send({
+      success: true,
+      data: {
+        booking_id: bookingId,
+        evaluated_at: new Date().toISOString(),
+        thresholds: {
+          off_route_m: OFF_ROUTE_METERS,
+          idle_seconds: IDLE_SECONDS,
+          near_drop_m: NEAR_DROP_METERS,
+          speeding_kmh: SPEEDING_KMH,
+        },
+        current_location: current,
+        open_count: stored.filter((a) => !a.resolved_at).length,
+        alerts: stored,
+      },
+    })
+  })
+
+  // GET /tracking/summary/:bookingId — the post-trip analytics record.
+  //
+  // Not a contract endpoint: §3.1 predates trip_telemetry. Added because "planned vs actually
+  // driven" is the number a fleet owner reconciles a trip against, and it exists nowhere else
+  // — trip_routes holds the plan and location_history holds the truth, but nothing joined them.
+  app.get('/summary/:bookingId', async (req, reply) => {
+    const bookingId = parseBookingId(req.params)
+    const booking = await loadBookingOrThrow(bookingId)
+    await assertCanAccess(booking, req.user)
+
+    const [telemetry, events, planned] = await Promise.all([
+      getTelemetry(bookingId),
+      listGeofenceEvents(bookingId),
+      getStoredRoute(bookingId),
+    ])
+
+    if (!telemetry) {
+      return reply.send({
+        success: true,
+        data: {
+          booking_id: bookingId,
+          status: booking.status,
+          has_telemetry: false,
+          reason:
+            'No GPS telemetry recorded for this trip yet. Telemetry accrues once the driver starts sending location from the driver app.',
+          planned_distance_km: planned ? round1(planned.distance_m / 1000) : null,
+          geofence_events: events,
+        },
+      })
+    }
+
+    const drivenKm = telemetry.distance_m / 1000
+    const plannedKm = planned ? planned.distance_m / 1000 : null
+
+    return reply.send({
+      success: true,
+      data: {
+        booking_id: bookingId,
+        status: booking.status,
+        has_telemetry: true,
+        vehicle_id: telemetry.vehicle_id,
+        driver_id: telemetry.driver_id,
+
+        planned_distance_km: plannedKm === null ? null : round1(plannedKm),
+        driven_distance_km: round1(drivenKm),
+        // Positive = the truck drove further than the plan. The interesting cases are a long
+        // detour (a real deviation) and a large NEGATIVE gap, which usually means the trip is
+        // still in progress rather than that the truck took a shortcut.
+        deviation_km: plannedKm === null ? null : round1(drivenKm - plannedKm),
+        max_deviation_m: Math.round(telemetry.max_deviation_m),
+
+        moving_hours: round2(telemetry.moving_seconds / 3600),
+        idle_hours: round2(telemetry.idle_seconds / 3600),
+        night_hours: round2(telemetry.night_seconds / 3600),
+        // Average over MOVING time only. Including stopped time would report a Mumbai-Delhi
+        // run at ~25 km/h and make every truck look identical.
+        avg_moving_speed_kmh:
+          telemetry.moving_seconds > 0 ? round1(telemetry.speed_sum_kmh_s / telemetry.moving_seconds) : null,
+        max_speed_kmh: round1(telemetry.max_speed_kmh),
+
+        stop_count: telemetry.stop_count,
+        speeding_fixes: telemetry.speeding_count,
+        point_count: telemetry.point_count,
+        first_fix_at: telemetry.first_fix_at,
+        last_fix_at: telemetry.last_fix_at,
+
+        geofence_events: events,
+        // Time parked inside pickup/drop — the detention substrate. Sums closed stays only;
+        // an open stay has no dwell_seconds yet by design.
+        dwell_by_kind: summariseDwell(events),
+      },
+    })
+  })
+}
+
+const round1 = (n: number) => Math.round(n * 10) / 10
+const round2 = (n: number) => Math.round(n * 100) / 100
+
+function summariseDwell(events: GeofenceEventRow[]): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const e of events) {
+    if (e.event === 'exit' && e.dwell_seconds !== null) {
+      out[e.kind] = (out[e.kind] ?? 0) + e.dwell_seconds
+    }
+  }
+  return out
+}
+
+/** Cache/DB only — never a fresh Routes call, which would bill per alert poll. */
+async function loadCachedRoutePath(bookingId: string) {
+  const cached = await redis.get(routeKey(bookingId))
+  if (cached) return decodePolyline((JSON.parse(cached) as ComputedRoute).polyline)
+  const stored = await getStoredRoute(bookingId)
+  return stored ? decodePolyline(stored.polyline) : []
+}
+
+/**
+ * Where to search for pumps: live position, else the last breadcrumb, else pickup.
+ * The chosen tier is returned so the UI can say "near your last known position".
+ */
+async function resolvePumpAnchor(booking: TrackingBooking) {
+  if (booking.driver_id) {
+    const live = await getLiveLocation(booking.driver_id)
+    if (live) return { point: { lat: live.lat, lng: live.lng }, source: 'live_position' as const }
+  }
+  const recent = await getLocationHistory(booking.id, { limit: 1 })
+  if (recent.length) {
+    return { point: { lat: recent[0].lat, lng: recent[0].lng }, source: 'last_breadcrumb' as const }
+  }
+  return {
+    point: { lat: booking.source_lat, lng: booking.source_lng },
+    source: 'pickup_point' as const,
+  }
+}
+
+/**
+ * Distance for the fuel estimate, most truthful source first: an explicit override, then
+ * what the truck actually drove, then the planned route.
+ *
+ * Driven distance only wins once there is a real amount of it — a trip three fixes old has
+ * driven ~0 km, and reporting a ₹0 fuel bill for it would read as "this trip is free" rather
+ * than "this trip has barely started".
+ */
+const MIN_DRIVEN_KM_FOR_FUEL = 1
+
+async function resolveFuelDistance(
+  bookingId: string,
+  override: number | undefined,
+): Promise<{ km: number; basis: 'override' | 'driven' | 'planned' | 'unknown'; note: string }> {
+  if (override !== undefined) {
+    return { km: override, basis: 'override', note: 'Distance supplied by the caller.' }
+  }
+
+  const telemetry = await getTelemetry(bookingId)
+  const drivenKm = (telemetry?.distance_m ?? 0) / 1000
+  if (drivenKm >= MIN_DRIVEN_KM_FOR_FUEL) {
+    return {
+      km: drivenKm,
+      basis: 'driven',
+      note: 'Based on distance actually driven, measured from GPS breadcrumbs.',
+    }
+  }
+
+  const planned = await getStoredRoute(bookingId)
+  if (planned) {
+    return {
+      km: planned.distance_m / 1000,
+      basis: 'planned',
+      note: 'Based on the planned route — the truck has not driven far enough yet to measure.',
+    }
+  }
+
+  return {
+    km: 0,
+    basis: 'unknown',
+    note: 'No route has been computed for this booking yet, so distance is unknown. Open the trip map once to compute it.',
+  }
 }

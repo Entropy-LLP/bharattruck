@@ -12,6 +12,7 @@ import type {
   AuthUser, FleetOwner, Vehicle, VehicleFinance, VehiclePermit, VehicleLane,
   FleetDriver, FleetSummary, VehicleAnalytics, DriverAnalytics, FuelComparison,
   LivePosition, FleetBooking, ModelCategory, Period,
+  FleetOverview, Geofence,
   OpenAuction, FleetBid, Quote, NegotiationEntry, QuoteStatus,
 } from './types'
 
@@ -315,6 +316,62 @@ export function getDriverAnalytics(p?: Partial<Period>) {
 
 export function getFuelComparison(p?: Partial<Period>) {
   return request<FuelComparison>(`/fleet/analytics/fuel${periodQS(p)}`)
+}
+
+// ── Live fleet tracking (bt-tracking-service, via the gateway) ────────────────
+
+/**
+ * Every truck in the fleet with position, trip, telemetry, fuel and open alerts —
+ * in ONE call.
+ *
+ * Note the service: this is bt-tracking-service (`/api/tracking/...`), not
+ * bt-fleet-service's `/fleet/live`. The two are deliberately different shapes —
+ * `/fleet/live` iterates DRIVERS and so omits any truck without one, which is
+ * exactly the blind spot an owner's board must not have. Use this for the board;
+ * `/fleet/live` remains the cheap position-only feed.
+ *
+ * Cost: the service answers from one Redis MGET plus bounded Postgres reads and
+ * makes NO Google call, so a 10s poll is safe. Route and ETA stay lazy — fetch
+ * them for one selected truck, never for the whole list.
+ */
+export function getFleetOverview() {
+  return request<FleetOverview>('/tracking/fleet/overview')
+}
+
+export function listGeofences() {
+  return request<Geofence[]>('/tracking/fleet/geofences')
+}
+
+export function createGeofence(body: {
+  name: string
+  kind: Geofence['kind']
+  lat: number
+  lng: number
+  radius_m: number
+}) {
+  return request<Geofence>('/tracking/fleet/geofences', {
+    method: 'POST', body: JSON.stringify(body),
+  })
+}
+
+export function deleteGeofence(id: string) {
+  return request<{ id: string; deleted: boolean }>(`/tracking/fleet/geofences/${id}`, {
+    method: 'DELETE',
+  })
+}
+
+/** One trip's full analytics record — planned vs driven, dwell, geofence events. */
+export function getTripSummary(bookingId: string) {
+  return request<Record<string, unknown>>(`/tracking/summary/${bookingId}`)
+}
+
+/** Traveled breadcrumb trail for the replay/trail layer. */
+export function getTripHistory(bookingId: string) {
+  return request<{
+    booking_id: string
+    point_count: number
+    points: { lat: number; lng: number; speed_kmh: number | null; heading: number | null; recorded_at: string }[]
+  }>(`/tracking/history/${bookingId}`)
 }
 
 // ── Auction bidding ───────────────────────────────────────────

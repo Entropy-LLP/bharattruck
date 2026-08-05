@@ -864,7 +864,70 @@ were all confirmed together on **2026-06-18**._
   cost accepted for the MVP. Any change to the locked conventions requires a new `D-xxx` + founder
   sign-off.
 
-**Next D-number: D-014**
+**D-014 — Derived tracking state is evaluated ON INGEST, not on read**
+- **Date:** 2026-07-31 · **Status:** Accepted
+- **Context:** Every tracking surface built through Phase 4 is computed ON READ — `/route`,
+  `/eta` and `/track` all answer "where is the truck now" from caches. That model cannot express
+  an EVENT. "The truck entered the drop geofence at 14:32 and sat there 90 minutes" exists only
+  at the instant it happens; a poll ten minutes later cannot reconstruct it. Geofencing,
+  detention and alerting therefore need evaluation on every GPS fix. This is also why
+  `route_alerts` had **0 rows in production** despite existing since before the migrations
+  directory: nothing had ever been in a position to write one.
+- **Decision:** `bt-booking-service` fires a **fire-and-forget** `POST /internal/evaluate` at
+  `bt-tracking-service` after each accepted `/location/update`, from **inside the breadcrumb
+  throttle gate** so evaluation runs at the same ~1/12s cadence as the breadcrumbs it derives
+  from. `bt-tracking-service` owns all geometry and writes only DERIVED state: `trip_telemetry`,
+  `geofence_events`, `route_alerts`. Raw GPS ingestion does **not** move — §3.1 §1 and D-007 are
+  untouched, and this service still never writes `location_history`.
+- **Consequences:** Alerts gain a real lifecycle (open → resolved) deduped by a partial unique
+  index on `(booking_id, type) where resolved_at is null`, so a 12-hour off-route condition is
+  ONE row, not 3,600. A dropped emit costs only derived data — the next fix recomputes from the
+  durable telemetry row. New: migration 0019, `INTERNAL_SERVICE_SECRET` +
+  `TRACKING_SERVICE_URL` env, and `SPEEDING_LIMIT_KMH` (default **80**, MoRTH's goods-carriage
+  expressway ceiling). The speeding threshold is explicitly **NOT** a D-012 locked value — D-012
+  covers only off-route/idle/near-drop — and is expected to be re-tuned after the first drive.
+
+**D-015 — Fuel mileage comes from `vehicle_cost_norms`, superseding D-009's inferred figures**
+- **Date:** 2026-07-31 · **Status:** Accepted (supersedes the `(INFERRED — confirm)` mileage
+  values in D-009 / §3.1 §4.5; D-009's *formula* stands unchanged)
+- **Context:** D-009 tagged its mileage prefills `(INFERRED — confirm)`: MCV ≈ 6.0, HCV ≈ 3.5 kmpl.
+  Migration 0018 has since landed `vehicle_cost_norms`, seeded from the founder's own
+  `CV_Parc_Tables.xlsx`, which says MCV Cargo 15-19T is **4.98** kmpl and HCV ranges **2.54-4.03**
+  by tonnage. The inferred numbers overstate range by 30-40%, which understates fuel by thousands
+  of rupees on a single Mumbai-Delhi run — and fuel is the number a fleet owner prices a lane on.
+- **Decision:** Resolve mileage from the truck's own `model_category` + `emission_norm` against
+  `vehicle_cost_norms`, in three tiers: (1) `vehicle_norms` — exact model; (2) `vehicle_class` —
+  class average when the model is unknown; (3) `default` — 3.5 kmpl last resort. Every estimate
+  reports which tier produced it (`basis` + `basis_note`) so a class average never renders with
+  the same authority as measured data. `BS6_PH2` reads the BS6 columns; a BS4 light truck falls
+  back to BS6 because `kmpl_bs4` is legitimately NULL for LCV/ICV/SCV. **DEF is now costed too**
+  (`def_pct_*`, ~3-5.5% of the diesel spend), which D-009 omitted entirely.
+- **Consequences:** Fuel is honest per truck and degrades without ever blanking. The norms table
+  is loaded ONCE per fleet-board request and resolved in memory — a per-vehicle lookup would be
+  an N+1 across every poll. `test/fuel.test.mts` pins all three tiers.
+
+**D-016 — The fleet tracking board is VEHICLE-centric, and absent data must state its reason**
+- **Date:** 2026-07-31 · **Status:** Accepted · **Founder ask, 2026-07-31**
+- **Context:** `bt-fleet-service`'s `GET /fleet/live` iterates the fleet's DRIVER set, so a truck
+  with nobody assigned to it never appears at all — a yard of idle trucks rendered as an empty,
+  calm-looking map. For an owner that is backwards: the assets earning nothing are the ones
+  costing money. Separately, a blank cell on a logistics dashboard is worse than useless — the
+  owner cannot tell whether the driver forgot to open the app, the truck is legitimately parked,
+  or the platform is broken.
+- **Decision:** Add `GET /api/tracking/fleet/overview`, keyed on `vehicles` so **every** asset is
+  always a row, each carrying a `status` (`moving` · `idle` · `no_signal` ·
+  `assigned_not_started` · `parked` · `inactive`) **and** a `data_health.reason` written in plain
+  language for the owner. `/fleet/live` stays as the cheap position-only feed; the two are
+  deliberately different shapes. Cost rule is unchanged and still binds: ONE request per tick,
+  one Redis MGET plus bounded Postgres reads, **zero** Google calls — route and ETA stay lazy,
+  one selected truck at a time.
+- **Consequences:** The owner can distinguish "parked and fine" from "should be reporting and
+  we've lost it", and a platform-side failure to load a booking says so rather than blaming a
+  driver. Also forces the map to be non-load-bearing: `components/map-guard.tsx` keeps a Maps
+  rejection from taking the dashboard down with it (see §5.4 item 10).
+
+**Next D-number: D-020** _(D-017 and D-018 are the pinned-value rows in §3.3's playbook table —
+the D-series is a single global sequence across both logs, never two independent counters.)_
 
 ### 3.3 — SESSIONS: build playbook (phases 0-6)
 
@@ -911,18 +974,23 @@ END RITUAL:
 
 | Phase | Scope | Status | Note/date |
 |---|---|---|---|
-| 0 | GMP/GCP project + 3 APIs + 2 restricted keys + per-API quota caps (NO code) | ⛔ | — |
-| 1 | `bt-tracking-service` skeleton (Fastify, 3006, `/health`, config, Dockerfile, git+remote) + Redis + Google proxy scaffold | ⛔ | — |
-| 2 | `/route` + `/eta` with Redis caching | ⛔ | — |
-| 3 | migration 009 `location_history` + `/history` read | ⛔ | — |
-| 4 | shipper `<LiveTrackMap/>` + `GET /api/tracking/track/:bookingId` + deep-link helper | ⛔ | — |
-| 5 | driver nav view + `/pumps` + `/fuel` + `/alerts` | ⛔ | — |
-| 6 | PWA manifest + service worker + wake lock + route-replay GPS simulator + drive-test checklist | ⛔ | — |
+| 0 | GMP/GCP project + 3 APIs + 2 restricted keys + per-API quota caps (NO code) | ✅ | keys live; browser key allowlist is `https://*.run.app/*` |
+| 1 | `bt-tracking-service` skeleton (Fastify, 3006, `/health`, config, Dockerfile, git+remote) + Redis + Google proxy scaffold | ✅ | deployed, healthy |
+| 2 | `/route` + `/eta` with Redis caching | ✅ | live |
+| 3 | migration 009 `location_history` + `/history` read | ✅ | 2026-07-31 — `/history` built; write side was already live |
+| 4 | shipper `<LiveTrackMap/>` + `GET /api/tracking/track/:bookingId` + deep-link helper | ✅ | live |
+| 5 | driver nav view + `/pumps` + `/fuel` + `/alerts` | ✅ | 2026-07-31 — endpoints + driver map/insights UI, verified against live data |
+| 6 | PWA manifest + service worker + wake lock + route-replay GPS simulator + drive-test checklist | 🟡 | driver PWA + wake lock exist; simulator is `scripts/qa/drive-gps.mjs` |
 
-> Cross-check §5 (current live state) before trusting this board blindly — the tracking service and
-> shipper live map are further along in reality than this table (last synced from the source doc)
-> suggests; §5 is what's actually verified live as of the last check. Reconcile and update this table
-> next time a tracking-phase session runs.
+> **Board reconciled 2026-07-31** (it had every phase at ⛔ while most were shipped). Phase 5 closed
+> later the same day when the driver map + insights landed (D-019). Work outside the 0-6 plan also
+> shipped on 2026-07-31 — the D-014 evaluator, geofencing, trip telemetry, and the D-016 fleet
+> board; it does not belong to a phase and is tracked in §5.2 instead.
+>
+> **Stale branch warning:** `feat/driver-live-map` @ `8f5f54f` (worktree `bt-wt-frontend`) contains
+> an EARLIER, unmerged driver map. It is ~53 commits behind, its `page.tsx` hunk is pre-dark-theme
+> and would regress the driver UI, and it adds a second `NavigateButton`. It is superseded by
+> D-019 — close it rather than rebasing it.
 
 **Decisions log (D-xxx) for this playbook** — every time an `(INFERRED — confirm)` value is pinned, or
 any new call is made that §3.1 doesn't already lock, add a row here **and** edit §3.1's line.
@@ -931,7 +999,12 @@ Format: `D-xxx | date | phase | what changed | from → to`.
 | ID | Date | Phase | Decision | From → To |
 |---|---|---|---|---|
 | D-000 | 2026-06-18 | — | Base contract frozen (8 decisions, endpoint set, env keys, provider) | — |
-| _(append below as you build)_ | | | | |
+| D-014 | 2026-07-31 | 3-5 | Derived state evaluated on ingest, not on read (see §3.2) | read-time only → `POST /internal/evaluate` per fix |
+| D-015 | 2026-07-31 | 5 | Mileage pinned to `vehicle_cost_norms`; DEF costed | MCV 6.0 / HCV 3.5 *(INFERRED)* → per-model, 3-tier fallback |
+| D-016 | 2026-07-31 | — | Vehicle-centric fleet board with stated reasons for absent data | driver-keyed `/fleet/live` → vehicle-keyed `/tracking/fleet/overview` |
+| D-017 | 2026-07-31 | 3 | `/history` limits pinned | default 500 / max 2000 *(INFERRED)* → confirmed as-is |
+| D-019 | 2026-07-31 | 5 | Driver map draws own position from LOCAL GPS, never from `/track` | shipper model (poll server) → device geolocation, so it is free, instant and survives no-signal |
+| D-018 | 2026-07-31 | 5 | `/pumps` cached on the ROUNDED ANCHOR, not the booking | `trk:pumps:{id}` → `trk:pumps:{id}:{lat2dp,lng2dp}:{limit}:{radius}` — a booking-keyed cache hands a truck at 60 km/h pumps it passed 5 min ago |
 
 **Pre-seeded pin checklist** (each becomes a `D-xxx` when confirmed): TTLs (route 24h · eta 60s ·
 history 15s · pumps 120s · fuel 1h · alerts 30s · track 10s); limits (`/history` default 500/max 2000
@@ -1442,7 +1515,7 @@ Verified by direct curl **2026-07-28**:
 | `bt-pricing-service` | `bt-pricing-service-…` | ✅ 200 | env repaired 2026-07-28; constants still placeholders (Appendix D) |
 | `bt-payment-service` | `bt-payment-service-…` | ✅ 200 | env repaired 2026-07-28; `FLEET_SERVICE_URL` added |
 | `bt-cargo-ledger` | `bt-cargo-ledger-…` | ✅ 200 | `POD_OTP_PEPPER` set 2026-07-28 |
-| `bt-tracking-service` | `bt-tracking-service-…` | ✅ 200 | `/route /eta /track /health` built; `/history /pumps /fuel /alerts` NOT built (Phase 3+, §3.3) |
+| `bt-tracking-service` | `bt-tracking-service-…` | ✅ 200 | **all 8 contract endpoints built** as of 2026-07-31, plus `/summary`, `/fleet/overview`, `/fleet/geofences` and internal `/evaluate` (D-014/D-016). Needs `INTERNAL_SERVICE_SECRET` + `TRACKING_SERVICE_URL` (on booking-service) set before the evaluator runs in prod — CD never sets env (§5.3) |
 | `bt-fleet-service` | `bt-fleet-service-…` | ✅ 200 | **new** — port 3007, `/api/fleet/*` |
 | `bt-shipper` | `bt-shipper-…` | ✅ 200 | live map renders |
 | `bt-driver` | `bt-driver-…` | ✅ 200 | deep-link nav only, by design |
@@ -1466,7 +1539,27 @@ All twelve green. Re-run the sweep in §6.2 before trusting this table more than
   `PATCH /bookings/:id/complete`** (see `src/routes/bookings.ts:110`) — completion is closed ONLY by
   receiver-OTP POD or an ops force-complete, because a driver self-completing defeats POD entirely.
   `lifecycle.e2e.mts` now pins that route's *absence* in two states.
-- **Tracking**: `/track` aggregate + shipper `<LiveTrackMap/>`.
+- **Tracking**: `/track` aggregate + shipper `<LiveTrackMap/>`. **Extended 2026-07-31** with the
+  remaining four contract endpoints (`/history`, `/pumps`, `/fuel`, `/alerts`), a `/summary` trip
+  analytics record, and the D-014 on-ingest evaluator — geofence enter/exit with dwell timing,
+  off-route/idle/near-drop/speeding alerts with an open→resolved lifecycle, and a `trip_telemetry`
+  rollup (driven distance, moving/idle/night hours, stops, top speed, max deviation). Migration
+  0019 adds `geofences`, `geofence_events`, `trip_telemetry` and widens `route_alerts`.
+  End-to-end verified 2026-07-31 by replaying a synthetic drive along the real Nagpur→Delhi
+  polyline: every alert type fired and resolved, dwell was timed, telemetry accumulated.
+  **Caveat:** the evaluator is inert in prod until `TRACKING_SERVICE_URL` is set on
+  `bt-booking-service` and `INTERNAL_SERVICE_SECRET` on `bt-tracking-service` (§5.3 — CD never
+  sets env). Until then ingestion behaves exactly as before, which is the intended failure mode.
+- **Driver map + insights** (D-019, NEW): the driver app had GPS ingestion and a deep-link but
+  **no map at all**. It now renders a follow-the-truck map on the active trip, plus nearest-pump
+  search, a fuel/DEF card with an editable diesel price, and route-alert banners. The driver's own
+  position is drawn from `navigator.geolocation` LOCALLY — it never polls `/tracking/track`, since
+  round-tripping their own fix through Cloud Run costs money for worse, slower data and stops
+  working in exactly the dead zones where the map matters most.
+- **Fleet live board** (D-016, NEW): `GET /api/tracking/fleet/overview` + the rebuilt
+  `fleet/` **Live Fleet** page — every truck the owner has, not just the ones with a driver
+  attached, each with live position, current trip, telemetry, per-model fuel cost and open
+  alerts, and a stated reason whenever data is absent.
 - **POD** (`bt-cargo-ledger`): receiver-OTP, hashed + peppered, constant-time, 10-min TTL,
   `MAX_VERIFY_ATTEMPTS = 5`. SMTP delivery merged (PR #8). `POD_OTP_PEPPER` now set in prod.
 - **Cash payment** (`bt-payment-service`): idempotent settle → `paid` + payout record, outbox saga.
@@ -1688,7 +1781,21 @@ ops) to supply one.
 9. **RLS enabled but unpoliced on most tables** — not a live hole (services use `service_role`, which
    bypasses RLS) but undecided.
 10. Gateway 301-redirects `/api/bookings` (no trailing slash) to `http://` — scheme downgrade.
-11. `LiveTrackMap.tsx` degrades gracefully on a *missing* key but not an *invalid* one.
+11. **Maps failure handling — fixed in `fleet/` and `driver/`, still open in `shipper/`.**
+    The fleet console now has `fleet/src/components/map-guard.tsx`: a render
+    watchdog plus an error boundary, so a rejected key costs the map and nothing else.
+    `driver/` now carries a copy too (D-019). `shipper/src/components/maps/LiveTrackMap.tsx` is
+    the LAST one still handling only a *missing* key — **copy the guard across** (D-013: copy per
+    app, no shared package). Three things learned
+    building it, all verified 2026-07-31, all worth not rediscovering:
+    - A Maps rejection **crashed the whole React tree** ("This page couldn't load"), taking the
+      truck list with it. The list needs no Google at all; it must never depend on the map.
+    - `gm_authFailure` and console-sniffing are both **unreliable**. Under Next dev the console
+      probe never fires — Next captures a pristine `console.error` before app code loads and
+      calls that reference, bypassing any wrapper. Patching inside a `useEffect` is worse still:
+      StrictMode's double-mount makes cleanup #1 uninstall probe #2.
+    - The only dependable signal is **whether tiles actually painted** (`tilesloaded` within 8 s).
+      Every cause — bad key, quota, blocked domain, renamed error — collapses to that one state.
 12. Shipper has no PWA manifest/service worker (driver has both).
 13. Dead tables + stray PostGIS extension in the live schema.
 14. Leftover `:rootctx-test` image tags in Artifact Registry from CD verification builds.
@@ -2046,6 +2153,16 @@ submitting a quote / the auction bidding flow.
 
 Referrer allowlist on the browser key is `https://*.run.app/*`, covering both Cloud Run hostname
 styles for the apps — no referrer change needed on redeploy.
+
+> **The map will NOT render on `localhost` — this is expected, not a bug** (learned 2026-07-31).
+> That allowlist excludes `http://localhost:*`, so any local dev run gets
+> `RefererNotAllowedMapError` and a grey canvas. Do **not** "fix" it by adding localhost to the
+> production key or by pasting the unrestricted key into a local `.env` — either move weakens the
+> one control that stops a leaked browser key from being used elsewhere. Verify map-adjacent work
+> against the deployed `*.run.app` apps (§6.2), and treat localhost as the test case for the
+> **degraded** path: with `map-guard.tsx` in place the page must stay fully usable with the map
+> replaced by a "Map unavailable" panel. If a local run ever shows a working map, the key
+> restriction has been loosened and that is the actual bug.
 
 ### 6.8 Where the real secrets live (not here)
 

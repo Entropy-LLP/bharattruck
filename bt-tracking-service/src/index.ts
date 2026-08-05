@@ -2,7 +2,10 @@ import 'dotenv/config'
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
 import authPlugin from './plugins/auth.js'
+import internalAuthPlugin from './plugins/internal-auth.js'
 import { trackingRoutes } from './routes/tracking.js'
+import { fleetTrackingRoutes } from './routes/fleet.js'
+import { internalRoutes } from './routes/internal.js'
 import { TrackingError } from './lib/types.js'
 
 const app = Fastify({
@@ -28,10 +31,23 @@ async function bootstrap() {
   // Health check — no auth required
   app.get('/health', () => ({ status: 'ok', service: 'bt-tracking-service', ts: new Date().toISOString() }))
 
-  // Auth-gated routes
+  // Auth-gated routes (end-user JWT).
+  //
+  // Registration order inside the scope matters: the fleet routes go on FIRST so
+  // `/tracking/fleet/overview` is matched by its own handler. Registering them after
+  // trackingRoutes would let `/tracking/:bookingId`-shaped paths shadow them, and the
+  // failure would be a confusing 400 "Invalid bookingId" rather than a clean 404.
   await app.register(async (authedApp) => {
     await authedApp.register(authPlugin)
+    await authedApp.register(fleetTrackingRoutes, { prefix: '/tracking/fleet' })
     await authedApp.register(trackingRoutes, { prefix: '/tracking' })
+  })
+
+  // Service-to-service routes (shared secret, never exposed by the gateway). Separate
+  // scope so the JWT plugin never runs for them and vice versa.
+  await app.register(async (internalApp) => {
+    await internalApp.register(internalAuthPlugin)
+    await internalApp.register(internalRoutes, { prefix: '/internal' })
   })
 
   await app.listen({ port: Number(process.env.PORT ?? 3006), host: '0.0.0.0' })

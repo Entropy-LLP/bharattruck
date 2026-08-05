@@ -270,6 +270,142 @@ export type ModelCategory = {
   volume_cuft_typical: number | null
 }
 
+// ── Live fleet tracking (bt-tracking-service /tracking/fleet/overview) ────────
+//
+// VEHICLE-centric, unlike LivePosition above, which is driver-centric and comes from
+// bt-fleet-service's /fleet/live. That distinction is the whole point: /fleet/live starts
+// from the driver set, so a truck with no driver assigned never appears. This board starts
+// from the vehicle list, so every asset the owner has is always a row — and when a truck has
+// no position, the row explains WHY rather than vanishing.
+
+/** Why a truck looks the way it does. Drives both the pin colour and the row's copy. */
+export type VehicleStatus =
+  | 'moving'                // reporting and rolling
+  | 'idle'                  // reporting, stopped
+  | 'no_signal'             // should be reporting, is not
+  | 'assigned_not_started'  // has a trip, trip not live yet
+  | 'parked'                // no trip
+  | 'inactive'              // deactivated in the fleet
+
+export type DataHealth = {
+  level: 'ok' | 'degraded' | 'missing'
+  /** Plain-language cause, written for the owner. Always safe to render directly. */
+  reason: string
+}
+
+export type TrackedAlert = {
+  id: string
+  type: string
+  message: string | null
+  severity: 'info' | 'warning' | 'critical'
+  lat: number | null
+  lng: number | null
+  acknowledged: boolean
+  resolved_at: string | null
+  created_at: string
+  meta: Record<string, unknown>
+}
+
+export type TrackedVehicle = {
+  vehicle_id: string
+  rc_number: string | null
+  maker_model: string | null
+  model_category: string | null
+  emission_norm: string | null
+  body_type: string | null
+  capacity_tons: number | null
+  is_active: boolean
+  current_odometer_km: number | null
+  rc_expiry: string | null
+
+  status: VehicleStatus
+  status_label: string
+  data_health: DataHealth
+
+  driver: { driver_id: string; name: string | null; phone: string | null } | null
+
+  booking: {
+    booking_id: string
+    status: string
+    source_address: string | null
+    dest_address: string | null
+    pickup_date: string | null
+    destination: { lat: number; lng: number }
+  } | null
+
+  position: {
+    lat: number
+    lng: number
+    heading: number | null
+    speed_kmh: number | null
+    updated_at: string
+    age_seconds: number | null
+  } | null
+
+  trip: {
+    driven_km: number
+    moving_hours: number
+    idle_hours: number
+    night_hours: number
+    avg_moving_speed_kmh: number | null
+    max_speed_kmh: number
+    stop_count: number
+    speeding_fixes: number
+    max_deviation_m: number
+    point_count: number
+    last_fix_at: string | null
+  } | null
+
+  fuel: {
+    /** The truck's rated economy — present even when parked. */
+    mileage_kmpl: number
+    basis: 'vehicle_norms' | 'vehicle_class' | 'default'
+    basis_note: string
+    /** Null until the truck has actually driven some of this trip. */
+    trip: {
+      distance_km: number
+      litres: number
+      diesel_cost_inr: number
+      def_cost_inr: number
+      total_cost_inr: number
+    } | null
+  }
+
+  alerts: TrackedAlert[]
+}
+
+export type FleetOverview = {
+  fleet_owner_id: string
+  company_name: string
+  generated_at: string
+  summary: {
+    vehicle_count: number
+    moving: number
+    idle: number
+    no_signal: number
+    assigned_not_started: number
+    parked: number
+    inactive: number
+    on_trip: number
+    alert_count: number
+    trip_fuel_cost_inr: number
+    driven_km: number
+  }
+  vehicles: TrackedVehicle[]
+}
+
+export type Geofence = {
+  id: string
+  fleet_owner_id: string | null
+  name: string
+  kind: 'depot' | 'warehouse' | 'checkpoint' | 'custom'
+  lat: number
+  lng: number
+  radius_m: number
+  active: boolean
+  created_at: string
+  updated_at: string
+}
 // ── Auction bidding ───────────────────────────────────────────
 //
 // Reads come from bt-fleet-service (`/fleet/auctions`, `/fleet/bids`) because they are

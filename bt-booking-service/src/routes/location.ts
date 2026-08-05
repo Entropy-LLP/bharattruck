@@ -11,6 +11,7 @@ import {
 } from '../lib/redis.js'
 import { BookingError } from '../lib/types.js'
 import * as repo from '../lib/repository.js'
+import { emitLocationFix } from '../lib/tracking-emit.js'
 
 const UpdateLocationBody = z.object({
   lat:        z.number().min(-90).max(90),
@@ -137,6 +138,27 @@ export async function locationRoutes(app: FastifyInstance) {
             accuracy_m:  accuracy_m ?? null,
             recorded_at: now,
           })
+
+          // Hand the fix to bt-tracking-service's evaluator (D-014) — geofence
+          // crossings, route alerts, trip telemetry. Fired INSIDE the breadcrumb
+          // gate, not on every update, so evaluation runs at exactly the same
+          // ~1/12s cadence as the breadcrumbs it derives from: the telemetry
+          // deltas then line up 1:1 with persisted points instead of drifting
+          // ahead of them, and a driver polling faster than the throttle cannot
+          // multiply the evaluator's write load.
+          emitLocationFix(
+            {
+              booking_id,
+              driver_id:   driverId,
+              vehicle_id:  vehicleId,
+              lat,
+              lng,
+              speed_kmh:   speed_kmh ?? null,
+              heading:     heading ?? null,
+              recorded_at: now,
+            },
+            app.log,
+          )
         }
       } catch (err) {
         app.log.warn({ err, driver_id: driverId, booking_id }, 'Breadcrumb persist failed (live tracking unaffected)')
