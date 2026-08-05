@@ -17,6 +17,23 @@ import { roadDistanceKm } from '../lib/geo.js'
 // shipper sends back on booking-create so the price SHOWN == the price CHARGED (PRD 5.4).
 // The coords + cargo are persisted so booking-create can BIND the booking to exactly
 // what was priced.
+//
+// "SHOWN == CHARGED" holds for BINDING quotes (booking_type 'direct', and any caller
+// that sends no booking_type). For an ADVISORY quote — an auction — the platform has
+// no price at all: quoted_price is a benchmark and the charge is the winning carrier's
+// bid. The row is still written, because it is the record of what the shipper was
+// shown and when, which is precisely the evidence you want if the pricing posture is
+// ever questioned (INDIA_FREIGHT_COMPLIANCE.md §1.3). Read quote_kind out of
+// breakdown_json before treating a stored quoted_price as an amount owed.
+//
+// The default cuts the wrong way at production volume, so read it as a compatibility
+// shim and not as a safe fallback: booking_type is optional ONLY so that a caller
+// written before this field keeps working. Live bookings are ~94% auction, so a
+// caller that omits it does not produce a neutral row — it produces a stored
+// `quote_kind: 'binding'`, a machine-readable claim that the platform charged that
+// freight, on the exact bookings where §1.3 red line 3 says it must never claim
+// that. Any NEW caller sends its booking_type. Adding one that does not is a
+// regression even though nothing fails.
 // -----------------------------------------------------------
 
 // Request body: the booking's route + cargo. distance_km is DERIVED here, never
@@ -64,11 +81,15 @@ export async function pricingRoutes(app: FastifyInstance) {
         })
       }
 
+      // booking_type is optional and only classifies the result (advisory vs
+      // binding) — it does not touch the maths. Omitted → binding, so every
+      // caller that predates it is byte-identical. See lib/pricing.ts.
       const result = computeQuote({
         distance_km,
         vehicle_type: body.data.vehicle_type,
         load_type:    body.data.load_type,
         weight_kg:    body.data.weight_kg,
+        booking_type: body.data.booking_type,
       })
       const expiresAt = new Date(Date.now() + QUOTE_TTL_MS).toISOString()
 
