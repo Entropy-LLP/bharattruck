@@ -14,6 +14,7 @@ import {
   upsertVehicleFinance,
 } from '../lib/vehicles-repo.js'
 import { listLiveAssignments } from '../lib/assignment.js'
+import { getVehicleAvailability, istStartOfDay } from '../lib/vehicle-schedule.js'
 import { getCostNorms, listModelCategories, vehicleAgeYears } from '../lib/economics.js'
 import { assertParserAvailable, importVehiclesCsv, type BulkImportFormat } from '../lib/bulk-import.js'
 import { parseOrThrow } from '../lib/types.js'
@@ -46,17 +47,18 @@ const emissionNorm = z.enum(['BS4', 'BS6', 'BS6_PH2'])
  * `''` is coerced to null: an untouched date input in a form posts an empty string, and the
  * repo's `?? null` is nullish-coalescing, so it would otherwise pass `''` straight to a `date`.
  */
+const calendarDate = z.string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be in YYYY-MM-DD format')
+  .refine(s => {
+    const d = new Date(`${s}T00:00:00Z`)
+    // Round-trips only for a real calendar date — rejects 2026-02-30 and 2026-13-01,
+    // which the regex alone happily accepts.
+    return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s
+  }, 'Not a valid calendar date')
+
 const dateOnly = z.preprocess(
   v => (typeof v === 'string' && v.trim() === '' ? null : v),
-  z.string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be in YYYY-MM-DD format')
-    .refine(s => {
-      const d = new Date(`${s}T00:00:00Z`)
-      // Round-trips only for a real calendar date — rejects 2026-02-30 and 2026-13-01,
-      // which the regex alone happily accepts.
-      return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s
-    }, 'Not a valid calendar date')
-    .nullable(),
+  calendarDate.nullable(),
 ).nullable().optional()
 
 const CreateVehicleBody = z.object({
@@ -135,6 +137,14 @@ const LanesBody = z.object({
 )
 
 const IdParam = z.object({ id: z.string().uuid('id must be a valid UUID') })
+
+// `to` is EXCLUSIVE and optional. Omitting it asks "is this truck free from `from`
+// onwards", which is the honest answer when the owner has not committed to a
+// delivery date yet — an open-ended question, not a one-day one.
+const AvailabilityQuery = z.object({
+  from: calendarDate,
+  to: calendarDate.optional(),
+}).refine(q => !q.to || q.to > q.from, 'to must be after from')
 
 export async function vehicleRoutes(app: FastifyInstance) {
   // POST /fleet/vehicles
@@ -227,6 +237,28 @@ export async function vehicleRoutes(app: FastifyInstance) {
         current_assignment: assignment,
       },
     })
+  })
+
+  // GET /fleet/vehicles/:id/availability?from=YYYY-MM-DD[&to=YYYY-MM-DD]
+  //
+  // D-19's read side: the owner asks BEFORE choosing a truck, so a clash shows up in
+  // the truck picker rather than as a 409 after they have already told the shipper
+  // which truck is coming. Answers from the truck's whole calendar, not this fleet's
+  // slice of it — a driver affiliated to two fleets (D-8) makes commitments this
+  // fleet cannot see, and reporting "free" on the strength of not seeing them is the
+  // exact failure the decision exists to prevent.
+  app.get('/:id/availability', async (req, reply) => {
+    const owner = await requireFleetOwner(req.user)
+    const params = parseOrThrow(IdParam, req.params)
+    const query = parseOrThrow(AvailabilityQuery, req.query)
+    // Tenancy first: this must not become a way to probe another fleet's calendar.
+    const vehicle = await requireFleetVehicle(owner.id, params.id)
+
+    const window = {
+      start: istStartOfDay(query.from),
+      end: query.to ? istStartOfDay(query.to) : null,
+    }
+    return reply.send({ success: true, data: await getVehicleAvailability(vehicle.id, window) })
   })
 
   // PATCH /fleet/vehicles/:id

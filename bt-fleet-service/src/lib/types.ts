@@ -129,6 +129,10 @@ export type VehicleAssignmentRow = {
   assigned_by: string
   assigned_at: string
   released_at: string | null
+  // The truck's committed window (migration 0024, D-19). Both NULL on rows written
+  // before 0024 and on bookings with no usable pickup_date — UNKNOWN, not "free".
+  window_start: string | null
+  window_end: string | null
   created_at: string
 }
 
