@@ -55,6 +55,42 @@ confirmation falls back to email.
 **Why it can't be rushed:** DLT template approval takes days to weeks and cannot start until the
 entity is registered. **This is the longest-lead item on the list — start it first.**
 
+**What DLT registration produces** (all three are needed before an operator carries a message):
+a **principal entity id** for the company; a **registered sender header** (the 6-character id the SMS
+appears from, e.g. `BHTRUK`); and one or more **pre-approved templates** — exact message text with
+variable slots. Text that does not match an approved template is rejected, and a run of rejections is
+what gets a header suspended. It is filed against the company's legal identity (GSTIN, authorised
+signatory, letterhead), so it needs the founder, not a code change.
+
+**The seam that is already built (D-14, 2026-08-03).** `bt-auth-service/src/lib/sms.ts` is the only
+way a phone OTP leaves the service. One `SmsProvider`, resolved once at boot:
+
+- **`ConsoleSmsProvider` — the default**, and what runs on every environment today. It prints the
+  same two lines this service printed before the seam existed, so nothing about the pilot changes.
+- **`Msg91SmsProvider`** — a real MSG91 flow-API call, **unreachable without env vars**.
+
+**The switch.** Live SMS is opt-in *and* all-or-nothing — `SMS_PROVIDER` must select a provider and
+every credential it needs must be non-empty, or the service logs one warning at boot and stays on the
+console. A half-filled config must not take phone login down, and must not fire a send the operator
+will reject anyway:
+
+| Env var | Source | Required |
+|---|---|---|
+| `SMS_PROVIDER=msg91` | ours — the opt-in | yes |
+| `MSG91_AUTH_KEY` | MSG91 dashboard | yes |
+| `MSG91_SENDER_ID` | **DLT** — the registered header | yes |
+| `MSG91_TEMPLATE_ID` | **DLT** — a *pre-approved* template | yes |
+| `MSG91_TEMPLATE_VAR` | **DLT** — variable name in that template (default `otp`) | no |
+| `MSG91_DLT_TE_ID` | **DLT** — template entity id, when the operator wants it echoed | no |
+| `MSG91_BASE_URL`, `SMS_TIMEOUT_MS` | ours — overrides | no |
+
+Documented in `bt-auth-service/.env.example`; pinned by `bt-auth-service/test/sms-provider.e2e.mts`.
+
+**When it clears:** set the vars on the `bt-auth-service` Cloud Run service and redeploy. No code
+change, no migration. Confirm the boot line reads `[sms] provider=msg91` rather than the
+`SMS_PROVIDER is unset` warning — that line is the difference between codes being delivered and codes
+being logged.
+
 ---
 
 ## 🟠 Blocking completion
