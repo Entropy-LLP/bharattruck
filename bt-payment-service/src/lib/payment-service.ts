@@ -1,5 +1,5 @@
 import type { BookingClient } from './booking-client.js'
-import type { PaymentStore, PaymentMode, PayoutPayee, PayoutRecord } from './payment-store.js'
+import type { PaymentStore, PaymentMode, PayoutPayee, PayoutRecord, PayoutKey } from './payment-store.js'
 import { PaymentError } from './errors.js'
 import { emitTripEconomics } from './fleet-emit.js'
 import type { AuthenticatedUser } from '../plugins/auth.js'
@@ -119,6 +119,57 @@ export function resolvePayees(
   return []
 }
 
+// planPayoutWrites — turn "these are the payees" into "do exactly this to the
+// booking's payout rows". Pure, so the reconciliation is testable without a
+// database and without a settlement.
+//
+// The bug this exists to kill: settle() used to UPSERT only the rows it had
+// just computed, which silently assumed the computed set could never SHRINK.
+// It can. The saga (onTripCompleted) pre-creates a 'pending' row for the
+// bidder; a share of 100 then resolves to the driver alone, so nothing ever
+// overwrites the owner's stale pending row. The booking ends up holding payout
+// rows that sum to TWICE the settlement, and the back-compat `payout` wire
+// field — the number the shipper app renders — hands back the stale 'pending'
+// row. Reconciling the FULL set is the only thing that closes that: a payee
+// who no longer has a share loses their row.
+//
+// Deleting rather than zeroing is deliberate and matches resolvePayees, which
+// drops a zero-share payee instead of writing a ₹0 row: a payout row asserts
+// "this party is owed this money for this trip", and for a dropped payee that
+// assertion is simply false. Nothing has been disbursed — the pilot is
+// record-only (D-12) — so there is no transfer to reverse, only a wrong claim
+// to withdraw.
+//
+// Idempotent by construction: it is a function of (what is there, what should
+// be there), so replaying it once everything matches yields an empty plan.
+export type PayoutPlan = {
+  insert: PayoutRecord[]
+  update: PayoutRecord[]
+  remove: PayoutKey[]
+  /** Whether an UPDATE/DELETE may filter on payee_type (migration 0016). See PayoutKey. */
+  keyByPayeeType: boolean
+}
+
+export function planPayoutWrites(bookingId: string, existing: PayoutRecord[], desired: PayoutRecord[]): PayoutPlan {
+  // Which addressing the live table supports, read off the rows themselves
+  // rather than guessed: getPayouts() selects '*', so a row carrying a
+  // `payee_type` key proves migration 0016 has landed. With no rows there is
+  // nothing to address — every desired row is an INSERT — so the value is moot.
+  const keyByPayeeType = existing.some((r) => 'payee_type' in r)
+  // A pre-0016 row predates the column and IS the driver's, which is what the
+  // column's own DEFAULT says too.
+  const typeOf = (r: PayoutRecord) => r.payee_type ?? 'driver'
+
+  return {
+    keyByPayeeType,
+    insert: desired.filter((d) => !existing.some((e) => typeOf(e) === d.payee_type)),
+    update: desired.filter((d) => existing.some((e) => typeOf(e) === d.payee_type)),
+    remove: existing
+      .filter((e) => !desired.some((d) => d.payee_type === typeOf(e)))
+      .map((e) => ({ bookingId, payeeType: typeOf(e), keyByPayeeType })),
+  }
+}
+
 export async function settle(args: SettleArgs, actor: AuthenticatedUser, bearer: string, deps: PaymentDeps) {
   // Only ops/admin or the paying shipper may record a settlement; never a driver.
   if (actor.role !== 'admin' && actor.role !== 'shipper') {
@@ -203,31 +254,54 @@ export async function settle(args: SettleArgs, actor: AuthenticatedUser, bearer:
       throw new PaymentError('Booking has no payee (neither a driver nor a fleet owner)', 'INVALID_STATE', 409)
     }
 
-    // ORDER MATTERS: payout FIRST, payment second.
+    const desired: PayoutRecord[] = payees.map((payee) => ({
+      booking_id: args.bookingId,
+      ...payee,
+      mode: args.mode,
+      status: 'recorded' as const,
+      recorded_by: actor.userId,
+    }))
+
+    // ORDER MATTERS: payouts FIRST, payment second.
     //
     // `existing` (the payments row) is what short-circuits this whole block on a
-    // retry. If the payment were written first and the payout write then failed,
+    // retry. If the payment were written first and a payout write then failed,
     // the retry would find `existing` non-null, skip the block entirely, flip the
     // booking to 'paid' and return 200 — leaving the payee's payout row missing
-    // forever, recoverable only by hand. Writing the payout first inverts that:
-    // a failure here leaves NO payments row, so the retry re-runs both writes.
-    // upsertPayout is idempotent on (booking_id, payee_type), so the replay is safe.
+    // forever, recoverable only by hand. Writing the payouts first inverts that:
+    // a failure here leaves NO payments row, so the retry re-runs every write.
     //
     // A split writes the payees one row at a time and is therefore not atomic
-    // ACROSS them — which the same inversion covers: a crash between the two
-    // still leaves no payments row, so the retry re-upserts BOTH onto the rows
-    // it already wrote. That is precisely why the uniqueness anchor had to move
-    // to (booking_id, payee_type) in 0023 and not merely be dropped; under a
-    // weaker anchor this loop is what would double-pay on retry.
-    for (const payee of payees) {
-      await deps.store.upsertPayout({
-        booking_id: args.bookingId,
-        ...payee,
-        mode: args.mode,
-        status: 'recorded',
-        recorded_by: actor.userId,
-      })
-    }
+    // ACROSS them — which the same inversion covers, because the plan below is a
+    // function of what is currently in the table: a crash halfway leaves no
+    // payments row, and the retry re-plans against the rows it already wrote and
+    // finishes the job. That, plus UNIQUE(booking_id, payee_type) from 0023
+    // catching a concurrent writer, is what stops a replay from double-paying.
+    const plan = planPayoutWrites(args.bookingId, await deps.store.getPayouts(args.bookingId), desired)
+
+    for (const row of plan.update) await deps.store.updatePayout(row, plan.keyByPayeeType)
+
+    // The reconciliation itself: a party this settlement does not pay must not
+    // keep a row from a previous, differently-shaped attempt (a share
+    // renegotiated to 100 between the saga's pre-create and settlement, or
+    // between a crashed settle and its retry).
+    //
+    // DELETES BEFORE INSERTS, so that the number of rows never transiently
+    // EXCEEDS what the booking ends up with. On a schema that still carries
+    // migration 011's UNIQUE(booking_id) — which this service must settle
+    // against, since deploy.yml ships it on merge and 0023 is applied by hand
+    // afterwards — inserting the new payee while the old one is still there
+    // would trip that constraint on a settlement the table can perfectly well
+    // hold (one payee, just a different one than last time).
+    //
+    // The window this opens, where a booking momentarily has no payout row, is
+    // not observable as a settled trip: the payments row is still unwritten and
+    // the booking is still 'completed', so a crash inside it reads as an
+    // unfinished settlement, which is what it is, and the retry re-plans against
+    // whatever survived and finishes.
+    for (const key of plan.remove) await deps.store.deletePayout(key)
+    for (const row of plan.insert) await deps.store.insertPayout(row)
+
     await deps.store.insertPayment({
       booking_id: args.bookingId,
       amount: args.amount,
@@ -303,13 +377,17 @@ export async function onTripCompleted(
   deps: PaymentDeps,
 ) {
   // No D-7 share here on purpose — the pre-created row is the BIDDER's, exactly
-  // as before splits existed. Two reasons. The amount is provisional anyway (it
-  // is the trip's price, and ops may settle a different figure), so a split of
-  // it would be a provisional split of a provisional number. And a pre-created
-  // driver row that settle() then decides against — because the owner changed
-  // the share between completion and payment — would be orphaned at 'pending'
-  // forever, since settle() upserts rather than reconciles. Passing 0 keeps
-  // this path emitting exactly one row, which settle() always overwrites.
+  // as before splits existed. The amount is provisional (it is the trip's price;
+  // ops may settle a different figure) and the share is read at settlement, not
+  // at completion, so splitting here would be a provisional split of a
+  // provisional number against a term that may still change.
+  //
+  // Passing 0 keeps this path emitting exactly one row. That row is NOT assumed
+  // to be one settle() will keep: settle() reconciles the booking's whole payout
+  // set against the payees it resolves, so a bidder row that turns out to be
+  // owed nothing (share = 100 hands the freight to the driver) is removed rather
+  // than stranded at 'pending'. Getting that wrong is what let a booking hold
+  // rows summing to twice the settlement.
   const [payee] = resolvePayees(args, args.amount, 0)
   if (!payee) {
     // Nothing to pre-create — settle() resolves the payee from the booking

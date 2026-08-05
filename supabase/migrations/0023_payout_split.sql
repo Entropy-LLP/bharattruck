@@ -19,14 +19,24 @@
 --   UNIQUE(booking_id, payee_type) is not weaker: `payee_type` is NOT NULL with a default and is
 --   confined by 0016's CHECK to ('driver','fleet_owner'), so the pair still admits at most one row
 --   per party per booking — which is precisely the invariant that matters once a booking can
---   legitimately pay two parties. A replayed settle re-upserts onto both rows and changes nothing.
+--   legitimately pay two parties. A replayed settle re-writes both rows and changes nothing.
 --
--- DEPLOY ORDER — THIS MIGRATION MUST LAND BEFORE THE SERVICE:
---   bt-payment-service upserts with ON CONFLICT (booking_id, payee_type). Against a pre-0023
---   schema that inference has no matching constraint and Postgres raises 42P10, so the payout
---   write — the FIRST write — fails and settle() 500s with nothing recorded. That is the safe
---   failure direction (a settlement that errors and can be retried, never money recorded wrong),
---   but it IS an outage for the settle path, so apply this before rolling the service.
+-- NO DEPLOY ORDERING — THE SERVICE DOES NOT DEPEND ON THIS HAVING BEEN APPLIED:
+--   Migrations here are applied BY HAND, while .github/workflows/deploy.yml path-filters
+--   bt-payment-service on `bt-payment-service/**` and auto-deploys it on merge. Anything the
+--   service needed this file for first would be an outage of unbounded length between the two.
+--   So it needs nothing: payout writes are read-then-INSERT-or-UPDATE and name no ON CONFLICT
+--   arbiter, which is what a pre-0023 schema would reject (42P10 on the FIRST write of every
+--   settlement). The same service code settles correctly on both schemas; the only thing a
+--   pre-0023 table cannot do is hold the SECOND row of a D-7 split, and its own surviving
+--   UNIQUE(booking_id) refuses that write outright (23505, nothing recorded, retriable) instead
+--   of letting one payee overwrite the other. Splits also require 0022's revenue_share_pct, so
+--   on a schema older than that every settlement resolves to a single payee and this file is
+--   not yet load-bearing at all.
+--
+--   What the constraint below IS load-bearing for is concurrency: two settles racing on the same
+--   booking both read "no row" and both INSERT, and this is what turns the loser into a 23505
+--   rather than a duplicate payout row.
 --
 -- ADDITIVE FOR EVERY LIVE ROW: all 620 seeded affiliations carry revenue_share_pct = 0 (salaried),
 -- which resolves to a single fleet_owner payee — byte-identical to today. Nothing here rewrites,
@@ -91,9 +101,8 @@ $$;
 -- ---------------------------------------------------------------
 -- (2) the new anchor: one payout per PARTY per booking.
 --
--- A named constraint (not a bare index) because PostgREST's `on_conflict=booking_id,payee_type`
--- resolves against the inferred unique arbiter, and a constraint is what the next person greps for
--- when they ask "what stops a double payout?".
+-- A named constraint (not a bare index) because a constraint is what the next person greps for
+-- when they ask "what stops a double payout?", and the name is what a 23505 puts in the log line.
 --
 -- `payee_type` is NOT NULL DEFAULT 'driver' since 0016, so every pre-existing row already has a
 -- value and this constraint is satisfiable without a backfill. It is added VALID (no NOT VALID
@@ -109,7 +118,8 @@ alter table public.payouts
 comment on constraint payouts_one_per_payee on public.payouts is
   'Idempotency anchor for the settle path: at most one payout per party per booking. Replaces '
   'UNIQUE(booking_id), which could not express the D-7 fleet/driver revenue split. A retried '
-  'settlement re-upserts onto these same rows instead of creating a second one.';
+  'settlement re-writes these same rows instead of creating a second one; a CONCURRENT one is '
+  'stopped here, with a 23505 rather than a duplicate payout.';
 
 -- The old UNIQUE(booking_id) also served every "what did this booking pay out?" lookup. The new
 -- composite constraint's index is usable for that (booking_id is its leading column), so

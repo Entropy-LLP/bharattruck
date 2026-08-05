@@ -31,13 +31,18 @@ const B9 = '99999999-9999-4999-8999-999999999999' // completed — ops override 
 const BA = 'aaaaaaa1-aaaa-4aaa-8aaa-aaaaaaaaaaa1' // completed — FLEET, driver on a 30% split
 const BB = 'bbbbbbb1-bbbb-4bbb-8bbb-bbbbbbbbbbb1' // completed — FLEET, 33.33% (rounding remainder)
 const BC = 'ccccccc1-cccc-4ccc-8ccc-ccccccccccc1' // completed — FLEET, split settle that crashes once
+const BD = 'ddddddd1-dddd-4ddd-8ddd-ddddddddddd1' // completed — FLEET, share = 100 after a saga pre-create
+const BE = 'eeeeeee1-eeee-4eee-8eee-eeeeeeeeeee1' // completed — solo, settled on the PRE-0023 schema
+const BF = 'fffffff1-ffff-4fff-8fff-fffffffffff1' // completed — FLEET split attempted on the PRE-0023 schema
 const D1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const D2 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab' // fleet driver on a 30% revenue share
 const D3 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaac' // fleet driver on 33.33% — the awkward one
+const D4 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaad' // fleet driver on 100% — the owner keeps nothing
 const F1 = 'ffffffff-ffff-4fff-8fff-ffffffffffff' // fleet_owners.id (NOT a users.id)
 const U1 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' // driver user
 const U2 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbc' // fleet-driver user (D2)
 const U3 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbd' // fleet-driver user (D3)
+const U4 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbe' // fleet-driver user (D4)
 const S1 = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' // shipper (owner) user
 const OTHER = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd' // shipper (non-owner)
 const ADMIN = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
@@ -62,8 +67,15 @@ const bstore: Record<string, Row[]> = {
     { id: BA, driver_id: D2, fleet_owner_id: F1, shipper_id: S1, status: 'completed', quoted_price: 6000, final_price: 6000 },
     { id: BB, driver_id: D3, fleet_owner_id: F1, shipper_id: S1, status: 'completed', quoted_price: 5001, final_price: 5001 },
     { id: BC, driver_id: D2, fleet_owner_id: F1, shipper_id: S1, status: 'completed', quoted_price: 6000, final_price: 6000 },
+    // share = 100: the settlement pays the DRIVER alone, so the fleet_owner row
+    // the saga pre-created at completion is a payee this settlement does not pay.
+    { id: BD, driver_id: D4, fleet_owner_id: F1, shipper_id: S1, status: 'completed', quoted_price: 6000, final_price: 6000 },
+    // Pre-0023 schema targets: a solo settlement (100% of live traffic) and a
+    // split the old UNIQUE(booking_id) physically cannot store.
+    { id: BE, driver_id: D1, shipper_id: S1, status: 'completed', quoted_price: 5000, final_price: 5000 },
+    { id: BF, driver_id: D2, fleet_owner_id: F1, shipper_id: S1, status: 'completed', quoted_price: 6000, final_price: 6000 },
   ],
-  drivers: [{ id: D1, user_id: U1 }, { id: D2, user_id: U2 }, { id: D3, user_id: U3 }],
+  drivers: [{ id: D1, user_id: U1 }, { id: D2, user_id: U2 }, { id: D3, user_id: U3 }, { id: D4, user_id: U4 }],
 }
 
 // fleet_drivers as bt-payment-service reads it (migration 0022, column added by
@@ -73,6 +85,7 @@ const affiliations: Row[] = [
   { fleet_owner_id: F1, driver_id: D1, status: 'active', revenue_share_pct: 0 },
   { fleet_owner_id: F1, driver_id: D2, status: 'active', revenue_share_pct: 30 },
   { fleet_owner_id: F1, driver_id: D3, status: 'active', revenue_share_pct: 33.33 },
+  { fleet_owner_id: F1, driver_id: D4, status: 'active', revenue_share_pct: 100 },
 ]
 class FakeQuery {
   private f: Array<['eq' | 'in', string, any]> = []
@@ -103,8 +116,19 @@ const fakeSupabase = { from: (t: string) => new FakeQuery(t) }
 // this fake on booking_id alone would make the duplicate-on-retry bug invisible
 // here (the second row would silently overwrite the first) while it happily
 // wrote two rows in production.
-const payoutKey = (r: Row) => `${r.booking_id}|${r.payee_type}`
+//
+// The two schema states this fake can wear, flipped independently because they
+// come from different migrations and production really does sit in each:
+//   uniqueOnBookingIdOnly — pre-0023: migration 011's UNIQUE(booking_id) still
+//     stands, so the table holds at most ONE payout per booking. deploy.yml
+//     ships this service on merge and 0023 is applied by hand afterwards, so
+//     every settlement has to keep working across that window.
+//   hidePayeeType — pre-0016: the column does not exist, so it is absent from
+//     the row objects PostgREST returns and cannot be named in a filter.
+const payoutKey = (r: Row) => `${r.booking_id}|${r.payee_type ?? 'driver'}`
 const P = { payments: new Map<string, Row>(), payouts: new Map<string, Row>() }
+let uniqueOnBookingIdOnly = false
+let hidePayeeType = false
 // Set a booking id here to make the NEXT insertPayment for it blow up once —
 // the crash that the payout-before-payment ordering exists to survive.
 const crashPaymentInsertOnce = new Set<string>()
@@ -115,8 +139,40 @@ const fakeStore = {
     if (P.payments.has(r.booking_id)) throw new Error('dup payment')
     P.payments.set(r.booking_id, { ...r })
   },
-  async getPayouts(b: string) { return [...P.payouts.values()].filter(r => r.booking_id === b) },
-  async upsertPayout(r: Row) { P.payouts.set(payoutKey(r), { ...r }) },
+  async getPayouts(b: string) {
+    const rows = [...P.payouts.values()].filter(r => r.booking_id === b)
+    // Pre-0016 rows have no payee_type COLUMN, so the key is absent from the
+    // object — which is exactly the signal planPayoutWrites reads to decide
+    // whether it may filter on it. Deleting the key rather than nulling it is
+    // the point: `'payee_type' in row` must be false.
+    return hidePayeeType ? rows.map(({ payee_type, fleet_owner_id, ...rest }) => rest) : rows
+  },
+  async insertPayout(r: Row) {
+    // The pre-0023 table's own UNIQUE(booking_id) — the thing that refuses the
+    // second row of a split rather than letting it overwrite the first.
+    const clash = uniqueOnBookingIdOnly
+      ? [...P.payouts.values()].some(x => x.booking_id === r.booking_id)
+      : P.payouts.has(payoutKey(r))
+    if (clash) throw new Error(`payouts insert hit a unique violation for booking ${r.booking_id}`)
+    P.payouts.set(payoutKey(r), { ...r })
+  },
+  async updatePayout(r: Row, keyByPayeeType: boolean) {
+    // Mirrors the real UPDATE ... WHERE booking_id [AND payee_type]: without
+    // payee_type the filter matches every row of the booking, which on the
+    // pre-0016 schema is at most one.
+    for (const [k, row] of P.payouts) {
+      if (row.booking_id !== r.booking_id) continue
+      if (keyByPayeeType && (row.payee_type ?? 'driver') !== r.payee_type) continue
+      P.payouts.set(k, { ...r })
+    }
+  },
+  async deletePayout(key: { bookingId: string; payeeType: string; keyByPayeeType: boolean }) {
+    for (const [k, row] of [...P.payouts]) {
+      if (row.booking_id !== key.bookingId) continue
+      if (key.keyByPayeeType && (row.payee_type ?? 'driver') !== key.payeeType) continue
+      P.payouts.delete(k)
+    }
+  },
   async insertPendingPayoutIfAbsent(r: Row) { if (!P.payouts.has(payoutKey(r))) P.payouts.set(payoutKey(r), { ...r }) },
   async getDriverRevenueSharePct(fleetOwnerId: string, driverId: string) {
     const rows = affiliations.filter(a => a.fleet_owner_id === fleetOwnerId && a.driver_id === driverId)
@@ -126,8 +182,11 @@ const fakeStore = {
 
 // "The payout" stopped being a question with one answer, so every check below
 // names the payee it means.
+// `?? 'driver'` because a pre-0016 row carries no payee_type at all and IS the
+// driver's — the same reading the service does, so the legacy-schema checks
+// below are asserting against the row the service actually sees.
 const payoutOf = async (b: string, type: 'driver' | 'fleet_owner' = 'driver') =>
-  (await fakeStore.getPayouts(b)).find(r => r.payee_type === type) ?? null
+  (await fakeStore.getPayouts(b)).find(r => (r.payee_type ?? 'driver') === type) ?? null
 // Compared in whole paise on purpose: `payouts.amount` is numeric(12,2), so
 // paise IS the ledger's precision, and float addition of two 2-decimal rupee
 // values is not guaranteed to land on the third exactly.
@@ -323,6 +382,105 @@ async function main() {
   r = await settle({ booking_id: BC, amount: 6000, mode: 'cash' }, tok(S1, 'shipper'))
   check('third settle short-circuits already_settled', r.statusCode === 200 && r.json().data?.already_settled === true, JSON.stringify(r.json().data?.already_settled))
   check('still exactly two payout rows after the third settle', (await fakeStore.getPayouts(BC)).length === 2, JSON.stringify(await fakeStore.getPayouts(BC)))
+
+  console.log('\n── D-7 share = 100: settle RECONCILES, it does not just overwrite ──')
+  // Reproduced defect: the saga pre-creates a 'pending' fleet_owner payout at
+  // completion, then the settlement resolves to the DRIVER alone (share 100
+  // drops the owner's ₹0 row). Upserting only the computed rows left the owner's
+  // stale pending row untouched, so the booking held rows summing to 12000 on a
+  // 6000 settlement — and `payout`, the field the shipper app renders, returned
+  // the stale 'pending' one.
+  r = await payApp.inject({
+    method: 'POST', url: '/internal/trip-completed',
+    headers: { 'x-internal-secret': SECRET }, payload: { booking_id: BD, driver_id: D4, fleet_owner_id: F1, amount: 6000 },
+  })
+  check('saga pre-created the owner row at completion', (await payoutOf(BD, 'fleet_owner'))?.status === 'pending', JSON.stringify(await payoutOf(BD, 'fleet_owner')))
+  r = await settle({ booking_id: BD, amount: 6000, mode: 'upi', reference: 'UTR-100' }, tok(S1, 'shipper'))
+  check('settle share=100 booking 200 paid', r.statusCode === 200 && bStatus(BD) === 'paid', `(got ${r.statusCode}/${bStatus(BD)})`)
+  const reconciled = await fakeStore.getPayouts(BD)
+  check('the owner row this settlement does not pay is GONE', !(await payoutOf(BD, 'fleet_owner')), JSON.stringify(await payoutOf(BD, 'fleet_owner')))
+  check('exactly one payout row survives', reconciled.length === 1, JSON.stringify(reconciled))
+  check('payout rows sum to the settlement, not to twice it', reconciled.reduce((s, p) => s + paise(p.amount), 0) === paise(6000), JSON.stringify(reconciled))
+  check('the surviving row is the driver, recorded (no stale pending)', (await payoutOf(BD, 'driver'))?.status === 'recorded' && (await payoutOf(BD, 'driver'))?.driver_id === D4, JSON.stringify(await payoutOf(BD, 'driver')))
+  check('back-compat `payout` is not the stale pending row', r.json().data?.payout?.status === 'recorded' && r.json().data?.payout?.payee_type === 'driver', JSON.stringify(r.json().data?.payout))
+  // Reconciliation must be a no-op once it has converged, or a heal retry would
+  // start deleting and re-inserting rows on every call.
+  r = await settle({ booking_id: BD, amount: 6000, mode: 'upi', reference: 'UTR-100' }, tok(S1, 'shipper'))
+  check('re-settling a reconciled booking changes nothing', r.statusCode === 200 && (await fakeStore.getPayouts(BD)).length === 1, JSON.stringify(await fakeStore.getPayouts(BD)))
+
+  console.log('\n── the reconciliation plan, without a database ──')
+  const { planPayoutWrites } = await import('../src/lib/payment-service.js')
+  const ownerRow = { booking_id: 'b', payee_type: 'fleet_owner', driver_id: null, fleet_owner_id: F1, amount: 6000, mode: null, status: 'pending', recorded_by: null } as any
+  const driverRow = { booking_id: 'b', payee_type: 'driver', driver_id: D4, fleet_owner_id: null, amount: 6000, mode: 'upi', status: 'recorded', recorded_by: S1 } as any
+  {
+    const plan = planPayoutWrites('b', [ownerRow], [driverRow])
+    check('a payee that lost its share is planned for REMOVAL', plan.remove.length === 1 && plan.remove[0].payeeType === 'fleet_owner', JSON.stringify(plan.remove))
+    check('the new payee is planned as an INSERT, not an update', plan.insert.length === 1 && plan.update.length === 0, JSON.stringify(plan))
+  }
+  {
+    const plan = planPayoutWrites('b', [driverRow], [driverRow])
+    check('an already-correct row is an UPDATE and nothing is removed', plan.update.length === 1 && plan.insert.length === 0 && plan.remove.length === 0, JSON.stringify(plan))
+  }
+  {
+    // A pre-0016 row carries no payee_type key at all. It IS the driver's (that
+    // is the column's own default), and nothing may filter on a column the table
+    // does not have — so the plan must neither orphan it nor key on payee_type.
+    const { payee_type, fleet_owner_id, ...pre0016 } = driverRow
+    const plan = planPayoutWrites('b', [pre0016 as any], [driverRow])
+    check('a pre-0016 row is matched as the driver, not orphaned', plan.update.length === 1 && plan.remove.length === 0, JSON.stringify(plan))
+    check('pre-0016 addressing does not filter on payee_type', plan.keyByPayeeType === false, JSON.stringify(plan.keyByPayeeType))
+  }
+  check('post-0016 addressing filters on payee_type', planPayoutWrites('b', [driverRow], [driverRow]).keyByPayeeType === true, '')
+
+  console.log('\n── PRE-0023 schema: the settle path must still work ──')
+  // Migrations here are applied BY HAND; deploy.yml auto-deploys this service on
+  // merge. So production passes through "new service, old schema", and on it the
+  // old UNIQUE(booking_id) still stands and rows carry no payee_type. Inferring
+  // ON CONFLICT (booking_id, payee_type) made Postgres raise 42P10 on the FIRST
+  // write, so EVERY settlement 500'd for as long as that window lasted.
+  uniqueOnBookingIdOnly = true
+  hidePayeeType = true
+  r = await settle({ booking_id: BE, amount: 5000, mode: 'cash', reference: 'UTR-LEGACY' }, tok(S1, 'shipper'))
+  check('solo settle on a pre-0023 schema 200 paid', r.statusCode === 200 && bStatus(BE) === 'paid', `(got ${r.statusCode}/${bStatus(BE)})`)
+  check('pre-0023 settle recorded the payment', (await fakeStore.getPayment(BE))?.amount === 5000, JSON.stringify(await fakeStore.getPayment(BE)))
+  check('pre-0023 settle wrote exactly one payout for the full amount', (await fakeStore.getPayouts(BE)).length === 1 && (await payoutOf(BE))?.amount === 5000, JSON.stringify(await fakeStore.getPayouts(BE)))
+  r = await settle({ booking_id: BE, amount: 5000, mode: 'cash', reference: 'UTR-LEGACY' }, tok(S1, 'shipper'))
+  check('pre-0023 double-settle still idempotent', r.statusCode === 200 && (await fakeStore.getPayouts(BE)).length === 1, JSON.stringify(await fakeStore.getPayouts(BE)))
+  // 0016 applied, 0023 not — the state the hand-migration ordering actually
+  // produces. The saga left a fleet_owner row; share = 100 replaces it with a
+  // driver row. ONE row in, one row out, so the old UNIQUE(booking_id) can hold
+  // the result perfectly well — but only if the stale row goes before the new
+  // one arrives. Inserting first would trip the constraint on a settlement the
+  // table was always able to store.
+  hidePayeeType = false
+  // Rewind BD to just-completed so the same booking can be replayed against the
+  // older schema; only its own rows are touched.
+  bstore.bookings.find(b => b.id === BD)!.status = 'completed'
+  P.payments.delete(BD)
+  for (const [k, row] of [...P.payouts]) if (row.booking_id === BD) P.payouts.delete(k)
+  await payApp.inject({
+    method: 'POST', url: '/internal/trip-completed',
+    headers: { 'x-internal-secret': SECRET }, payload: { booking_id: BD, driver_id: D4, fleet_owner_id: F1, amount: 6000 },
+  })
+  r = await settle({ booking_id: BD, amount: 6000, mode: 'upi' }, tok(S1, 'shipper'))
+  check('pre-0023 reconciliation swaps one payee for another and settles', r.statusCode === 200 && bStatus(BD) === 'paid', `(got ${r.statusCode}/${bStatus(BD)})`)
+  check('pre-0023 swap left exactly the driver row', (await fakeStore.getPayouts(BD)).length === 1 && (await payoutOf(BD, 'driver'))?.amount === 6000, JSON.stringify(await fakeStore.getPayouts(BD)))
+
+  // The one thing a pre-0023 table genuinely cannot hold. It must REFUSE, loudly
+  // and with nothing recorded — never let the second payee overwrite the first,
+  // which would silently pay one party and drop the other.
+  r = await settle({ booking_id: BF, amount: 6000, mode: 'cash' }, tok(S1, 'shipper'))
+  check('a SPLIT on a pre-0023 schema is refused, not half-paid', r.statusCode === 500, `(got ${r.statusCode})`)
+  check('refused split recorded no payment (retriable once 0023 lands)', !(await fakeStore.getPayment(BF)), '')
+  check('refused split left the booking completed, not paid', bStatus(BF) === 'completed', `(got ${bStatus(BF)})`)
+  check('refused split never wrote a driver row over the owner row', (await fakeStore.getPayouts(BF)).length <= 1, JSON.stringify(await fakeStore.getPayouts(BF)))
+  // Apply the migration under a running service — no restart, no redeploy — and
+  // the same settle now completes. That is the coupling being gone, not documented.
+  uniqueOnBookingIdOnly = false
+  r = await settle({ booking_id: BF, amount: 6000, mode: 'cash' }, tok(S1, 'shipper'))
+  check('the SAME settle succeeds once 0023 is applied, no redeploy', r.statusCode === 200 && bStatus(BF) === 'paid', `(got ${r.statusCode}/${bStatus(BF)})`)
+  const healed = await fakeStore.getPayouts(BF)
+  check('post-migration retry holds exactly two rows summing to the settlement', healed.length === 2 && healed.reduce((s, p) => s + paise(p.amount), 0) === paise(6000), JSON.stringify(healed))
 
   console.log('\n── trip-economics roll-up (best-effort, fleet only) ──')
   for (let i = 0; i < 40 && !economicsHits.includes(B6); i++) await new Promise(res => setTimeout(res, 50))

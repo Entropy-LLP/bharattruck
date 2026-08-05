@@ -5,9 +5,25 @@ import { getSupabase } from './supabase.js'
 // 011). Injected as a dependency so it is faked in tests. Unlike the
 // best-effort breadcrumb/POD writes, money writes are HARD: a failure
 // must surface (never silently "succeed"), so settle() lets store
-// errors propagate. Idempotency is anchored on the payouts uniqueness
-// constraint — UNIQUE(booking_id, payee_type) since migration 0023,
-// because a fleet booking with a D-7 revenue split pays TWO parties.
+// errors propagate.
+//
+// Payout writes are READ-THEN-INSERT-OR-UPDATE, never ON CONFLICT.
+// PostgREST's `on_conflict=` has to name a real unique constraint, so an
+// upsert inferring on (booking_id, payee_type) raises 42P10 against any
+// schema where migration 0023 has not been applied yet — and migrations in
+// this project are applied BY HAND while .github/workflows/deploy.yml
+// auto-deploys this service on any bt-payment-service/** change. Inferring
+// would therefore make EVERY settlement 500 between the merge and the
+// migration. Deciding insert-vs-update from the rows we already have to read
+// (settle() reconciles the payee set anyway) removes that coupling outright:
+// the same code runs unchanged on the pre-0023 and post-0023 schema.
+//
+// The uniqueness constraint is still the real guard, it is just no longer the
+// thing the QUERY depends on: two racing settles both read "no row" and both
+// INSERT, and the constraint turns the loser into a 23505 rather than a second
+// payout row. That surfaces as a 500 with no payments row written, so the
+// retry re-reads and takes the UPDATE branch. Losing the race is a retry;
+// losing the constraint would be a double payout.
 // -----------------------------------------------------------
 
 export type PaymentMode = 'cash' | 'upi' | 'direct'
@@ -44,10 +60,13 @@ export type PayoutRecord = PayoutPayee & {
   recorded_by: string | null
 }
 
-// The conflict target every payout write arbitrates on. Named once so the
-// upsert path and migration 0023 cannot drift apart silently — the whole
-// no-double-payout guarantee is this string agreeing with that constraint.
-const PAYOUT_CONFLICT_TARGET = 'booking_id,payee_type'
+// 23505 — unique_violation. On `payouts` it means one of exactly two things,
+// and the message says both because they need very different responses:
+// another settle raced us onto the same (booking_id, payee_type) row (retry
+// heals it), or the table still carries migration 011's UNIQUE(booking_id) and
+// physically cannot hold the second row of a D-7 split (apply 0023). Never
+// swallowed on the settle path — a swallowed one is a payee silently unpaid.
+const UNIQUE_VIOLATION = '23505'
 
 // Postgres/PostgREST codes that mean "this schema predates the column/table",
 // as opposed to "the query failed". Only the former may be swallowed: a
@@ -56,13 +75,30 @@ const PAYOUT_CONFLICT_TARGET = 'booking_id,payee_type'
 // that we silently read as 0 would quietly pay a split driver nothing.
 const SCHEMA_ABSENT_CODES = new Set(['42703', '42P01', 'PGRST204', 'PGRST205'])
 
+// PAYEE-ROW ADDRESSING — how a single payout row is named in a WHERE clause.
+//
+// `payee_type` arrives in migration 0016 and cannot be referenced before it:
+// PostgREST rejects a filter on a column the table does not have (42703). But
+// on a POST-0016 table booking_id alone addresses BOTH rows of a split, so
+// filtering on it alone would update or delete the wrong payee.
+//
+// So the caller passes which addressing the live table supports, and it is not
+// a guess: settle() reads the booking's payouts with select('*') first, and a
+// returned row that carries a `payee_type` key IS the proof that the column
+// exists. Deriving it from the data avoids a schema probe and cannot drift.
+export type PayoutKey = { bookingId: string; payeeType: PayoutPayee['payee_type']; keyByPayeeType: boolean }
+
 export interface PaymentStore {
   getPayment(bookingId: string): Promise<PaymentRecord | null>
   insertPayment(row: PaymentRecord): Promise<void>
   /** Every payee on this booking. 0..2 rows: the bidder, plus the D-7 split driver. */
   getPayouts(bookingId: string): Promise<PayoutRecord[]>
-  /** settle path — upsert to a 'recorded' payout (on conflict booking_id, payee_type). */
-  upsertPayout(row: PayoutRecord): Promise<void>
+  /** settle path — a payee that has no row yet. Raises on 23505 (see UNIQUE_VIOLATION). */
+  insertPayout(row: PayoutRecord): Promise<void>
+  /** settle path — overwrite the row this payee already has (amount, mode, status, recorder). */
+  updatePayout(row: PayoutRecord, keyByPayeeType: boolean): Promise<void>
+  /** settle path — drop the row of a payee this settlement does not pay. */
+  deletePayout(key: PayoutKey): Promise<void>
   /** saga path — create a 'pending' payout only if none exists yet. */
   insertPendingPayoutIfAbsent(row: PayoutRecord): Promise<void>
   /** D-7 — the driver's cut of a fleet-won trip, 0..100. 0 (salaried) when unset. */
@@ -83,8 +119,9 @@ export interface PaymentStore {
 // cannot exist without that migration — so it sends both columns.
 //
 // The D-7 split's DRIVER row rides the same branch and stays correct there:
-// `payouts.payee_type` defaults to 'driver', so the omitted column arrives as
-// exactly the value ON CONFLICT (booking_id, payee_type) needs to arbitrate on.
+// `payouts.payee_type` defaults to 'driver', so the omitted column lands as
+// exactly the value `payouts_one_per_payee` and every later read needs it to be
+// — including the reconciliation read that decides insert vs update vs delete.
 export function wirePayout(row: PayoutRecord): Record<string, unknown> {
   const { payee_type, fleet_owner_id, ...base } = row
   return payee_type === 'fleet_owner' ? { ...base, payee_type, fleet_owner_id } : base
@@ -111,16 +148,49 @@ export class SupabasePaymentStore implements PaymentStore {
     return (data as PayoutRecord[]) ?? []
   }
 
-  async upsertPayout(row: PayoutRecord): Promise<void> {
-    const { error } = await getSupabase().from('payouts').upsert(wirePayout(row), { onConflict: PAYOUT_CONFLICT_TARGET })
-    if (error) throw new Error(`payouts upsert failed: ${error.message}`)
+  async insertPayout(row: PayoutRecord): Promise<void> {
+    const { error } = await getSupabase().from('payouts').insert(wirePayout(row))
+    if (!error) return
+    if ((error as { code?: string }).code === UNIQUE_VIOLATION) {
+      // Spelled out because the two causes are indistinguishable from the code
+      // alone and the operator response is opposite: wait-and-retry vs apply a
+      // migration. Whoever reads this in a log should not have to guess.
+      throw new Error(
+        `payouts insert hit a unique violation for booking ${row.booking_id} payee ${row.payee_type}: ` +
+        'either a concurrent settle already wrote this payee (retry heals it), or public.payouts still ' +
+        'carries migration 011\'s UNIQUE(booking_id) and cannot hold the second row of a D-7 split ' +
+        `(apply supabase/migrations/0023_payout_split.sql). Underlying: ${error.message}`,
+      )
+    }
+    throw new Error(`payouts insert failed: ${error.message}`)
   }
 
+  async updatePayout(row: PayoutRecord, keyByPayeeType: boolean): Promise<void> {
+    let q = getSupabase().from('payouts').update(wirePayout(row)).eq('booking_id', row.booking_id)
+    if (keyByPayeeType) q = q.eq('payee_type', row.payee_type)
+    const { error } = await q
+    if (error) throw new Error(`payouts update failed: ${error.message}`)
+  }
+
+  async deletePayout(key: PayoutKey): Promise<void> {
+    let q = getSupabase().from('payouts').delete().eq('booking_id', key.bookingId)
+    if (key.keyByPayeeType) q = q.eq('payee_type', key.payeeType)
+    const { error } = await q
+    if (error) throw new Error(`payouts delete failed: ${error.message}`)
+  }
+
+  // saga path — "create it if it is not there". Read-then-insert for the same
+  // reason as the settle path (no ON CONFLICT inference, so no 0023 coupling),
+  // but a 23505 IS swallowed here, unlike on the settle path: losing the race
+  // means somebody else created the very row this call wanted to exist, which
+  // is success. This row is provisional and settle() reconciles it either way.
   async insertPendingPayoutIfAbsent(row: PayoutRecord): Promise<void> {
-    const { error } = await getSupabase()
-      .from('payouts')
-      .upsert(wirePayout(row), { onConflict: PAYOUT_CONFLICT_TARGET, ignoreDuplicates: true })
-    if (error) throw new Error(`payouts pending-insert failed: ${error.message}`)
+    const existing = await this.getPayouts(row.booking_id)
+    if (existing.some((r) => (r.payee_type ?? 'driver') === row.payee_type)) return
+
+    const { error } = await getSupabase().from('payouts').insert(wirePayout(row))
+    if (!error || (error as { code?: string }).code === UNIQUE_VIOLATION) return
+    throw new Error(`payouts pending-insert failed: ${error.message}`)
   }
 
   // D-7 — the driver's share of a fleet-won trip, read off the AFFILIATION
