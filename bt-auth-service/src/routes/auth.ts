@@ -8,6 +8,7 @@ import { randomInt } from 'node:crypto'
 import type { JwtPayload } from '../lib/authenticate.js'
 import { authenticate } from '../lib/authenticate.js'
 import { consume, isLockedOut, recordFailure, clearFailures, envInt } from '../lib/rate-limit.js'
+import { getSmsProvider } from '../lib/sms.js'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -383,12 +384,19 @@ export async function authRoutes(app: FastifyInstance) {
     const otp = randomOtp()
     await app.redis.set(`phone_otp:${phone}`, otp, 'EX', OTP_TTL_S)
 
-    if (process.env.OTP_DEV_MODE === 'true' || process.env.NODE_ENV === 'development') {
-      console.log(`[DEV] Phone OTP for +91${phone}: ${otp}`)
-    } else {
-      // Production: integrate Twilio or MSG91 here
-      // await sendSms(phone, otp)
-      console.log(`[WARN] No SMS provider configured — OTP for ${phone}: ${otp}`)
+    // One seam for every phone OTP (D-14). Console until TRAI DLT registration
+    // clears, real SMS the moment the env vars exist — see lib/sms.ts. Stored in
+    // Redis BEFORE the send so a provider that accepts the message but answers
+    // slowly cannot leave a delivered code with nothing to verify it against.
+    try {
+      await getSmsProvider().sendOtp(phone, otp)
+    } catch (err) {
+      // The rate-limit attempt above is deliberately NOT refunded: a provider
+      // outage is exactly when a retry loop would hammer both the provider and
+      // this service. The code stays in Redis and its TTL keeps running, so a
+      // send that actually did go out despite the error still verifies.
+      app.log.error({ err, phone }, 'phone OTP send failed — no code was delivered')
+      return reply.status(502).send({ success: false, error: 'Could not send the code right now. Try again shortly.' })
     }
 
     return reply.send({ success: true, data: { message: 'OTP sent', expires_in: OTP_TTL_S } })
