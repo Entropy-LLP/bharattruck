@@ -29,7 +29,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
   const { id } = use(params)
   const router = useRouter()
   const { affiliation, isReady: affiliationReady } = useFleetAffiliation()
-  const isFleetDriver = affiliation.is_fleet_affiliated
+  const isFleetDriver = affiliation.is_employed
   const [booking, setBooking] = useState<Booking | null>(null)
   const [myQuote, setMyQuote] = useState<Quote | null>(null)
   const [history, setHistory] = useState<NegotiationEntry[]>([])

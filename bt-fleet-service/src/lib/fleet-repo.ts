@@ -362,6 +362,27 @@ export async function listPendingInvitesForDriver(
   }))
 }
 
+// countVehiclesOwnedByDriver — trucks this driver owns OUTRIGHT.
+//
+// `vehicles.driver_id` references drivers(id), and migration 0022's
+// vehicles_single_owner CHECK guarantees a truck has exactly one owner, so a hit
+// here is unambiguous ownership — not "is driving", not "is assigned to", OWNS.
+//
+// This is the discriminator that separates a commercial partner from an
+// employee. It is the fleet-service twin of driverOwnsAnyVehicle() in
+// bt-booking-service/src/lib/fleet.ts, and the two MUST agree: if they drift,
+// the app renders one product while the API enforces the other, which is the
+// exact class of bug the affiliation signal was added to fix.
+export async function countVehiclesOwnedByDriver(driverId: string): Promise<number> {
+  const supabase = getSupabase()
+  const { count, error } = await supabase
+    .from('vehicles')
+    .select('id', { count: 'exact', head: true })
+    .eq('driver_id', driverId)
+  if (error) throw new Error(`vehicles count failed: ${error.message}`)
+  return count ?? 0
+}
+
 // getAffiliationForDriver — the driver-side "who do I drive for?" lookup.
 //
 // This is the signal the driver app needs to know WHICH product it is: an
