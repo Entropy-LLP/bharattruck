@@ -14,6 +14,7 @@ import {
   upsertVehicleFinance,
 } from '../lib/vehicles-repo.js'
 import { listLiveAssignments } from '../lib/assignment.js'
+import { getVehicleAvailability } from '../lib/vehicle-schedule.js'
 import { getCostNorms, listModelCategories, vehicleAgeYears } from '../lib/economics.js'
 import { assertParserAvailable, importVehiclesCsv, type BulkImportFormat } from '../lib/bulk-import.js'
 import { parseOrThrow } from '../lib/types.js'
@@ -227,6 +228,27 @@ export async function vehicleRoutes(app: FastifyInstance) {
         current_assignment: assignment,
       },
     })
+  })
+
+  // GET /fleet/vehicles/:id/availability
+  //
+  // D-19's read side: the owner asks BEFORE choosing a truck, so "this one is out
+  // until the 13th" shows up in the picker rather than as a 409 after they have
+  // already told the shipper which truck is coming.
+  //
+  // NO DATE RANGE, DELIBERATELY. The tempting signature is ?from=&to= — "is this
+  // truck free 20-25 Aug". It is not offered because assignment is gated by
+  // vehicle_assignments_one_live_per_vehicle, which refuses a second live assignment
+  // on ANY dates: answering "free 20-25 Aug" for a truck that is out today would be
+  // a promise POST /fleet/bookings/:id/assign is guaranteed to break every time. The
+  // two endpoints answer the same question or this one does not ship.
+  app.get('/:id/availability', async (req, reply) => {
+    const owner = await requireFleetOwner(req.user)
+    const params = parseOrThrow(IdParam, req.params)
+    // Tenancy first: this must not become a way to probe another fleet's trucks.
+    const vehicle = await requireFleetVehicle(owner.id, params.id)
+
+    return reply.send({ success: true, data: await getVehicleAvailability(vehicle.id) })
   })
 
   // PATCH /fleet/vehicles/:id

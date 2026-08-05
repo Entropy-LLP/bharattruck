@@ -4,7 +4,7 @@ import { assertFleetAssignmentReady, assertValidTransition } from './state.js'
 import * as repo from './repository.js'
 import {
   hasLiveVehicleAssignment,
-  isFleetAffiliatedDriver,
+  isEmployedDriver,
   stripCommercialFields,
   type PriceMasked,
 } from './fleet.js'
@@ -156,23 +156,28 @@ export async function createBooking(
 // drivers.id (NOT the JWT's users.id) is what bookings.driver_id references, so
 // this lookup is the only way to ask "is this booking mine?".
 //
-// PRICE HIDING (founder Q16) is the rule the affiliation flag gates — the one
-// rule in this slice that reaches into an EXISTING driver payload, so it stays
-// gated as narrowly as possible. A driver employed by a fleet is not the
-// commercial party on the trip: their owner bid and their owner gets paid, so
-// they must not see quoted_price, final_price or min_acceptable. A SOLO driver
-// IS the commercial party and their payload must stay exactly as it is today —
-// which is why the mask is applied only behind an explicit, positive
-// isFleetAffiliatedDriver() answer (active affiliation only). A non-driver
+// PRICE HIDING (founder Q16) is the rule this flag gates — the one rule in this
+// slice that reaches into an EXISTING driver payload, so it stays gated as
+// narrowly as possible. A driver EMPLOYED by a fleet is not the commercial
+// party on the trip: their owner bid and their owner gets paid, so they must
+// not see quoted_price, final_price or min_acceptable.
+//
+// "Employed" is now affiliation AND owning no truck, not affiliation alone
+// (docs/ARCHITECTURE_UNIFIED_IDENTITY.md §1.1). The old check masked the money
+// from an owner-driver whose truck is attached to a fleet, and took away their
+// load board — but they carry that truck's EMI, fuel and downtime, so they are
+// a stakeholder in what the trip earns, not staff.
+//
+// Everything else still resolves to the untouched solo payload: a non-driver
 // role, no drivers row, no affiliation row, or a database without the fleet
-// tables all resolve to "solo" and return the untouched booking.
+// tables.
 // -----------------------------------------------------------
 
 async function resolveDriverScope(actor: AuthenticatedUser): Promise<repo.DriverListScope | null> {
   if (actor.role !== 'driver') return null
   const driverRow = await repo.getDriverByUserId(actor.userId)
   if (!driverRow) return null
-  return { driverId: driverRow.id, fleetAffiliated: await isFleetAffiliatedDriver(driverRow.id) }
+  return { driverId: driverRow.id, employed: await isEmployedDriver(driverRow.id) }
 }
 
 // -----------------------------------------------------------
@@ -212,7 +217,10 @@ export async function getBooking(
   const driverRow = await repo.getDriverByUserId(actor.userId)
   const assignedToMe = !!driverRow && booking.driver_id === driverRow.id
 
-  if (driverRow && (await isFleetAffiliatedDriver(driverRow.id))) {
+  // Employed = affiliated AND owns no truck. An owner-driver attached to a fleet
+  // falls through to the solo path below: they keep the open load board and they
+  // keep the money, because the truck's cost sits with them.
+  if (driverRow && (await isEmployedDriver(driverRow.id))) {
     if (!assignedToMe) {
       throw new BookingError(`Booking ${id} not found`, 'NOT_FOUND', 404)
     }
@@ -239,7 +247,7 @@ export async function getBooking(
 export async function listBookings(actor: AuthenticatedUser): Promise<PriceMasked<DbBooking>[]> {
   const scope = await resolveDriverScope(actor)
   const bookings = await repo.listBookings(actor, scope ?? undefined)
-  return scope?.fleetAffiliated ? bookings.map(stripCommercialFields) : bookings
+  return scope?.employed ? bookings.map(stripCommercialFields) : bookings
 }
 
 // -----------------------------------------------------------
@@ -270,9 +278,14 @@ export async function acceptBooking(
   }
 
   // Self-accepting an open booking IS load-board self-selection, so it is
-  // closed to a fleet-employed driver for the same reason bidding is (Q14):
-  // their work is assigned by their owner. Solo drivers are unaffected.
-  if (await isFleetAffiliatedDriver(driverRow.id)) {
+  // closed to a fleet-EMPLOYED driver for the same reason bidding is (Q14):
+  // their work is assigned by their owner.
+  //
+  // An owner-driver attached to a fleet is NOT closed out. They own the truck,
+  // so self-selecting work with it is exactly what they are entitled to do —
+  // the fleet is one source of work for them, not the only one. Solo drivers
+  // are unaffected either way.
+  if (await isEmployedDriver(driverRow.id)) {
     throw new BookingError(
       'You drive for a fleet — your fleet owner takes loads and assigns them to you',
       'FORBIDDEN',

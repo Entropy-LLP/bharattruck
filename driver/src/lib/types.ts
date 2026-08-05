@@ -227,17 +227,37 @@ export interface FleetInvite {
 /**
  * `GET /fleet/drivers/me/affiliation` — which product this driver is using.
  *
- * This decides what the app IS, not just how it looks. An affiliated driver
- * does not bid: their owner wins the load and assigns it to them (founder Q14),
- * so `/available` lists assigned trips rather than a load board and the booking
- * screen must never offer a quote form. A solo driver gets
- * `is_fleet_affiliated:false` and the unchanged marketplace.
+ * This decides what the app IS, not just how it looks. An EMPLOYED driver does
+ * not bid: their owner wins the load and assigns it to them (founder Q14), so
+ * `/available` lists assigned trips rather than a load board and the booking
+ * screen must never offer a quote form.
  *
  * `FleetInvite` cannot answer this — that endpoint returns `status='pending'`
  * rows only, so an ACCEPTED affiliation is invisible in it.
  */
 export interface FleetAffiliation {
+  /**
+   * Does this driver drive for a fleet at all? Kept for display ("you drive for
+   * Shree Balaji Roadlines") — but do NOT branch the product on it. See
+   * `is_employed`.
+   */
   is_fleet_affiliated: boolean
+  /**
+   * THE product switch. True only when the driver is affiliated AND owns no
+   * truck — a salaried employee whose work is assigned to them.
+   *
+   * Affiliation alone was the wrong signal. It also caught the owner-driver
+   * whose own truck is attached to a fleet, which hid the money from the person
+   * paying that truck's EMI and took away the load board they need to fill an
+   * empty return leg their fleet has no load for. Ownership, not affiliation,
+   * decides (docs/ARCHITECTURE_UNIFIED_IDENTITY.md §1.1) — and
+   * `isEmployedDriver()` in bt-booking-service enforces exactly this rule
+   * server-side, so branching on anything else makes the UI disagree with the API.
+   */
+  is_employed: boolean
+  /** Owns at least one truck outright. An owner-driver is a commercial partner. */
+  owns_vehicles: boolean
+  owned_vehicle_count: number
   fleet_owner_id: string | null
   company_name: string | null
   fleet_city: string | null

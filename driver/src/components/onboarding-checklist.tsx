@@ -77,7 +77,7 @@ export default function OnboardingChecklistCard() {
   // a missing bank account does not block THEIR money, and telling them it does
   // would be a false alarm. The step still shows, because a driver who later
   // leaves the fleet needs it, but it is not flagged as urgent.
-  const bankBlocksPay = !affiliation.is_fleet_affiliated
+  const bankBlocksPay = !affiliation.is_employed
 
   const done = (k: keyof OnboardingChecklist) => checklist?.[k] === true
   const completed = STEPS.filter(s => done(s.key)).length

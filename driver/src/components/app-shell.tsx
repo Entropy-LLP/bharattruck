@@ -90,7 +90,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [inviteCount, setInviteCount] = useState(0)
   const [onboardingIncomplete, setOnboardingIncomplete] = useState(false)
 
-  const navItems = affiliation.is_fleet_affiliated
+  const navItems = affiliation.is_employed
     ? [TRIPS_ITEM, ...TAIL_ITEMS]
     : [BROWSE_ITEM, QUOTES_ITEM, ...TAIL_ITEMS]
 

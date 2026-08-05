@@ -18,7 +18,7 @@ import Spinner from '@/components/spinner'
 // driver their assigned job was a load to go and bid on.
 export default function AvailablePage() {
   const { affiliation } = useFleetAffiliation()
-  const isFleetDriver = affiliation.is_fleet_affiliated
+  const isFleetDriver = affiliation.is_employed
   const [bookings, setBookings] = useState<Booking[]>([])
   const [loading, setLoading] = useState(true)
   const router = useRouter()

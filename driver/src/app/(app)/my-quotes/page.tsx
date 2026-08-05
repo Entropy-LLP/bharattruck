@@ -17,7 +17,7 @@ interface QuoteWithBooking {
 
 export default function MyQuotesPage() {
   const { affiliation } = useFleetAffiliation()
-  const isFleetDriver = affiliation.is_fleet_affiliated
+  const isFleetDriver = affiliation.is_employed
   const [items, setItems] = useState<QuoteWithBooking[]>([])
   const [loading, setLoading] = useState(true)
   const router = useRouter()
