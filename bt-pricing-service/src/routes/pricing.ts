@@ -17,6 +17,14 @@ import { roadDistanceKm } from '../lib/geo.js'
 // shipper sends back on booking-create so the price SHOWN == the price CHARGED (PRD 5.4).
 // The coords + cargo are persisted so booking-create can BIND the booking to exactly
 // what was priced.
+//
+// "SHOWN == CHARGED" holds for BINDING quotes (instant/direct, and any caller that
+// sends no booking_type). For an ADVISORY quote — an auction — the platform has no
+// price at all: quoted_price is a benchmark and the charge is the winning carrier's
+// bid. The row is still written, because it is the record of what the shipper was
+// shown and when, which is precisely the evidence you want if the pricing posture is
+// ever questioned (INDIA_FREIGHT_COMPLIANCE.md §1.3). Read quote_kind out of
+// breakdown_json before treating a stored quoted_price as an amount owed.
 // -----------------------------------------------------------
 
 // Request body: the booking's route + cargo. distance_km is DERIVED here, never
@@ -64,11 +72,15 @@ export async function pricingRoutes(app: FastifyInstance) {
         })
       }
 
+      // booking_type is optional and only classifies the result (advisory vs
+      // binding) — it does not touch the maths. Omitted → binding, so every
+      // caller that predates it is byte-identical. See lib/pricing.ts.
       const result = computeQuote({
         distance_km,
         vehicle_type: body.data.vehicle_type,
         load_type:    body.data.load_type,
         weight_kg:    body.data.weight_kg,
+        booking_type: body.data.booking_type,
       })
       const expiresAt = new Date(Date.now() + QUOTE_TTL_MS).toISOString()
 

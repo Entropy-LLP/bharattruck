@@ -65,11 +65,59 @@ export function ratePerKm(vehicleType: string): number {
 export const LOAD_MULT: Record<string, number>   = { general: 1.0, fragile: 1.2, perishable: 1.15, hazardous: 1.5, heavy_machinery: 1.3 }
 export const PLATFORM_RATE = 0.10
 
+// -----------------------------------------------------------
+// ADVISORY vs BINDING — what the number MEANS (D-11).
+//
+// On an auction the platform does not have a price. The shipper is shown a
+// benchmark; the charge is the winning carrier's bid. Until now the response
+// said nothing about which of those it was, so the distinction lived only in the
+// shipper form's local `bookingType` state — the server asserted a price and the
+// client decided, on its own, whether to believe it. Nothing in the persisted
+// price_quotes row recorded the difference, so a row read back later could not
+// answer "was this quote the charge, or a reference?".
+//
+// This is not only a product decision. Under Indian GST, a platform that SETS
+// the freight price drifts toward being a "goods transport agency" — a tax and
+// cargo-liability characterisation, not a labelling exercise. Price DISCOVERY
+// (a benchmark derived from an operating-cost model) is safe; price SETTING is
+// the exposure. See INDIA_FREIGHT_COMPLIANCE.md §1.3 red line 3, which lists
+// "the platform sets the freight price" as one of three tells that pull toward
+// GTA characterisation, and §9.4, which names this service. Founder decision
+// Q20 ("the platform never has its own price") and the legal constraint point
+// the same way, which is why they must be kept pointing the same way.
+//
+// So: do NOT "simplify" this by dropping quote_kind and letting every quote be
+// a price. The label is the substance — it is what makes the auction number a
+// reference rather than a rate the platform charges.
+// -----------------------------------------------------------
+
+export const BOOKING_TYPES = ['auction', 'instant', 'direct'] as const
+export type BookingType = (typeof BOOKING_TYPES)[number]
+
+/** Whether the quoted number is the charge (`binding`) or a benchmark (`advisory`). */
+export type QuoteKind = 'advisory' | 'binding'
+
+/**
+ * Classify a quote by the booking it was requested for.
+ *
+ * Absent booking_type means `binding`. That is a COMPATIBILITY default, not a
+ * legal opinion: every caller that predates this field — the shipper booking
+ * form and the quote-lock saga in bt-booking-service, which resolves the charge
+ * from the locked row — must keep behaving exactly as it does today. Widening
+ * the default to advisory would silently unbind the instant/direct price lock,
+ * which is the one thing this change must not do.
+ */
+export function quoteKind(bookingType?: BookingType): QuoteKind {
+  return bookingType === 'auction' ? 'advisory' : 'binding'
+}
+
 export const QuoteBody = z.object({
   distance_km:  z.number().positive(),
   vehicle_type: z.enum(['mini_truck', 'lcv', 'hcv', 'trailer']),
   load_type:    z.enum(['general', 'fragile', 'perishable', 'hazardous', 'heavy_machinery']),
   weight_kg:    z.number().positive(),
+  // Optional so existing callers are byte-identical (see quoteKind above).
+  booking_type: z.enum(BOOKING_TYPES).optional(),
 })
 export type QuoteInput = z.infer<typeof QuoteBody>
 
@@ -87,6 +135,31 @@ export type QuoteResult = {
   currency: 'INR'
   version: string
   cost_breakdown: CostBreakdown
+  /** Whether this number is the charge or a benchmark. See quoteKind. */
+  quote_kind: QuoteKind
+  /**
+   * One human-readable sentence naming where the number came from, meant to be
+   * shown to the shipper verbatim.
+   *
+   * It exists so the disclosure travels WITH the quote instead of being
+   * reassembled by each client. A UI that has to compose this itself will
+   * eventually compose it wrong, or omit it — and an auction number displayed
+   * without "this is a reference" is exactly the fact pattern §1.3 warns about.
+   */
+  basis: string
+}
+
+/**
+ * The shipper-facing sentence explaining the number. Kept next to the maths so
+ * the wording cannot drift from the arithmetic it describes.
+ */
+function quoteBasis(kind: QuoteKind, vehicleClass: VehicleClass, rate: number, distanceKm: number): string {
+  const derivation = `₹${rate}/km for a ${vehicleClass} over ${distanceKm} km, derived from BharatTruck's operating-cost model`
+  return kind === 'advisory'
+    // Names the actual payee. "Indicative"/"approximate" would only soften the
+    // number while still implying the platform is the one charging it.
+    ? `Reference estimate: ${derivation}. You pay the winning carrier's bid — this is a benchmark, not the price.`
+    : `${derivation}. This is the price charged for this booking.`
 }
 
 export function computeQuote(input: QuoteInput): QuoteResult {
@@ -107,6 +180,12 @@ export function computeQuote(input: QuoteInput): QuoteResult {
   const total        = base + wt_surcharge + handling
   const platform_fee = Math.ceil(total * PLATFORM_RATE)
 
+  // Classification only — it changes no arithmetic above. An advisory quote is
+  // the SAME number as a binding one; what differs is whether the platform is
+  // charging it. Deliberately not a discount or a range: a benchmark that moved
+  // the number would stop being a benchmark.
+  const kind = quoteKind(input.booking_type)
+
   return {
     base_price: base,
     weight_surcharge: wt_surcharge,
@@ -119,5 +198,7 @@ export function computeQuote(input: QuoteInput): QuoteResult {
     currency: 'INR',
     version: 'v2-cost-derived',
     cost_breakdown: costBreakdown(vehicleClass, distance_km),
+    quote_kind: kind,
+    basis: quoteBasis(kind, vehicleClass, rate, distance_km),
   }
 }

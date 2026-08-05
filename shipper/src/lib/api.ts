@@ -360,6 +360,14 @@ export interface PriceQuoteInput {
   vehicle_type: PriceQuoteVehicleType
   load_type: PriceQuoteLoadType
   weight_kg: number
+  /**
+   * What the quote is for. Optional — omitted, the server returns a binding
+   * quote, which is exactly today's behaviour.
+   *
+   * Send it: on an auction the platform has no price of its own, and only the
+   * server can say so authoritatively (see PriceQuote.quote_kind).
+   */
+  booking_type?: 'auction' | 'instant' | 'direct'
 }
 
 export interface PriceQuoteBreakdown {
@@ -399,6 +407,44 @@ export interface PriceQuote {
   shipper_pays: number
   driver_receives: number
   version: string
+  /**
+   * Whether `quoted_price` is the charge (`binding`) or a benchmark (`advisory`).
+   *
+   * On an auction it is advisory: the shipper pays the winning carrier's bid,
+   * and this number is a reference. Optional because a server that predates
+   * D-11 does not send it — treat a missing value as binding, matching the
+   * server's own default.
+   */
+  quote_kind?: 'advisory' | 'binding'
+  /** Server-authored sentence explaining where the number came from. */
+  basis?: string
+}
+
+/**
+ * Heading for the quote panel.
+ *
+ * "Locked Price" over an auction estimate is a claim the platform is charging
+ * that number, which it is not — the charge is the winning carrier's bid.
+ */
+export function priceQuoteHeading(quote: PriceQuote): string {
+  return quote.quote_kind === 'advisory' ? 'Estimated Price' : 'Locked Price'
+}
+
+/**
+ * The sentence shown under the quote.
+ *
+ * Prefers the server's `basis` because the server is the only party that knows
+ * what the number means — the shipper form previously decided this from its own
+ * local booking-type state, which made the client the authority on a
+ * distinction it cannot actually see. The local fallback keeps the panel
+ * correct against a server that has not shipped D-11 yet, and is written to
+ * match the binding default rather than guess.
+ */
+export function priceQuoteBasis(quote: PriceQuote): string {
+  if (quote.basis) return quote.basis
+  return quote.quote_kind === 'advisory'
+    ? "Reference estimate — you pay the winning carrier's bid, not this number."
+    : 'This is the price charged for this booking.'
 }
 
 export function getPriceQuote(payload: PriceQuoteInput): Promise<PriceQuote> {

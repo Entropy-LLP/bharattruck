@@ -110,6 +110,51 @@ async function main() {
   r = await quote({ distance_km: 50, vehicle_type: 'trailer', load_type: 'general', weight_kg: 500 }, tok())
   check('trailer → HCV (assumption)', r.json().data?.cost_breakdown?.vehicle_class === 'HCV', JSON.stringify(r.json().data?.cost_breakdown?.vehicle_class))
 
+  console.log('\n── D-11: the platform price is ADVISORY on an auction ──')
+  // The platform does not have a price on an auction — the charge is the winning
+  // carrier's bid. Beyond the product decision, a platform that SETS the freight
+  // price drifts toward GTA characterisation under Indian GST, which is a tax and
+  // cargo-liability event (INDIA_FREIGHT_COMPLIANCE.md §1.3 red line 3, §9.4).
+  // Price discovery is safe; price setting is not. These checks are the guard on
+  // that line, so pin the classification rather than the arithmetic.
+  const base = { distance_km: 100, vehicle_type: 'hcv', load_type: 'general', weight_kg: 1000 }
+  const kindOf = async (booking_type?: string) =>
+    (await quote(booking_type ? { ...base, booking_type } : base, tok())).json().data
+
+  const auction = await kindOf('auction')
+  check('auction → advisory', auction.quote_kind === 'advisory', `(got ${auction.quote_kind})`)
+  check('instant → binding', (await kindOf('instant')).quote_kind === 'binding')
+  check('direct → binding', (await kindOf('direct')).quote_kind === 'binding')
+
+  // The compatibility default. bt-booking-service's quote-lock saga resolves the
+  // charge from the locked row and sends no booking_type; if omission ever meant
+  // advisory, every instant/direct price would silently come unbound.
+  const omitted = await kindOf()
+  check('booking_type omitted → binding (existing callers unchanged)', omitted.quote_kind === 'binding', `(got ${omitted.quote_kind})`)
+
+  // The failure mode a bare `=== 'auction'` invites: a typo, a capitalised value
+  // or a renamed enum member falls through to binding, and an auction quote
+  // quietly becomes a price the platform charges. Reject at the edge instead —
+  // a 400 is loud, a silent downgrade is not.
+  const typo = await quote({ ...base, booking_type: 'Auction' }, tok())
+  check('unknown booking_type rejected, never silently binding', typo.statusCode === 400, `(got ${typo.statusCode})`)
+
+  // Classification must not move the number. If advisory ever became a discount
+  // or a range, it would stop being the same benchmark the cost model produced —
+  // and the "shown == charged" guarantee on the binding path would be comparing
+  // against a different figure than the one the rate card justifies.
+  check(
+    'advisory and binding price the SAME number (label, not a discount)',
+    auction.total_price === omitted.total_price && auction.rate_per_km === omitted.rate_per_km,
+    `(${auction.total_price}/${auction.rate_per_km} vs ${omitted.total_price}/${omitted.rate_per_km})`,
+  )
+
+  // The disclosure has to travel with the quote. A client left to compose this
+  // itself eventually omits it, and an auction number shown without "this is a
+  // reference" is the exact fact pattern §1.3 warns about.
+  check('advisory basis names the carrier bid as the actual charge', /winning carrier/i.test(auction.basis), `(got ${auction.basis})`)
+  check('binding basis states it is the price charged', /price charged/i.test(omitted.basis), `(got ${omitted.basis})`)
+
   await app.close()
   console.log(`\n${failures.length ? 'RESULT: FAIL' : 'RESULT: PASS'} — ${passed} checks passed, ${failures.length} failed`)
   if (failures.length) { failures.forEach(f => console.log('  ✗ ' + f)); process.exit(1) }
