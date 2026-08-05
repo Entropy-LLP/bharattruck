@@ -1,7 +1,7 @@
 import { getSupabase } from './supabase.js'
 import { getActiveAffiliation } from './fleet-repo.js'
 import { requireFleetVehicle } from './vehicles-repo.js'
-import { assertVehicleAvailable, bookingWindow, type ScheduleWindow } from './vehicle-schedule.js'
+import { assertVehicleAvailable } from './vehicle-schedule.js'
 import {
   asRow,
   asRowOrNull,
@@ -23,10 +23,12 @@ import {
 // INSERT and catch 23505 rather than pre-checking — a check-then-insert has a race
 // window in which two dispatchers can both hand the same truck to two loads.
 //
-// The D-19 schedule check added in 0024 sits IN FRONT of that insert and does not
-// weaken it. A read-then-write check cannot win a race, so it is not asked to: it
-// exists to name the conflicting trip (the index can only say "already assigned")
-// and to see commitments that never produced an assignment row at all.
+// The D-19 commitment check sits IN FRONT of that insert and does not weaken it.
+// It is not a second mutual-exclusion rule and must never be mistaken for one: a
+// read-then-write check cannot win a race, and it refuses on exactly the condition
+// the vehicle index already refuses on. It runs to turn "already has a live
+// assignment" into a refusal that names the trip, and to catch the one commitment
+// no index sees — a booking still running whose assignment row is gone.
 // -----------------------------------------------------------
 
 const BOOKING_COLUMNS =
@@ -35,8 +37,7 @@ const BOOKING_COLUMNS =
   'pickup_date, status, booking_type, dimensions_json, created_at, updated_at'
 
 const ASSIGNMENT_COLUMNS =
-  'id, fleet_owner_id, booking_id, vehicle_id, driver_id, assigned_by, assigned_at, released_at, ' +
-  'window_start, window_end, created_at'
+  'id, fleet_owner_id, booking_id, vehicle_id, driver_id, assigned_by, assigned_at, released_at, created_at'
 
 // Bookings the fleet won but has not yet crewed. Assigning before award has nothing
 // to assign to; assigning after departure is mid-trip reassignment, which is
@@ -111,23 +112,24 @@ export async function assignDriverAndVehicle(input: AssignInput): Promise<Assign
     throw new FleetError('Driver is not an active member of this fleet', 'FORBIDDEN', 403)
   }
 
-  // (4) D-19 — the truck carries the schedule. The insert below is still the
-  // authority; this runs first so the dispatcher is told WHICH trip the truck is
-  // already committed to, and so a commitment recorded outside vehicle_assignments
-  // (a trip still running after its assignment row was released) is seen at all.
-  // The booking excludes itself: re-assigning a booking that already holds this
-  // truck must not report the truck as taken by that same booking.
-  const window = bookingWindow(booking)
-  await assertVehicleAvailable(input.vehicleId, window, { exceptBookingId: input.bookingId })
+  // (4) D-19 — the truck is committed to one trip at a time. The insert below is
+  // still the authority; this runs first so the dispatcher is told WHICH trip the
+  // truck is on, and so a commitment recorded outside vehicle_assignments (a trip
+  // still running after its assignment row was released) is seen at all. The
+  // booking excludes itself: re-assigning a booking that already holds this truck
+  // must not report the truck as taken by that same booking.
+  await assertVehicleAvailable(input.vehicleId, { exceptBookingId: input.bookingId })
 
   // (5) The insert IS the mutual-exclusion check.
-  let created = await insertAssignment(input, window)
+  let created = await insertAssignment(input)
   if (!created) {
     // A unique violation can mean two things: a genuine live conflict, or a stale
     // row from a trip that has already ended. Sweep the stale ones (the roll-up
-    // hook may never have fired) and try once more before refusing.
+    // hook may never have fired) and try once more before refusing. Note (4) cannot
+    // pre-empt this: it treats a live assignment on a finished booking as already
+    // released, exactly so a missed hook does not retire the truck here either.
     const swept = await releaseFinishedAssignments(input)
-    created = swept ? await insertAssignment(input, window) : null
+    created = swept ? await insertAssignment(input) : null
     if (!created) {
       throw new FleetError(
         'This booking, truck or driver already has a live assignment — finish or release it before assigning again',
@@ -163,7 +165,7 @@ export async function assignDriverAndVehicle(input: AssignInput): Promise<Assign
 
 // insertAssignment — returns null on a unique violation so the caller can decide
 // whether it is a real conflict or a stale row worth sweeping.
-async function insertAssignment(input: AssignInput, window: ScheduleWindow): Promise<VehicleAssignmentRow | null> {
+async function insertAssignment(input: AssignInput): Promise<VehicleAssignmentRow | null> {
   const { data, error } = await getSupabase()
     .from('vehicle_assignments')
     .insert({
@@ -172,11 +174,6 @@ async function insertAssignment(input: AssignInput, window: ScheduleWindow): Pro
       vehicle_id: input.vehicleId,
       driver_id: input.driverId,
       assigned_by: input.assignedBy,
-      // Stamped from the booking as it stood at dispatch (0024). Storing it rather
-      // than re-deriving on read is what stops a shipper editing pickup_date after
-      // dispatch from silently moving a commitment the truck has already made.
-      window_start: window.start,
-      window_end: window.end,
     })
     .select(ASSIGNMENT_COLUMNS)
     .single()

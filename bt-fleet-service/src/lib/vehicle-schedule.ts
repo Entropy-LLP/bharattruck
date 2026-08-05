@@ -2,27 +2,50 @@ import { getSupabase } from './supabase.js'
 import { asRows, FleetError, type BookingRow } from './types.js'
 
 // -----------------------------------------------------------
-// vehicle-schedule — D-19: THE TRUCK CARRIES THE SCHEDULE.
+// vehicle-schedule — D-19's read side: is this truck busy, and UNTIL WHEN.
 //
-// A driver may be affiliated to several fleets (D-8) and an owner-driver also
-// self-selects work off the marketplace, so one truck has up to three independent
-// sources of commitment — fleet A, fleet B, and its own driver — none of which can
-// see the others' calendar. Hanging the schedule on the VEHICLE collapses them into
-// one calendar: whoever accepted the work, the truck can only be in one place.
+// SCOPE NOTE — READ THIS BEFORE ADDING A DATE-WINDOW OVERLAP CHECK HERE.
+// D-19 says "the truck carries the schedule; accepting work locks it for the
+// window", and the obvious reading is a calendar: refuse a second load whose dates
+// overlap, allow one whose dates do not. This module deliberately does NOT do that,
+// because the schema makes the state such a check would guard against unreachable,
+// and shipping the check anyway would mean shipping a guard whose refusals are all
+// already made underneath it, plus prose describing a system we do not have:
 //
-// THIS IS A STRICT ADDITION TO THE 0016 INDEXES, NEVER A REPLACEMENT. Those partial
-// unique indexes stay the authoritative mutual exclusion because they are enforced
-// by the INSERT and therefore survive two dispatchers racing; a read-then-write
-// check like this one cannot. What it adds is (a) a refusal that names the trip the
-// truck is already on, where the index can only say "already has a live assignment",
-// and (b) a schedule the app can query BEFORE the owner picks a truck, so the
-// conflict shows up in the picker instead of as a 409 after the fact.
+//   - vehicle_assignments_one_live_per_vehicle (0016) is a partial unique index on
+//     (vehicle_id) where released_at is null. It refuses ANY second live assignment
+//     on a truck, overlapping or not. An overlap rule in front of it can only ever
+//     refuse a SUBSET of what it already refuses — it can never turn an allow into
+//     a refusal, which is the only way it could prevent a double-booking.
+//   - vehicles_exactly_one_owner (0015) and vehicles_single_owner (0022) both assert
+//     num_nonnulls(driver_id, fleet_owner_id) = 1. A truck has exactly ONE owner, so
+//     "fleet A and fleet B commit the same truck" is not a hole, it is
+//     unrepresentable — and requireFleetVehicle scopes every assignment to the
+//     owning fleet regardless.
+//   - by that same constraint a fleet-owned truck has driver_id NULL, so it has no
+//     "own driver" to self-select marketplace work with; a driver-owned truck has
+//     fleet_owner_id NULL, so no fleet can assign it.
+//   - fleet_drivers_one_live_per_driver (0015) still permits a driver only ONE live
+//     affiliation, so D-8's multi-fleet driver does not exist in the schema yet
+//     either.
+//
+// What is genuinely unanswerable today is "the truck is busy — until when?". The
+// index is a bit: on trip or idle, with no horizon. That is what this module adds,
+// so an owner can plan the next load, plus a refusal that names the trip the truck
+// is on instead of "already has a live assignment". When D-8 actually lands in the
+// schema, the overlap check becomes worth writing — with the 0016 index relaxed in
+// the same migration, since it is what makes the check dead today.
+//
+// THE ONE RULE: is_free here means exactly what the 0016 index means — no live
+// commitment, for any dates. Answering from date windows instead would report a
+// truck free for the 20th while it is out on the 10th, and then watch the
+// assignment call for the 20th fail on the index every single time. An availability
+// API that can disagree with the assignment API is worse than no availability API.
 // -----------------------------------------------------------
 
 // A truck's day is not the UTC day. pickup_date is a plain calendar date keyed in
-// by an Indian shipper, so anchoring it at UTC midnight would free the truck from
-// 18:30 the evening before and hold it until 05:30 the morning after — half a
-// working day wrong at both ends, every time.
+// by an Indian shipper, so anchoring it at UTC midnight would date the estimate from
+// 18:30 the evening before — half a working day wrong, every time.
 const IST_START_OF_DAY = 'T00:00:00+05:30'
 
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -35,12 +58,10 @@ const EARTH_RADIUS_KM = 6371
 const ROAD_WINDING_FACTOR = 1.3
 
 // What a loaded truck actually covers in a day on the pilot corridor: driving-hour
-// reality plus halts, not vehicle speed. Deliberately on the low side, because the
-// two errors are not symmetric — under-estimating the day makes the window LONGER
-// and may refuse an assignment on a truck that is in fact free (visible to the
-// dispatcher, one click to override by picking another truck), while
-// over-estimating it double-books a truck, which is a trip that physically cannot
-// run. Overridable because it is a fleet operating fact, not a constant.
+// reality plus halts, not vehicle speed. Overridable because it is a fleet operating
+// fact, not a constant. It shapes an ESTIMATE shown to a planner and nothing else —
+// no assignment is ever allowed or refused on the strength of it, so getting it
+// wrong costs a misleading date, not a trip that cannot run.
 const DEFAULT_KM_PER_DAY = 300
 
 function kmPerDay(): number {
@@ -48,21 +69,19 @@ function kmPerDay(): number {
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_KM_PER_DAY
 }
 
-export type ScheduleWindow = {
-  start: string | null
-  end: string | null
-}
-
-// One commitment on a truck's calendar. `source` records which table proved it:
-// 'assignment' is a fleet dispatch, 'booking' is a trip that is still running while
-// its assignment row is gone (see listVehicleCommitments).
+// One commitment holding a truck. `source` records which table proved it:
+// 'assignment' is a fleet dispatch, 'booking' is a trip still running while its
+// assignment row is gone (see buildSchedule).
 export type ScheduleEntry = {
   booking_id: string
   assignment_id: string | null
   source: 'assignment' | 'booking'
   status: string
   description: string
-  window: ScheduleWindow
+  // Estimated moment the truck comes back into the pool. NULL means unknown — no
+  // usable pickup_date, or a trip we cannot date — never "free now". The truck is
+  // occupied until released_at is stamped; this is a planning hint, not the release.
+  estimated_free_from: string | null
 }
 
 // Once a booking reaches one of these the truck is free again. Same list
@@ -80,18 +99,14 @@ type ScheduleBooking = Pick<
   'destination_address' | 'dest_lat' | 'dest_lng' | 'pickup_date' | 'status'
 >
 
-type LiveAssignmentWindow = {
+type LiveAssignment = {
   id: string
   booking_id: string
   released_at: string | null
-  window_start: string | null
-  window_end: string | null
 }
 
 // -----------------------------------------------------------
-// Pure window arithmetic. Kept free of the database so the D-19 rule itself is
-// testable without one — the failure this prevents is a silent double-booking, and
-// a rule that can only be exercised against live Supabase is a rule nobody checks.
+// Pure date arithmetic, kept free of the database so it is testable without one.
 // -----------------------------------------------------------
 
 function toMs(iso: string | null): number | null {
@@ -114,11 +129,12 @@ function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): nu
 }
 
 /**
- * How many days this trip takes the truck out of the pool.
+ * How many days this trip is expected to take the truck out of the pool.
  *
- * Coordinates that are not finite fall back to ONE day rather than to an open-ended
- * lock. A data defect must not be able to retire a truck indefinitely, and the 0016
- * index still backstops the same-vehicle case underneath.
+ * Coordinates that are not usable fall back to ONE day rather than to a very long
+ * estimate. Nothing is refused on this number, so the cost of being wrong is a date
+ * an owner plans around; a data defect quietly reporting a truck busy for a fortnight
+ * is the more damaging way to be wrong.
  */
 export function transitDays(booking: Pick<ScheduleBooking, 'source_lat' | 'source_lng' | 'dest_lat' | 'dest_lng'>): number {
   // Typed unknown, not number: BookingRow describes the columns as NOT NULL, but the
@@ -126,8 +142,8 @@ export function transitDays(booking: Pick<ScheduleBooking, 'source_lat' | 'sourc
   const raw: unknown[] = [booking.source_lat, booking.source_lng, booking.dest_lat, booking.dest_lng]
   // Number(null) is 0, not NaN. Screening for nullish BEFORE the cast is what stops
   // a missing coordinate reading as the Gulf of Guinea and turning a Mumbai pickup
-  // into a fortnight-long commitment. PostgREST can hand numerics back as strings,
-  // so the cast itself has to stay.
+  // into a fortnight-long estimate. PostgREST can hand numerics back as strings, so
+  // the cast itself has to stay.
   if (raw.some(v => v === null || v === undefined || v === '')) return 1
   const coords = raw.map(Number)
   if (!coords.every(Number.isFinite)) return 1
@@ -136,63 +152,21 @@ export function transitDays(booking: Pick<ScheduleBooking, 'source_lat' | 'sourc
 }
 
 /**
- * The window a booking occupies its truck for.
+ * When this trip is expected to hand the truck back.
  *
- * A booking with no usable pickup_date yields {null, null} — UNKNOWN, which never
- * conflicts with anything. That is the degrade-safely case and it is the important
- * one: bookings predate this column being meaningful, and throwing (or, worse,
- * defaulting to "now") would break assignment for every historical trip rather than
- * merely declining to improve on today's guard.
+ * NULL when the booking has no usable pickup_date — unknown, and reported as such.
+ * Guessing "now" would show a loaded truck as free tomorrow, and guessing far out
+ * would park it indefinitely in the planner; an owner who is told "busy, return date
+ * unknown" can go and look at the trip.
  */
-export function bookingWindow(booking: Pick<ScheduleBooking, 'pickup_date' | 'source_lat' | 'source_lng' | 'dest_lat' | 'dest_lng'>): ScheduleWindow {
+export function estimatedFreeFrom(
+  booking: Pick<ScheduleBooking, 'pickup_date' | 'source_lat' | 'source_lng' | 'dest_lat' | 'dest_lng'>,
+): string | null {
   const start = typeof booking.pickup_date === 'string' && booking.pickup_date
     ? istStartOfDay(booking.pickup_date)
     : null
-  if (!start) return { start: null, end: null }
-  return {
-    start,
-    end: new Date(Date.parse(start) + transitDays(booking) * DAY_MS).toISOString(),
-  }
-}
-
-/**
- * Half-open [start, end) overlap.
- *
- * Adjacency is NOT a conflict: a truck that drops on the 5th and picks up again on
- * the 5th is running back-to-back loads, which is the fleet's whole business model.
- * Treating touching windows as overlapping would refuse exactly the dispatching a
- * profitable fleet does every day.
- *
- * An unknown start is treated as non-blocking. Refusing on it would take every
- * pre-0024 assignment and turn it into a permanent lock on its truck; the 0016
- * indexes already refuse the live same-vehicle case, so conceding here costs
- * nothing that was previously caught.
- */
-export function windowsOverlap(a: ScheduleWindow, b: ScheduleWindow): boolean {
-  const aStart = toMs(a.start)
-  const bStart = toMs(b.start)
-  if (aStart === null || bStart === null) return false
-  // A missing end is open-ended, not zero-length: the truck is out until something
-  // releases it.
-  const aEnd = toMs(a.end) ?? Infinity
-  const bEnd = toMs(b.end) ?? Infinity
-  return aStart < bEnd && bStart < aEnd
-}
-
-/**
- * Every commitment the candidate window collides with, earliest first.
- *
- * The ordering is not cosmetic: it is what makes the refusal name the trip the
- * truck is on NOW rather than an arbitrary one from further down the calendar.
- */
-export function selectConflicts(candidate: ScheduleWindow, entries: ScheduleEntry[]): ScheduleEntry[] {
-  return entries
-    .filter(e => windowsOverlap(candidate, e.window))
-    .sort((x, y) => (toMs(x.window.start) ?? 0) - (toMs(y.window.start) ?? 0))
-}
-
-export function findScheduleConflict(candidate: ScheduleWindow, entries: ScheduleEntry[]): ScheduleEntry | null {
-  return selectConflicts(candidate, entries)[0] ?? null
+  if (!start) return null
+  return new Date(Date.parse(start) + transitDays(booking) * DAY_MS).toISOString()
 }
 
 function describeBooking(booking: Pick<ScheduleBooking, 'source_address' | 'destination_address' | 'pickup_date'>): string {
@@ -201,31 +175,30 @@ function describeBooking(booking: Pick<ScheduleBooking, 'source_address' | 'dest
 }
 
 // -----------------------------------------------------------
-// Reads. Everything below is deliberately NOT fleet-scoped: D-19 says the truck is
-// blocked by whoever committed it, so filtering by fleet_owner_id here would
-// reintroduce exactly the blind spot the decision exists to close.
+// Reads. Deliberately NOT fleet-scoped: the truck is held by whoever committed it,
+// and the caller has already proved tenancy on the vehicle itself.
 // -----------------------------------------------------------
 
 /**
- * Turn raw rows into the truck's calendar.
+ * Turn raw rows into the list of commitments currently holding this truck.
  *
  * Two sources, because neither alone is complete:
- *   - vehicle_assignments — the fleet dispatch, carrying its stored window;
+ *   - vehicle_assignments — the fleet dispatch, which the 0016 index caps at one;
  *   - non-terminal bookings holding this vehicle_id with no live assignment row —
- *     a trip still on the road after its assignment was released early (a swept
- *     stale row, or the compensating release in assignDriverAndVehicle losing its
- *     race). Reading assignments alone would show that truck as free while it is
- *     physically loaded.
+ *     a trip still on the road after its assignment was released (a swept stale row,
+ *     or the roll-up firing on a booking whose status later moved backwards).
+ *     Reading assignments alone would show that truck as free while it is loaded,
+ *     and this is the ONE case where this module refuses something the 0016 index
+ *     does not catch.
  *
  * The two rules that free a truck — released_at is stamped, or the trip reached a
  * terminal status — are applied HERE and not only in the WHERE clause. The SQL
  * filters are an index-backed narrowing so the query stays cheap; this is where the
- * rule itself lives, in one place, exercisable without a database. A rule about
- * double-booking that can only be run against live Supabase is a rule nobody runs.
+ * rule itself lives, in one place, exercisable without a database.
  */
 export function buildSchedule(
   vehicleId: string,
-  assignments: LiveAssignmentWindow[],
+  assignments: LiveAssignment[],
   bookings: ScheduleBooking[],
 ): ScheduleEntry[] {
   const byId = new Map(bookings.map(b => [b.id, b]))
@@ -236,9 +209,10 @@ export function buildSchedule(
     if (assignment.released_at !== null) continue
     const booking = byId.get(assignment.booking_id)
     // A live assignment on a finished trip is a stale row, not a commitment — the
-    // same judgement releaseFinishedAssignments makes when it sweeps them. An
-    // assignment whose booking could not be read stays blocking: unreadable is not
-    // evidence of freedom.
+    // same judgement releaseFinishedAssignments makes when it sweeps them, and the
+    // reason a missed roll-up hook does not retire a truck. An assignment whose
+    // booking could not be read stays blocking: unreadable is not evidence of
+    // freedom.
     if (booking && TERMINAL_BOOKING_STATUSES.includes(booking.status)) continue
     claimed.add(assignment.booking_id)
     entries.push({
@@ -247,12 +221,7 @@ export function buildSchedule(
       source: 'assignment',
       status: booking?.status ?? 'unknown',
       description: booking ? describeBooking(booking) : 'a trip that is no longer readable',
-      // The stored window is authoritative; deriving it again would let a booking
-      // edited after dispatch quietly move a commitment the truck already made.
-      // Only a pre-0024 row with nothing stored falls back to the booking.
-      window: assignment.window_start !== null || assignment.window_end !== null
-        ? { start: assignment.window_start, end: assignment.window_end }
-        : booking ? bookingWindow(booking) : { start: null, end: null },
+      estimated_free_from: booking ? estimatedFreeFrom(booking) : null,
     })
   }
 
@@ -268,11 +237,29 @@ export function buildSchedule(
       source: 'booking',
       status: booking.status,
       description: describeBooking(booking),
-      window: bookingWindow(booking),
+      estimated_free_from: estimatedFreeFrom(booking),
     })
   }
 
   return entries
+}
+
+/**
+ * The date the truck is expected to be free, across every commitment holding it.
+ *
+ * A single unknown makes the whole answer unknown. Reporting the latest KNOWN date
+ * while one commitment has no return date at all would hand a planner a date the
+ * truck may well blow straight through — worse than admitting we cannot say.
+ */
+export function scheduleFreeFrom(entries: ScheduleEntry[]): string | null {
+  if (entries.length === 0) return null
+  let latest = 0
+  for (const entry of entries) {
+    const ms = toMs(entry.estimated_free_from)
+    if (ms === null) return null
+    if (ms > latest) latest = ms
+  }
+  return new Date(latest).toISOString()
 }
 
 export async function listVehicleCommitments(vehicleId: string): Promise<ScheduleEntry[]> {
@@ -281,7 +268,7 @@ export async function listVehicleCommitments(vehicleId: string): Promise<Schedul
   const [assignmentsRes, bookingsRes] = await Promise.all([
     supabase
       .from('vehicle_assignments')
-      .select('id, booking_id, released_at, window_start, window_end')
+      .select('id, booking_id, released_at')
       .eq('vehicle_id', vehicleId)
       .is('released_at', null),
     supabase
@@ -293,7 +280,7 @@ export async function listVehicleCommitments(vehicleId: string): Promise<Schedul
   if (assignmentsRes.error) throw new Error(`vehicle_assignments select failed: ${assignmentsRes.error.message}`)
   if (bookingsRes.error) throw new Error(`bookings select failed: ${bookingsRes.error.message}`)
 
-  const assignments = asRows<LiveAssignmentWindow>(assignmentsRes.data)
+  const assignments = asRows<LiveAssignment>(assignmentsRes.data)
   const bookings = asRows<ScheduleBooking>(bookingsRes.data)
 
   // An assignment can point at a booking that no longer names this vehicle (the
@@ -316,13 +303,39 @@ export async function listVehicleCommitments(vehicleId: string): Promise<Schedul
 
 export type VehicleAvailability = {
   vehicle_id: string
-  window: ScheduleWindow
   is_free: boolean
-  conflicts: ScheduleEntry[]
+  // Only ever set when is_free is false: the estimated date the truck returns, or
+  // null if that cannot be estimated. A free truck's answer is "now", which this
+  // field does not try to express — is_free already says it.
+  estimated_free_from: string | null
+  commitments: ScheduleEntry[]
 }
 
 /**
- * The read helper: is this truck free between X and Y.
+ * is_free is the COUNT of commitments and nothing else — never a date comparison.
+ *
+ * This is the line that keeps availability and assignment from contradicting each
+ * other, so it is a named function rather than an inline expression: it can be
+ * asserted on without a database, and a future change that starts asking "free
+ * BETWEEN these dates" has to come through here and past that test. The reason it
+ * must stay a count is that vehicle_assignments_one_live_per_vehicle refuses a
+ * second live assignment on ANY dates, so any date-sensitive answer here is a slot
+ * this service promises and the very next call refuses.
+ */
+export function summariseAvailability(vehicleId: string, commitments: ScheduleEntry[]): VehicleAvailability {
+  return {
+    vehicle_id: vehicleId,
+    is_free: commitments.length === 0,
+    estimated_free_from: scheduleFreeFrom(commitments),
+    commitments,
+  }
+}
+
+/**
+ * Is this truck free, and if not, when is it expected back.
+ *
+ * There is no date range to ask about, and that is the point — see
+ * summariseAvailability.
  *
  * `exceptBookingId` excludes the trip being asked about from its own answer — the
  * caller re-checking a booking that already holds this truck must not be told the
@@ -330,38 +343,39 @@ export type VehicleAvailability = {
  */
 export async function getVehicleAvailability(
   vehicleId: string,
-  window: ScheduleWindow,
   opts: { exceptBookingId?: string } = {},
 ): Promise<VehicleAvailability> {
-  const entries = (await listVehicleCommitments(vehicleId))
+  const commitments = (await listVehicleCommitments(vehicleId))
     .filter(e => e.booking_id !== opts.exceptBookingId)
-  const conflicts = selectConflicts(window, entries)
-  return { vehicle_id: vehicleId, window, is_free: conflicts.length === 0, conflicts }
+  return summariseAvailability(vehicleId, commitments)
 }
 
 /**
- * Refuse an assignment whose window collides with one the truck already carries.
+ * Refuse an assignment onto a truck that is already committed.
  *
- * 409 with the conflicting trip named: "already has a live assignment" tells a
- * dispatcher nothing they can act on, whereas the lane and pickup date of the
- * blocking trip tell them immediately whether to release it or pick another truck.
+ * This does NOT add a refusal the database would not make — 0016's partial unique
+ * index refuses the same insert a moment later, and being a read-then-write check
+ * this one cannot win a race against a second dispatcher anyway. It runs for two
+ * reasons the index cannot serve:
+ *   - "already has a live assignment" tells a dispatcher nothing they can act on,
+ *     whereas the lane, pickup date and booking id of the blocking trip tell them
+ *     immediately whether to release it or pick another truck;
+ *   - a booking still running with no live assignment row holds the truck
+ *     physically but violates no index, and is refused here and nowhere else.
  */
 export async function assertVehicleAvailable(
   vehicleId: string,
-  window: ScheduleWindow,
   opts: { exceptBookingId?: string } = {},
 ): Promise<void> {
-  // An unknown candidate window can collide with nothing, so the round trip is
-  // pure cost — this is the pre-0024 booking path and it must stay as cheap as it
-  // is today.
-  if (!window.start) return
-
-  const conflict = (await getVehicleAvailability(vehicleId, window, opts)).conflicts[0]
+  const conflict = (await getVehicleAvailability(vehicleId, opts)).commitments[0]
   if (!conflict) return
 
+  const until = conflict.estimated_free_from
+    ? ` (expected free ${conflict.estimated_free_from.slice(0, 10)})`
+    : ''
   throw new FleetError(
-    `This truck is already committed to ${conflict.description} (booking ${conflict.booking_id}, ` +
-    `${conflict.status}) over the same dates — release that trip or assign another truck`,
+    `This truck is already on ${conflict.description} (booking ${conflict.booking_id}, ` +
+    `${conflict.status})${until} — release that trip or assign another truck`,
     'INVALID_TRANSITION',
     409,
   )
