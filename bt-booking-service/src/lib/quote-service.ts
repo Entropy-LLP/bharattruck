@@ -71,6 +71,28 @@ async function recordNegotiation(
 }
 
 // -----------------------------------------------------------
+// NEGOTIATION_ROUND_CAP — the committed MVP scope caps bilateral negotiation at
+// five counter-offers per quote (docs/BIBLE.md §2.2). Without a cap a pair can
+// counter each other indefinitely, which is not a negotiation: it holds the
+// load off the market while the auction deadline runs down, and every round
+// writes a negotiation row and fires a notification.
+//
+// The cap is on the QUOTE, not the booking. Each bidder gets their own five
+// rounds with the shipper — one bidder exhausting theirs must not silently
+// close the conversation with everyone else on the same load.
+// -----------------------------------------------------------
+
+export const NEGOTIATION_ROUND_CAP = 5
+
+// Pure so it can be unit-tested without a DB. `negotiationRows` is the count
+// BEFORE the incoming counter is written: the opening bid plus one row per
+// prior counter. So counters-so-far is rows - 1, and the cap is reached when
+// that already equals the cap — the next counter would be the sixth.
+export function negotiationCapReached(negotiationRows: number): boolean {
+  return negotiationRows - 1 >= NEGOTIATION_ROUND_CAP
+}
+
+// -----------------------------------------------------------
 // submitQuote
 // A solo driver or a fleet owner submits a price quote on a pending/open
 // booking. For auction bookings the deadline is enforced server-side.
@@ -186,6 +208,30 @@ export async function counterQuote(
     if (!bidder || !quoteBelongsTo(quote, bidder)) {
       throw new BookingError('Forbidden', 'FORBIDDEN', 403)
     }
+  }
+
+  // An expired auction must not keep accepting counters. submitQuote already
+  // refuses new bids past the deadline; countering was never checked, so a live
+  // quote on a closed auction could still be moved on price indefinitely.
+  if (
+    booking.booking_type === 'auction' &&
+    booking.auction_deadline &&
+    new Date(booking.auction_deadline).getTime() < Date.now()
+  ) {
+    throw new BookingError('Auction deadline has passed', 'AUCTION_CLOSED', 409)
+  }
+
+  // Cap bilateral negotiation (docs/BIBLE.md §2.2). Checked BEFORE the status
+  // transition and the write, so a rejected counter leaves the quote exactly as
+  // it was — the pair keep their existing position rather than losing it to a
+  // round they were not allowed to play.
+  const negotiationRows = await quoteRepo.countNegotiationsForQuote(quoteId)
+  if (negotiationCapReached(negotiationRows)) {
+    throw new BookingError(
+      `Negotiation cap reached — at most ${NEGOTIATION_ROUND_CAP} counter-offers per quote`,
+      'NEGOTIATION_CAP_REACHED',
+      409,
+    )
   }
 
   assertValidQuoteTransition(quote.status, 'countered')
