@@ -917,6 +917,122 @@ The election is **deemed to continue** for future years unless reverted (Notif. 
 
 ---
 
+## §11 — Real-world document specimens (verified 2026-08-06)
+
+Everything above is derived from statute and rulings. This section is derived from **actual production
+documents** supplied by the founder: two VRL Logistics lorry receipts, two Destinio Clothing tax
+invoices (below the e-invoicing threshold), and one Maru Enterprises **e-invoice** (above it, carrying
+a live IRN and signed QR). Field names below are the ones real Indian operators actually print.
+
+> **Why this matters more than a template:** the statute tells you what must be present. These tell you
+> what a consignee, a checkpoint officer and an accounts team actually *expect to see* — and the gap
+> between the two is where a generated document gets rejected in practice.
+
+### 11.1 What the specimens CONFIRM
+
+| Claim in this document | Specimen evidence |
+|---|---|
+| LR is issued in triplicate (Carriage by Road Act s.9) | VRL LR is marked **"CONSIGNEE'S COPY"**; founder confirms three copies — Transporter, Consignee, Consignor |
+| Invoice numbering ≤16 chars, `[A-Za-z0-9/-]`, FY-scoped | `2026-27/11`, `2026-27/12` (Destinio, 10 chars) · `MA/4135/2526` (Maru, 12 chars) |
+| Invoice copies are designated (Rule 48(1)) | **"Original Copy"** / **"Original For Receipient"** [sic] printed top-right |
+| Rule 46(n)/(p) fields are real, not theoretical | **"Place of Supply : Karnataka (29)"**, **"Reverse Charge : N"** printed as their own labelled fields |
+| The document triangle (§2) | Invoice carries **GR/RR No** + **E-Way Bill No** fields; the LR carries **Invoice No**, **Invoice Value** and **EwayNo** |
+| ≥₹5 cr suppliers must use the IRN path | Maru's invoice carries **IRN** (64-hex), **ACK No**, **ACK Date** and a signed QR. Destinio's carries none |
+| The consignee's **stamp** matters (§5.1) | VRL acknowledgement block reads *"Receiver's Signature, Name & **Seal**"* |
+| "To Pay" is a first-class freight term (§5.8) | VRL LR prints **TOPAY** as a boxed field, alongside delivery mode **GODOWN** |
+| Rule 48(4) exemption declaration (Notif. 26/2022) | VRL prints the full *"we are not required to prepare an invoice…"* declaration in the margin |
+
+### 11.2 LR / consignment note — the real field set
+
+Beyond the statutory minimum in §3.2, every one of these appears on the VRL specimens:
+
+**Identity block (transporter)** — legal name, registered office, CIN, FSSAI licence, toll-free number,
+email, website, **Transporter ID (= the GSTIN, `29AABCV3609C1ZJ`)**, PAN.
+
+**Routing** — `FROM` origin branch + branch code + phone · `TO` destination + code + phone ·
+**Booking Date** · **ETD** · **EntBy** (booking operator id — the audit trail).
+
+**Cargo** — `Articles` (piece count) · **`A.Weight` (actual) vs `C.Weight` (charged)** · `Rate` ·
+`RateType` (NORMAL) · `Volume discount` · **Description prefixed *"(said to contain)"*** — the carrier's
+legal hedge, since they never open the packaging.
+
+> ⚠️ **Actual vs charged weight is not cosmetic.** Freight bills on `C.Weight`, which is
+> `max(actual, volumetric)`. A schema storing one weight cannot reproduce a real freight bill.
+
+**Parties** — Consignor name + GSTIN + PAN · Consignee name + GSTIN.
+
+**Linkage** — `Invoice No` · `Invoice Value Rs.` · **`EwayNo`**.
+
+**Commercials** — `Service Category: Transport of Goods By Road` with **`SAC 996511`** · freight term
+(**TOPAY**/PAID) · delivery mode (**GODOWN**/door) · `Loading/Unloading By: ☐ Consignor ☐ Consignee` ·
+charge lines **Freight + Stationary charges + Hamali/Handling charges = Total**.
+
+**Trailer** — LR number **printed twice, once as a barcode** · bank details for NEFT/RTGS ·
+acknowledgement block · **"BOOKED AT OWNER'S RISK"** (the Carriage by Road Act s.10/s.11 risk-rate
+election) · free-storage terms (7 days Greater Mumbai & Delhi NCR, 15 days elsewhere) · jurisdiction
+clause.
+
+### 11.3 Tax invoice — the real field set
+
+**Header** — supplier GSTIN · **copy designation** · `TAX INVOICE` · supplier name, address, email ·
+`Invoice No` · `Dated` · **`Place of Supply` with state code** · **`Reverse Charge: Y/N`**.
+
+**Dispatch block** (the join to the LR) — `GR/RR No` · `Transport` · `Station` · `E-Way Bill No`.
+Maru's richer variant adds `LR No` + date, **`Broker`**, delivery agent + their GSTIN, `CH.No`
+(challan), `Order No`, `P.O.`, and **`Cr.Days` + `Due On`** (credit terms, printed in red).
+
+**Parties** — **`Billed to` and `Shipped to` as separate blocks**, each with address, state + code,
+pincode, GSTIN/UIN. Rule 46(o)'s "address of delivery where different from place of supply" is exactly
+this, and §5.4 says the POD geofence must target the *Shipped to* address.
+
+**Lines** — S.N. · Description · **HSN/SAC** · Qty · Unit · List Price · Discount% · Price · Amount.
+Sub-lines carry size/colour breakdowns.
+
+**Totals** — tax rows (CGST/SGST or **IGST** for inter-state) · **TCS** row (s.206C(1H)) · Round Off ·
+Grand Total · a **tax-rate summary table** (Rate / Taxable Amt / Tax Amt / Total Tax) ·
+**amount in words** · bank details · terms · `Receiver's Signature` · `for <SUPPLIER> / Authorised
+Signatory`.
+
+**E-invoice only (≥₹5 cr)** — **IRN** (64-hex SHA-256), **ACK No**, **ACK Date**, and the **signed QR**.
+
+### 11.4 What the specimens teach that statute does not
+
+1. **The invoice value on the LR is hand-keyed and drifts.** LR `1105853234` records
+   `Invoice Value Rs.: 74741` and invoice `2026-27/11` totals **₹74,741** — an exact match. LR
+   `1105854020` records `127552` against invoice `2026-27/12`, which totals **₹1,91,328** — a
+   ₹63,776 discrepancy. A booking clerk retyped it. **A platform that generates both eliminates this
+   entire class of error**, and consignment value drives the e-way bill threshold (§4.1), so the
+   discrepancy is not merely clerical.
+2. **Both parties print the other's document number.** The invoice reserves space for the LR and
+   e-way bill; the LR reserves space for the invoice number, value and e-way bill. Neither is
+   generated by the party printing it — they are transcribed. Same fix.
+3. **The e-way bill number exists before either document is complete.** VRL prints `EwayNo` on a
+   pre-printed LR, and the Destinio invoices leave `E-Way Bill No` blank. Confirms **D-17**: at MVP we
+   *record and attach* an externally-generated number rather than generating one.
+
+### 11.5 The e-way bill condition — VERIFIED against specimens
+
+§4.8 states that a supplier who is **e-invoice enabled (AATO ≥ ₹5 cr)** must generate the e-way bill
+**through the IRN/e-invoice system, not the EWB API** (NIC errors 720/856). The specimens show both
+sides of that line in the same document set:
+
+| Supplier | IRN present? | e-way bill path |
+|---|---|---|
+| **Maru Enterprises Pvt Ltd** | ✅ IRN + ACK + signed QR | **IRN path only** — the EWB API would reject it |
+| **Destinio Clothing Co.** | ❌ none | EWB API path available |
+
+**Consequence for the build, unchanged from D-17:** we support **neither generation path** at MVP.
+Supporting both means a GSP contract *and* a second IRP integration (`BLOCKERS.md B-3`). We record the
+number, its validity and the issuing portal, and we alert on expiry — which is where the detention
+risk actually sits (§4.4).
+
+> VRL's LR prints *"Auto E-way Bill extension is enabled with NIC integration"* — direct NIC API
+> access, which §4.8 shows requires ~10,000 transactions/month per GSTIN. A national carrier clears
+> that bar. **A marketplace and its shippers do not**, which is precisely why the GSP route is the
+> only viable one for us.
+
+---
+
 ## §10 — Open questions and unverified items
 
 Do not build load-bearing logic on anything in this list without independent verification.
