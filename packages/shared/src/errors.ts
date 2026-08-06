@@ -23,6 +23,10 @@ export type ErrorCode =
   | 'DUPLICATE_QUOTE'
   | 'QUOTE_NOT_FOUND'
   | 'ALREADY_AWARDED'
+  // Distinct from CONFLICT on purpose: the apps must be able to say "you have
+  // used all your rounds on this quote" rather than showing a generic clash the
+  // user would reasonably retry.
+  | 'NEGOTIATION_CAP_REACHED'
 
 /** The single error envelope every service returns on failure. snake_case-friendly + stable. */
 export interface ErrorEnvelope {

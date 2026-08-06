@@ -336,6 +336,25 @@ export async function listNegotiationsForQuote(quoteId: string): Promise<DbNegot
 }
 
 // -----------------------------------------------------------
+// countNegotiationsForQuote
+// How many negotiation rows exist for a quote: the bidder's opening bid plus
+// one row per counter. Used by the round cap, so counters-so-far = count - 1.
+//
+// HEAD count query — the cap needs the number, never the rows, and a long
+// negotiation should not transfer its whole history on every counter.
+// -----------------------------------------------------------
+
+export async function countNegotiationsForQuote(quoteId: string): Promise<number> {
+  const { count, error } = await supabase
+    .from('negotiations')
+    .select('id', { count: 'exact', head: true })
+    .eq('quote_id', quoteId)
+
+  if (error) throw new Error(`DB count negotiations failed: ${error.message}`)
+  return count ?? 0
+}
+
+// -----------------------------------------------------------
 // awardBooking
 // Atomically binds the booking to the WINNING BIDDER and marks it
 // accepted. The WHERE guard (status IN (...) AND awarded_quote_id IS
