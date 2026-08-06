@@ -21,21 +21,95 @@
 // ============================================================
 
 import { z } from 'zod'
-import { BookingError, type AuthenticatedUser } from '../types.js'
+import { BookingError, type AuthenticatedUser, type BookingStatus } from '../types.js'
 import * as repo from '../repository.js'
 import { getFleetOwnerByUserId } from '../fleet.js'
 import { supabase } from '../supabase.js'
+import { TERMINAL_BOOKING_STATUSES } from '../state.js'
 import * as docs from './repository.js'
 import {
   chargedWeightKg,
   consignmentValueInr,
   ewayBillExpiry,
+  ewayBillRequirement,
+  isGstDocumentNumber,
+  isStandingEwayBill,
   lrChargeTotalInr,
+  MAX_SERIES_PREFIX_LENGTH,
   roundInr,
   SERIES_PREFIX_PATTERN,
+  stateCodeOfGstin,
   type DocumentIssuerKind,
   type EwayBillExpiry,
+  type EwayBillRequirement,
+  type EwbStatus,
 } from './rules.js'
+
+// -----------------------------------------------------------
+// WHEN a document may be issued — 🔴 the gate, not a formality.
+//
+// Every issuance BURNS A SERIAL out of a gapless, per-owner, per-financial-year
+// series (§3.3). Migration 0024 has no void and no cancel: once a number is on a
+// row it is spent, and Rule 46(b) wants the series consecutive. So minting a
+// consignment note or a tax invoice against a trip that never ran does not just
+// produce a junk row — it puts a permanent hole in a legally sequenced series,
+// and a tax invoice in particular is a statutory document with GST consequences
+// attached to a supply that did not happen.
+//
+// The precedent is setReceiverEmail (lib/service.ts): a status allowlist and a
+// 409 INVALID_TRANSITION, terminal bookings frozen. Same shape here.
+//
+// 🔴 THE TWO DOCUMENTS DO NOT UNLOCK AT THE SAME MOMENT, and treating them as one
+// gate is how this gets written wrong:
+//
+//   LORRY RECEIPT — 'accepted' and 'in_transit' ONLY. It is a RECEIPT FOR GOODS
+//   HANDED OVER: issuing one transfers the lien and makes the carrier responsible
+//   for the goods until safe delivery (CBIC Flyer 38, §3.1). It cannot open before
+//   a carrier exists to take that custody — which is why 'pending'/'negotiating'
+//   are out, and why the carrier-assigned check below is the identity half of the
+//   same rule. It closes when the carriage does: once POD has proved delivery, the
+//   custody the LR evidences has already ended, so a serial minted then is a
+//   backdated document. Nullable vehicle_number in 0024 is deliberate — an LR
+//   raised at 'accepted', before the truck is finally allotted, is normal.
+//
+//   TAX INVOICE — from 'pending' through 'completed'. It is the SHIPPER's document
+//   for the goods they sold, not a freight bill, and it is raised against the
+//   GOODS rather than against the carriage: EWB-01 Part A field A.4 takes ITS
+//   number (§2), so the shipper needs it BEFORE a carrier has been found at all.
+//   It stays open through 'completed' because a TO_BE_BILLED consignment (§5.8) is
+//   invoiced after delivery.
+//
+// Both stop dead at the terminal states, which is the defect this closes: 'paid'
+// (the money is settled — a tax invoice raised now is a demand for payment already
+// made) and 'cancelled' (no goods moved, so there is nothing to receipt and no
+// supply to invoice). TERMINAL_BOOKING_STATUSES is derived from VALID_TRANSITIONS
+// so this cannot drift away from the lifecycle.
+// -----------------------------------------------------------
+
+const LR_ISSUABLE_STATUSES: BookingStatus[] = ['accepted', 'in_transit']
+
+const INVOICE_ISSUABLE_STATUSES: BookingStatus[] = [
+  'pending', 'negotiating', 'accepted', 'in_transit', 'completed',
+]
+
+function assertIssuable(
+  document: string,
+  status: BookingStatus,
+  allowed: BookingStatus[],
+): void {
+  if (allowed.includes(status)) return
+
+  const because = TERMINAL_BOOKING_STATUSES.includes(status)
+    ? `booking is '${status}' and will not move again`
+    : `booking is '${status}'`
+
+  throw new BookingError(
+    `${document} cannot be issued on this booking — ${because}. ` +
+    `Issuing burns a number out of a gapless statutory series that cannot be voided.`,
+    'INVALID_TRANSITION',
+    409,
+  )
+}
 
 // -----------------------------------------------------------
 // Request schemas. Money and weights are validated here so an invalid document
@@ -46,7 +120,15 @@ import {
 
 const money = z.number().nonnegative().finite()
 const stateCode = z.string().regex(/^\d{2}$/, 'state code must be the two-digit GST state code')
-const seriesPrefix = z.string().regex(SERIES_PREFIX_PATTERN, 'series prefix: max 4 chars, [A-Za-z0-9-] only')
+
+// The length cap is a SERIAL BUDGET, not a style rule — every character of prefix
+// costs a digit of serial inside Rule 46(b)'s 16, and running out mid-year locks
+// the owner's series until 1 April. See rules.ts.
+const seriesPrefix = z.string().regex(
+  SERIES_PREFIX_PATTERN,
+  `series prefix: max ${MAX_SERIES_PREFIX_LENGTH} chars, [A-Za-z0-9-] only — ` +
+  'a longer prefix would leave too few serials for a financial year',
+)
 
 export const IssueLorryReceiptBodySchema = z.object({
   // Per-owner series prefix, frozen on the first document of the financial year.
@@ -162,7 +244,9 @@ export const RecordEwayBillBodySchema = z.object({
   // reassigned to another transporter. Capturing the moment is what will let the
   // booking flow refuse a carrier swap instead of desyncing from the EWB system.
   part_b_entered_at: z.string().datetime().optional(),
-  document_number: z.string().regex(/^[A-Za-z0-9/-]{1,16}$/, 'document number must satisfy Rule 46(b)').optional(),
+  // The one Rule 46(b) check, from rules.ts — a second copy of that regex here is
+  // a second place for it to be wrong.
+  document_number: z.string().refine(isGstDocumentNumber, 'document number must satisfy Rule 46(b)').optional(),
   document_uri:    z.string().url().optional(),
   // Fallback only — the invoice's own GST-inclusive value wins when we have one.
   consignment_value_inr: money.optional(),
@@ -242,6 +326,21 @@ async function loadBookingOr404(bookingId: string) {
 }
 
 /**
+ * The e-way bill that currently STANDS for a booking — newest first, skipping any
+ * the portal has cancelled or rejected (§4.5).
+ *
+ * This is what the status column on eway_bill_records is for. A bill cancelled
+ * inside its 24-hour window and the bill raised to replace it are otherwise the
+ * same row shape, and printing the dead one on an LR or an invoice reproduces
+ * exactly the transcription error §11.4 says generating both documents removes.
+ * Expiry is deliberately NOT considered here: an expired bill is still the bill
+ * that was raised, and its expiry is reported separately and always recomputed.
+ */
+function standingEwayBill(records: docs.DbEwayBillRecord[]): docs.DbEwayBillRecord | null {
+  return records.find(r => isStandingEwayBill(r.status)) ?? null
+}
+
+/**
  * Read access to a booking's documents: the shipper, the assigned driver, the
  * fleet that won it, and ops. Same shape as every other per-booking read in this
  * service — the consignee is NOT here, because their access is the emailed
@@ -278,10 +377,18 @@ export async function issueLorryReceipt(
 ) {
   const booking = await loadBookingOr404(bookingId)
 
-  // A consignment note transfers the lien on the goods and makes the carrier
-  // responsible for them until safe delivery (CBIC Flyer 38). Issuing one before
-  // a carrier has been awarded the load would assert that transfer with nobody on
-  // the other end of it.
+  // WHEN. See LR_ISSUABLE_STATUSES: a consignment note is a receipt for goods
+  // handed over for carriage, so it opens when a carrier takes custody and closes
+  // when the carriage does. A 'cancelled' or 'paid' booking previously issued a
+  // 201 here and burnt a serial for a trip that never ran or is long over.
+  assertIssuable('A consignment note', booking.status, LR_ISSUABLE_STATUSES)
+
+  // WHO. The identity half of the same rule: a consignment note transfers the lien
+  // on the goods and makes the carrier responsible for them until safe delivery
+  // (CBIC Flyer 38). Issuing one before a carrier has been awarded the load would
+  // assert that transfer with nobody on the other end of it. Kept as a separate
+  // check because a booking can be 'accepted' with the award still unbound —
+  // a fleet may bid with no free truck (see assertFleetAssignmentReady).
   if (!booking.driver_id && !booking.fleet_owner_id) {
     throw new BookingError(
       'A consignment note can only be issued once a carrier is assigned to the booking',
@@ -344,7 +451,7 @@ export async function issueLorryReceipt(
 
     invoice_number:    invoice?.invoice_number ?? null,
     invoice_value_inr: invoice ? Number(invoice.consignment_value_inr) : null,
-    eway_bill_number:  ewbs[0]?.ewb_number ?? null,
+    eway_bill_number:  standingEwayBill(ewbs)?.ewb_number ?? null,
   }
 
   const lr = await docs.issueLorryReceipt({
@@ -382,6 +489,14 @@ export async function issueFreightInvoice(
   if (actor.role !== 'shipper' || booking.shipper_id !== actor.userId) {
     throw new BookingError('Only the shipper on this booking can issue its invoice', 'FORBIDDEN', 403)
   }
+
+  // WHEN. See INVOICE_ISSUABLE_STATUSES — wider than the LR's window at the front
+  // (the invoice number feeds EWB-01 Part A before a carrier exists) and one state
+  // longer at the back (TO_BE_BILLED is invoiced after delivery), but stopping
+  // dead at the terminal states. There was previously NO status check here at all,
+  // so a tax invoice — a statutory document with GST consequences — could be
+  // minted against a cancelled booking, against a supply that never happened.
+  assertIssuable('A tax invoice', booking.status, INVOICE_ISSUABLE_STATUSES)
 
   // §4.1, computed here so the caller cannot supply a total that disagrees with
   // its own parts. The DB recomputes the same formula as a generated column —
@@ -447,7 +562,7 @@ export async function issueFreightInvoice(
       grand_total_inr:   grandTotal,
 
       lr_number:        lr?.lr_number ?? null,
-      eway_bill_number: ewbs[0]?.ewb_number ?? null,
+      eway_bill_number: standingEwayBill(ewbs)?.ewb_number ?? null,
 
       irn:      body.irn ?? null,
       ack_no:   body.ack_no ?? null,
@@ -455,7 +570,41 @@ export async function issueFreightInvoice(
     },
   })
 
-  return invoice
+  return { ...invoice, eway_bill: invoiceEwayBillRequirement(body, Number(invoice.consignment_value_inr)) }
+}
+
+/**
+ * §9.2's first validation gate, on the request path rather than in a helper
+ * nobody calls: "threshold check on GST-INCLUSIVE consignment value".
+ *
+ * Answered off the invoice we just wrote, because its consignment_value_inr is
+ * the DB-generated Rule 138 Explanation 2 figure — the same number an officer
+ * would compute. Thresholding on taxable_value_inr instead is the §4.1 bug:
+ * ₹48,000 + 5% = ₹50,400 needs a bill and ₹48,000 says it does not, and the
+ * difference is a s.129 detention.
+ *
+ * The two ends of the movement are read from what the invoice already carries —
+ * explicit state codes first, then the first two digits of the GSTINs, which ARE
+ * the state code. Shipped-to beats billed-to because the goods go to the
+ * shipped-to address (§11.3 / §5.4); head-office billing with a warehouse
+ * delivery 400km away is ordinary. Where neither end can be established,
+ * ewayBillRequirement declines to answer rather than guessing 'not required'.
+ */
+function invoiceEwayBillRequirement(
+  body: IssueInvoiceBody,
+  consignmentValueInr: number,
+): EwayBillRequirement {
+  return ewayBillRequirement({
+    consignmentValueInr,
+    fromStateCode: stateCodeOfGstin(body.supplier_gstin),
+    toStateCode:
+      body.shipped_to_state_code ??
+      stateCodeOfGstin(body.shipped_to_gstin) ??
+      body.billed_to_state_code ??
+      stateCodeOfGstin(body.billed_to_gstin) ??
+      body.place_of_supply_code ??
+      null,
+  })
 }
 
 // -----------------------------------------------------------
@@ -497,6 +646,54 @@ export async function recordEwayBill(
 }
 
 // -----------------------------------------------------------
+// setEwayBillStatus — §4.5, and the reason eway_bill_records.status exists.
+//
+// A bill may be cancelled within 24 hours of generation and rejected (or deemed
+// accepted) within 72. Several rows per booking is the design — cancel-and-
+// regenerate and a D-16 multi-truck movement both produce them — but until this
+// path existed there was no way to say WHICH of them still stands, so "which
+// e-way bill was live when the vehicle was stopped" had no answer and the number
+// printed on an LR could be a dead one.
+//
+// 🔴 WE DO NOT ENFORCE THE 24-HOUR WINDOW. The portal decides whether a
+// cancellation is accepted; §4.5 records the window's start (generation vs Part B
+// entry) as unreconciled between the rule and NIC error 728; and refusing to
+// RECORD a cancellation the portal has already performed would leave our copy
+// insisting a bill is live when the EWB system says it is not. That is the
+// failure mode this whole record-don't-generate posture (D-17) exists to avoid.
+// -----------------------------------------------------------
+
+export const SetEwayBillStatusBodySchema = z.object({
+  status: z.enum(['cancelled', 'rejected']),
+  changed_at: z.string().datetime().optional(),
+  reason: z.string().min(1).max(500).optional(),
+})
+
+export type SetEwayBillStatusBody = z.infer<typeof SetEwayBillStatusBodySchema>
+
+export async function setEwayBillStatus(
+  bookingId: string,
+  ewbNumber: string,
+  body: SetEwayBillStatusBody,
+  actor: AuthenticatedUser,
+) {
+  const booking = await loadBookingOr404(bookingId)
+  // Same audience as recording one: whoever holds the paper. The portal already
+  // authorised the act; we are filing what it did.
+  await assertCanReadDocuments(booking, actor)
+
+  const record = await docs.setEwayBillStatus({
+    bookingId,
+    ewbNumber,
+    status: body.status as EwbStatus,
+    changedAt: body.changed_at ?? new Date().toISOString(),
+    reason: body.reason ?? null,
+  })
+
+  return withExpiry(record)
+}
+
+// -----------------------------------------------------------
 // getBookingDocuments — the read side.
 // -----------------------------------------------------------
 
@@ -505,6 +702,11 @@ export type BookingDocuments = {
   lorry_receipt: docs.DbLorryReceipt | null
   invoice: docs.DbFreightInvoice | null
   eway_bills: Array<docs.DbEwayBillRecord & { expiry: EwayBillExpiry }>
+  /**
+   * The bill that currently stands, if any — the answer to "which e-way bill was
+   * live", which the list alone cannot give once one has been cancelled.
+   */
+  standing_eway_bill_number: string | null
 }
 
 export async function getBookingDocuments(
@@ -525,6 +727,7 @@ export async function getBookingDocuments(
     lorry_receipt: lr,
     invoice,
     eway_bills: ewbs.map(withExpiry),
+    standing_eway_bill_number: standingEwayBill(ewbs)?.ewb_number ?? null,
   }
 }
 

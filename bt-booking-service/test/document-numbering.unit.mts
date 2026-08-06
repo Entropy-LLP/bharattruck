@@ -34,7 +34,6 @@ process.env.SUPABASE_URL = 'http://fake.local'
 process.env.SUPABASE_SERVICE_ROLE_KEY = 'fake-key'
 
 import { readFileSync } from 'node:fs'
-import { financialYearOf, formatDocumentNumber } from '../src/lib/documents/rules.js'
 
 let passed = 0
 const failures: string[] = []
@@ -55,23 +54,96 @@ function check(label: string, ok: boolean, detail = '') {
 //   - the existence check, the allocation and the insert are one transaction, and
 //     a unique violation on booking_id rolls back ALL of it (in the SQL that is
 //     the plpgsql exception handler discarding its subtransaction) before
-//     returning the document that won.
+//     returning the document that won;
+//   - a new counter row is SEEDED from the documents already in the series, and a
+//     NUMBER collision heals the counter and retries instead of re-raising. Those
+//     two together are what stop a series wedging permanently — see the
+//     "a counter behind its own documents" section below.
+//
+// The FY label and the number assembly live HERE rather than in src/. Production
+// numbering is entirely plpgsql, so a TypeScript formatter would be a second
+// implementation of a frozen format with no caller — the model needs its own
+// arithmetic precisely because the real thing does not import any.
 // ============================================================
+
+/** Indian FY, 1 April to 31 March, in IST. Mirrors public.indian_financial_year. */
+function modelFinancialYear(at: Date): string {
+  const ist = new Date(at.getTime() + ((5 * 60 + 30) * 60 * 1000))
+  const month = ist.getUTCMonth() + 1
+  const startYear = month >= 4 ? ist.getUTCFullYear() : ist.getUTCFullYear() - 1
+  return `${startYear}-${String((startYear + 1) % 100).padStart(2, '0')}`
+}
+
+/** `[PREFIX/]<FY>/<serial>` — what allocate_document_number assembles. */
+function modelNumber(fy: string, serial: number, prefix: string | null): string {
+  const number = `${prefix ? `${prefix}/` : ''}${fy}/${serial}`
+  // Rule 46(b) at the same point the SQL checks it, and for the same reason: a
+  // truncated number is a DIFFERENT number and collides with an earlier one.
+  //
+  // 54000 program_limit_exceeded, exactly as the SQL raises it — an exhausted
+  // series is a CONFLICT the operator can act on ("open a second series"), never
+  // an anonymous internal error.
+  if (!/^[A-Za-z0-9/-]{1,16}$/.test(number)) {
+    const err = new Error(`series exhausted: '${number}' exceeds Rule 46(b) 16 characters`)
+    ;(err as Error & { code: string }).code = '54000'
+    throw err
+  }
+  return number
+}
 
 type SeriesRow = { next: number; prefix: string | null }
 
 class AllocatorModel {
   readonly series = new Map<string, SeriesRow>()
   readonly lrByBooking = new Map<string, Record<string, unknown>>()
+  /** Numbers present in each series — the lorry_receipts_number_idx unique. */
+  readonly issued = new Map<string, Set<string>>()
   /** Per-series mutex — Postgres's row-level lock, held to commit. */
   private locks = new Map<string, Promise<void>>()
   /** Set to make the INSERT fail once, the way a CHECK violation would. */
   failNextInsert = false
   rpcCalls: string[] = []
+  /** How many times the counter had to be healed past a collision. */
+  heals = 0
   now: () => Date = () => new Date('2026-08-06T10:00:00Z')
 
-  private key(kind: string, issuerKind: string, issuerId: string, fy: string) {
+  key(kind: string, issuerKind: string, issuerId: string, fy: string) {
     return `${kind}|${issuerKind}|${issuerId}|${fy}`
+  }
+
+  private numbersIn(key: string): Set<string> {
+    let set = this.issued.get(key)
+    if (!set) { set = new Set(); this.issued.set(key, set) }
+    return set
+  }
+
+  /**
+   * Rows written into lorry_receipts WITHOUT going through the allocator — the
+   * backfill of historical paper LRs, which is the obvious next task and the most
+   * foreseeable way for a counter to end up behind its own table.
+   */
+  backfill(issuerId: string, numbers: string[], fy = '2026-27', issuerKind = 'fleet_owner') {
+    const set = this.numbersIn(this.key('lr', issuerKind, issuerId, fy))
+    numbers.forEach(n => set.add(n))
+  }
+
+  /** next_free_document_serial: only numbers in the shape THIS series generates. */
+  private nextFreeSerial(key: string, fy: string, prefix: string | null): number {
+    const shape = new RegExp(`^${prefix ? `${prefix}/` : ''}${fy}/([0-9]+)$`)
+    let max = 0
+    for (const n of this.numbersIn(key)) {
+      const m = shape.exec(n)
+      if (m) max = Math.max(max, Number(m[1]))
+    }
+    return max + 1
+  }
+
+  /** sync_document_series_counter: advance past everything already issued. */
+  private heal(key: string, fy: string) {
+    const row = this.series.get(key)
+    if (!row) return
+    row.next = Math.max(row.next, this.nextFreeSerial(key, fy, row.prefix))
+    this.heals++
   }
 
   private async withRowLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
@@ -96,45 +168,71 @@ class AllocatorModel {
     const existing = this.lrByBooking.get(args.p_booking_id)
     if (existing) return existing
 
-    const fy = financialYearOf(this.now())
+    const fy = modelFinancialYear(this.now())
     const key = this.key('lr', args.p_issuer_kind, args.p_issuer_id, fy)
 
     return this.withRowLock(key, async () => {
-      let row = this.series.get(key)
-      if (!row) { row = { next: 1, prefix: args.p_prefix ?? null }; this.series.set(key, row) }
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        let row = this.series.get(key)
+        if (!row) {
+          // A NEW counter is SEEDED from the documents already in the series, not
+          // started at 1. Starting at 1 behind a backfilled row collides on the
+          // very first allocation and on every one after it.
+          row = { next: this.nextFreeSerial(key, fy, args.p_prefix ?? null), prefix: args.p_prefix ?? null }
+          this.series.set(key, row)
+        }
 
-      // The UPDATE ... RETURNING next_number - 1. The prefix comes from the
-      // STORED row: a series in flight never changes shape mid-year.
-      const serial = row.next
-      row.next += 1
-      const number = formatDocumentNumber({ financialYear: fy, serial, prefix: row.prefix })
+        // The UPDATE ... RETURNING next_number - 1. The prefix comes from the
+        // STORED row: a series in flight never changes shape mid-year.
+        const serial = row.next
+        row.next += 1
+        let number: string
+        try {
+          number = modelNumber(fy, serial, row.prefix)
+        } catch (err) {
+          // The whole transaction aborts, so the increment rolls back with it and
+          // no number is burnt — the series just cannot advance past this point.
+          row.next = serial
+          throw err
+        }
 
-      // The window in which a real transaction is still open.
-      await Promise.resolve()
+        // The window in which a real transaction is still open.
+        await Promise.resolve()
 
-      const failed = this.failNextInsert
-      this.failNextInsert = false
-      const lostTheRace = this.lrByBooking.has(args.p_booking_id)
+        const failed = this.failNextInsert
+        this.failNextInsert = false
+        const lostTheRace = this.lrByBooking.has(args.p_booking_id)
+        const numberTaken = this.numbersIn(key).has(number)
 
-      if (failed || lostTheRace) {
-        // ABORT. The counter increment is part of the same transaction, so it
-        // goes back — this is precisely why a sequence is the wrong tool.
-        row.next = serial
-        if (lostTheRace) return this.lrByBooking.get(args.p_booking_id)!
-        throw new Error('simulated insert failure (check violation)')
+        if (failed || lostTheRace || numberTaken) {
+          // ABORT. The counter increment is part of the same transaction, so it
+          // goes back — this is precisely why a sequence is the wrong tool.
+          row.next = serial
+          if (lostTheRace) return this.lrByBooking.get(args.p_booking_id)!
+          if (failed) throw new Error('simulated insert failure (check violation)')
+
+          // A NUMBER collision, not a booking one. Re-raising here is what wedged
+          // the series: the rollback already discarded the increment, so the next
+          // request would allocate the identical colliding number, for ever. Heal
+          // the counter past what is actually in the table and go round again.
+          this.heal(key, fy)
+          continue
+        }
+
+        const doc = {
+          id: `lr-${number}`,
+          booking_id: args.p_booking_id,
+          lr_number: number,
+          financial_year: fy,
+          issuer_kind: args.p_issuer_kind,
+          issuer_id: args.p_issuer_id,
+          ...args.p_payload,
+        }
+        this.lrByBooking.set(args.p_booking_id, doc)
+        this.numbersIn(key).add(number)
+        return doc
       }
-
-      const doc = {
-        id: `lr-${number}`,
-        booking_id: args.p_booking_id,
-        lr_number: number,
-        financial_year: fy,
-        issuer_kind: args.p_issuer_kind,
-        issuer_id: args.p_issuer_id,
-        ...args.p_payload,
-      }
-      this.lrByBooking.set(args.p_booking_id, doc)
-      return doc
+      throw new Error('document number still colliding after 3 attempts')
     })
   }
 }
@@ -161,7 +259,10 @@ function fakeSupabase(model: AllocatorModel) {
           if (fn === 'issue_lorry_receipt') return { data: await model.issueLorryReceipt(args), error: null }
           return { data: null, error: { code: 'PGRST202', message: `no function ${fn}` } }
         } catch (err) {
-          return { data: null, error: { code: '23514', message: (err as Error).message } }
+          // Postgres SQLSTATEs travel back through PostgREST; keep the one the
+          // allocator chose so the repository's mapping is exercised.
+          const code = (err as { code?: string }).code ?? '23514'
+          return { data: null, error: { code, message: (err as Error).message } }
         }
       },
     },
@@ -333,6 +434,134 @@ async function main() {
     )
   }
 
+  console.log('\n── a counter behind its own documents must SELF-HEAL, not wedge')
+  {
+    // 🔴 The wedge. Backfilling historical paper LRs into lorry_receipts without
+    // touching document_series is the obvious next task, and it leaves the counter
+    // pointing at a number that already exists. The insert then fails on the
+    // number index — and because catching that exception rolls the subtransaction
+    // back, the counter increment goes back with it. A handler that merely
+    // re-raises therefore leaves next_number exactly where it was, so the NEXT
+    // request allocates the same number and fails identically. One backfill takes
+    // a party out for the rest of the financial year.
+
+    // (a) The counter is SEEDED when the series row is first created.
+    {
+      const model = new AllocatorModel()
+      __setSupabaseClientForTests(fakeSupabase(model).client as any)
+      model.backfill(OWNER_A, ['2026-27/1', '2026-27/2', '2026-27/3'])
+
+      const first = await issue(model, booking(700), OWNER_A)
+      check(
+        'the first allocation after a backfill continues the series, not restarts it',
+        first.lr_number === '2026-27/4',
+        `(got ${first.lr_number})`,
+      )
+      check('no healing was needed — the seed got it right', model.heals === 0)
+      const second = await issue(model, booking(701), OWNER_A)
+      check('and it keeps going', second.lr_number === '2026-27/5', `(got ${second.lr_number})`)
+    }
+
+    // (b) An EXISTING counter that has fallen behind heals on collision. This is
+    //     the case the seed cannot cover: the series row was created first, then
+    //     rows appeared underneath it.
+    {
+      const model = new AllocatorModel()
+      __setSupabaseClientForTests(fakeSupabase(model).client as any)
+
+      const one = await issue(model, booking(710), OWNER_A)
+      check('a normal first document', one.lr_number === '2026-27/1')
+
+      // Now a backfill lands on top of the live counter, which still says 2.
+      model.backfill(OWNER_A, ['2026-27/2', '2026-27/3', '2026-27/4'])
+
+      const next = await issue(model, booking(711), OWNER_A)
+      check(
+        'the next issue steps over the backfilled block instead of 500ing',
+        next.lr_number === '2026-27/5',
+        `(got ${next.lr_number})`,
+      )
+      check('and it took exactly one heal to get there', model.heals === 1, `(heals=${model.heals})`)
+
+      // THE ORIGINAL BUG, stated as a check: three consecutive attempts all failed
+      // with the same duplicate key and next_number never moved. If the handler
+      // re-raises, the two issues below both throw and the counter stays at 2.
+      const after1 = await issue(model, booking(712), OWNER_A)
+      const after2 = await issue(model, booking(713), OWNER_A)
+      check('consecutive requests keep succeeding — the series is not wedged',
+        after1.lr_number === '2026-27/6' && after2.lr_number === '2026-27/7',
+        `(got ${after1.lr_number}, ${after2.lr_number})`)
+      check('and no further healing was needed', model.heals === 1)
+    }
+
+    // (c) Healing NEVER pulls a counter backwards. That would reissue a number
+    //     already printed on a document someone is holding.
+    {
+      const model = new AllocatorModel()
+      __setSupabaseClientForTests(fakeSupabase(model).client as any)
+      for (const b of [720, 721, 722]) await issue(model, booking(b), OWNER_A)
+      const key = model.key('lr', 'fleet_owner', OWNER_A, '2026-27')
+      check('three documents leave the counter at 4', model.series.get(key)?.next === 4)
+
+      // A backfill of numbers BELOW the counter changes nothing.
+      model.backfill(OWNER_A, ['2026-27/1'])
+      const next = await issue(model, booking(723), OWNER_A)
+      check('a stale backfill does not rewind the series', next.lr_number === '2026-27/4', `(got ${next.lr_number})`)
+    }
+
+    // (d) A differently-shaped historical number must NOT consume serials. The
+    //     §11.1 Maru specimen 'MA/4135/2526' cannot collide with anything this
+    //     allocator produces, so counting it would put a real gap in the series.
+    {
+      const model = new AllocatorModel()
+      __setSupabaseClientForTests(fakeSupabase(model).client as any)
+      model.backfill(OWNER_A, ['MA/4135/2526', '2025-26/900'])
+
+      const first = await issue(model, booking(730), OWNER_A)
+      check(
+        'a paper number in another shape does not skip serials',
+        first.lr_number === '2026-27/1',
+        `(got ${first.lr_number})`,
+      )
+    }
+  }
+
+  console.log('\n── a series must not run out of numbers mid-year (Rule 46(b))')
+  {
+    // 🔴 The second wedge. 'ABCD/2026-27/999' is exactly 16 characters, so a
+    // 4-character prefix caps an owner at 999 documents for the whole year —
+    // and there is no product path to shorten a prefix, because the shape of a
+    // series in flight is frozen at its first document. The fix is upstream: the
+    // prefix a caller may supply is capped so the budget is adequate.
+    const { SERIES_PREFIX_PATTERN, MAX_SERIES_PREFIX_LENGTH, serialBudgetForPrefix, MIN_SERIALS_PER_FINANCIAL_YEAR } =
+      await import('../src/lib/documents/rules.js')
+
+    check('a 4-character prefix cannot reach the allocator at all',
+      !SERIES_PREFIX_PATTERN.test('ABCD'))
+    check('the admissible prefixes all hold a year of real operation',
+      serialBudgetForPrefix('x'.repeat(MAX_SERIES_PREFIX_LENGTH)) >= MIN_SERIALS_PER_FINANCIAL_YEAR)
+
+    // And the allocator still refuses to truncate if a series somehow gets there:
+    // a truncated number is a DIFFERENT number and collides with an earlier one.
+    const model = new AllocatorModel()
+    __setSupabaseClientForTests(fakeSupabase(model).client as any)
+    const key = model.key('lr', 'fleet_owner', OWNER_A, '2026-27')
+    model.series.set(key, { next: serialBudgetForPrefix('AB') + 1, prefix: 'AB' })
+
+    let status = 0
+    try { await issue(model, booking(800), OWNER_A, 'AB') }
+    catch (err) { status = (err as { httpStatus?: number }).httpStatus ?? -1 }
+    check('past the budget the allocator refuses rather than truncating', status !== 0)
+    check(
+      'and it surfaces as an actionable 409, not an anonymous 500',
+      status === 409,
+      `(got ${status})`,
+    )
+    check('no number was burnt getting there',
+      model.series.get(key)?.next === serialBudgetForPrefix('AB') + 1,
+      `(next=${model.series.get(key)?.next})`)
+  }
+
   console.log('\n── the migration file itself')
   {
     const raw = readFileSync(new URL('../../supabase/migrations/0024_freight_documents.sql', import.meta.url), 'utf8')
@@ -363,6 +592,29 @@ async function main() {
     check('issue_lorry_receipt allocates…', /allocate_document_number\('lr'/.test(issueFn))
     check('…and inserts the document in the same function', /insert into public\.lorry_receipts/.test(issueFn))
     check('…and rolls back onto the existing row on a unique violation', /when unique_violation then/.test(issueFn))
+
+    // 🔴 The wedge fix, asserted on the SQL itself. A handler that only re-raises
+    // leaves next_number where the rollback left it, so every later request
+    // collides identically — a permanent 500 for one party for the rest of the FY.
+    check('a new counter is SEEDED from the documents already in the series',
+      /insert into public\.document_series[\s\S]{0,400}next_number[\s\S]{0,400}next_free_document_serial/.test(sql))
+    check('next_free_document_serial counts only numbers this series would generate',
+      /v_pattern := '\^' \|\| coalesce\(p_prefix \|\| '\/', ''\) \|\| p_financial_year/.test(sql))
+    check('the collision handler HEALS the counter rather than re-raising',
+      /when unique_violation then[\s\S]{0,900}sync_document_series_counter/.test(issueFn))
+    check('and the invoice side heals too',
+      /when unique_violation then[\s\S]{0,900}sync_document_series_counter\('invoice'/.test(sql))
+    check('healing never pulls a counter backwards',
+      /set next_number = greatest\(next_number, v_free\)/.test(sql))
+    check('the retry is bounded, so a genuine anomaly is not spun on',
+      /v_attempt >= 3/.test(sql))
+
+    // Rule 46(b) overflow: the prefix budget is what stops a series running out,
+    // and the ceiling reports as something a service layer can act on.
+    check('the series prefix is capped at 2 characters (99,999 numbers a year)',
+      /prefix\s+text check \(prefix ~ '\^\[A-Za-z0-9-\]\{1,2\}\$'\)/.test(sql))
+    check('an exhausted series raises program_limit_exceeded, not check_violation',
+      /program_limit_exceeded/.test(sql) && !/errcode = 'check_violation'/.test(sql))
 
     check(
       'the invoice series belongs to the SHIPPER, not the carrier',
@@ -405,13 +657,29 @@ async function main() {
     check('Part B entry is recorded (Rule 138(5A))', /part_b_entered_at\s+timestamptz/.test(sql))
     check('the issuing portal is recorded (portal affinity)', /issuing_portal\s+public\.ewb_portal not null/.test(sql))
 
+    // §4.5 — the table's own comment promises you can ask "which bill was live
+    // when the vehicle was stopped". That needs a status, and it needs the number
+    // NOT to be globally unique, because one consolidated bill can legitimately
+    // cover two bookings (D-16).
+    check('an e-way bill carries a status', /status\s+public\.ewb_status not null default 'active'/.test(sql))
+    check("but never 'expired' — that is derived from valid_upto and the clock",
+      /create type public\.ewb_status as enum \('active', 'cancelled', 'rejected'\)/.test(sql))
+    check('a status change is dated', /eway_bill_status_change_is_dated/.test(sql))
+    check('the bill number is unique PER BOOKING, not globally',
+      /constraint eway_bill_records_booking_number_key unique \(booking_id, ewb_number\)/.test(sql) &&
+      !/ewb_number\s+text not null unique/.test(sql))
+    check('the expiry sweep ignores bills nobody is relying on any more',
+      /where part_b_entered_at is not null and status = 'active'/.test(sql))
+
     // Idempotency — the file may be re-run against a database that has some of it.
     const creates = sql.match(/create table[^;]*?public\./g) ?? []
     check('every create table is guarded', creates.every(c => /if not exists/.test(c)), `(${creates.length} tables)`)
     const indexes = sql.match(/create (unique )?index[^;]*?on/g) ?? []
     check('every create index is guarded', indexes.every(i => /if not exists/.test(i)), `(${indexes.length} indexes)`)
     const types = sql.match(/create type public\.\w+/g) ?? []
-    check('all five enums are created behind a pg_type guard', types.length === 5 && (sql.match(/if not exists \(select 1 from pg_type where typname/g) ?? []).length === 5)
+    check('all six enums are created behind a pg_type guard', types.length === 6 && (sql.match(/if not exists \(select 1 from pg_type where typname/g) ?? []).length === 6, `(${types.length} types)`)
+    check('a table that already exists in an older shape is caught up, not skipped',
+      /alter table public\.eway_bill_records add column if not exists status/.test(sql))
 
     // The document-minting functions must not be reachable from a browser key.
     // Naming anon/authenticated is not enough — they are members of PUBLIC, and
@@ -423,7 +691,14 @@ async function main() {
 
     // The additive rule: this migration runs against a live DB with 677 bookings.
     check('no existing column is altered', !/alter table public\.(bookings|users|drivers|quotes|fleet_owners|payouts)/.test(sql))
-    check('nothing is dropped', !/\bdrop (table|column|constraint|type)\b/i.test(sql))
+    check('no table or column is dropped', !/\bdrop (table|column|type)\b/i.test(sql))
+    // Constraint drops ARE allowed, but only on tables this file itself creates —
+    // dropping one from a pre-existing table would break the additive rule.
+    const OWN_TABLES = ['document_series', 'lorry_receipts', 'freight_invoices', 'eway_bill_records']
+    const constraintDrops = sql.match(/alter table public\.(\w+)[^;]*?drop constraint/gi) ?? []
+    check('any constraint drop is scoped to a table this migration creates',
+      constraintDrops.every(d => OWN_TABLES.some(t => d.includes(`public.${t}`))),
+      `(${constraintDrops.length} drops)`)
     check('it does not depend on 0023 (payout_split)', !/payouts|payee_type|revenue_share_pct/.test(sql))
   }
 

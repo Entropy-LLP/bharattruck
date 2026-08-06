@@ -17,6 +17,11 @@ import * as docsvc from '../lib/documents/service.js'
 
 const UuidParamSchema = z.object({ id: z.string().uuid('id must be a valid UUID') })
 
+const EwbParamsSchema = z.object({
+  id: z.string().uuid('id must be a valid UUID'),
+  ewbNumber: z.string().regex(/^\d{12}$/, 'e-way bill number is 12 digits'),
+})
+
 function handleError(reply: FastifyReply, err: unknown) {
   if (err instanceof BookingError) {
     return reply.status(err.httpStatus).send({ success: false, error: err.message, code: err.code })
@@ -105,6 +110,32 @@ export async function documentRoutes(app: FastifyInstance) {
     try {
       const record = await docsvc.recordEwayBill(id, body, req.user)
       return reply.status(201).send({ success: true, data: record })
+    } catch (err) {
+      return handleError(reply, err)
+    }
+  })
+
+  // PATCH /bookings/:id/documents/eway-bill/:ewbNumber — file what the PORTAL did
+  // to a bill (§4.5: cancelled within 24h, rejected within 72h).
+  //
+  // Without this, eway_bill_records could hold several bills per booking but never
+  // say which one still stands, so "which e-way bill was live when the vehicle was
+  // stopped" — the question the multi-row design exists to answer — had no answer.
+  // We record the portal's act; we do not adjudicate its 24-hour window.
+  app.patch('/:id/documents/eway-bill/:ewbNumber', async (req, reply) => {
+    const params = EwbParamsSchema.safeParse(req.params)
+    if (!params.success) {
+      return reply.status(400).send({
+        success: false,
+        error: params.error.errors[0].message,
+        code: 'VALIDATION_ERROR',
+      })
+    }
+    const body = parseBody(reply, docsvc.SetEwayBillStatusBodySchema, req.body)
+    if (!body) return
+    try {
+      const record = await docsvc.setEwayBillStatus(params.data.id, params.data.ewbNumber, body, req.user)
+      return reply.send({ success: true, data: record })
     } catch (err) {
       return handleError(reply, err)
     }

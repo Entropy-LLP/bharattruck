@@ -7,11 +7,18 @@
  *
  *   - a uuid in a document-number field is an INVALID GST document (§3.3), and
  *     the doc calls it out as a common bug in logistics SaaS;
- *   - a financial year computed in UTC reissues last year's numbers every April;
+ *   - a prefix that leaves too few serials locks an owner's series for the rest
+ *     of the financial year, with no way to renumber or reshape it (Rule 46(b));
  *   - an e-way bill threshold checked on the PRE-TAX value moves a truck without
- *     a bill it needed — a s.129 detention, not a ₹1,000 penalty (§4.1);
+ *     a bill it needed — a s.129 detention, not a ₹1,000 penalty (§4.1) — and a
+ *     threshold answered CONFIDENTLY on an intra-state move is the same failure
+ *     wearing a different hat (§4.2);
  *   - a locally recomputed valid_upto tells a driver they are covered while the
  *     bill is already dead (§4.4, the midnight rule).
+ *
+ * The last section is structural rather than legal: it fails if this module grows
+ * an export that production never calls. A rules file whose only caller is its own
+ * test reports a large green number while shipping nothing.
  *
  * Pure functions, no Postgres.
  *
@@ -56,66 +63,54 @@ console.log('\n── Rule 46(b): the document-number format')
   check('16 is the cap', rules.MAX_GST_DOCUMENT_NUMBER_LENGTH === 16)
 }
 
-console.log('\n── number assembly')
+console.log('\n── the serial budget: a prefix spends digits (§3.3 + Rule 46(b))')
 {
-  check(
-    'unprefixed series reproduces the specimen shape',
-    rules.formatDocumentNumber({ financialYear: '2026-27', serial: 11 }) === '2026-27/11',
-  )
-  check(
-    'a prefix is separated by a slash',
-    rules.formatDocumentNumber({ financialYear: '2026-27', serial: 11, prefix: 'MA' }) === 'MA/2026-27/11',
-  )
-  check(
-    'the series starts at 1, not 0',
-    rules.formatDocumentNumber({ financialYear: '2026-27', serial: 1 }) === '2026-27/1',
-  )
-  check(
-    'an 8-digit serial still fits unprefixed',
-    rules.formatDocumentNumber({ financialYear: '2026-27', serial: 99999999 }).length === 16,
-  )
+  // 🔴 The defect this section pins. A 4-character prefix caps an owner at 999
+  // documents for the WHOLE financial year: 'ABCD/2026-27/999' is exactly 16
+  // characters and '/1000' is 17. Reaching that is not a soft failure — the
+  // series cannot advance past the bad number, cannot be renumbered (Rule 46(b)),
+  // and its prefix cannot be shortened because the shape of a series in flight is
+  // frozen at its first document. The owner is locked out until 1 April.
+  //
+  // A fleet issuing 1,000 consignment notes in a year is an ordinary fleet, so
+  // the budget — not the prefix's looks — is what has to be constrained.
+  check('a 4-char prefix would buy only 999 documents a year', rules.serialBudgetForPrefix('ABCD') === 999)
+  check('3 chars, 9,999', rules.serialBudgetForPrefix('ABC') === 9_999)
+  check('2 chars, 99,999', rules.serialBudgetForPrefix('MA') === 99_999)
+  check('1 char, 999,999', rules.serialBudgetForPrefix('M') === 999_999)
+  check('unprefixed, 99,999,999', rules.serialBudgetForPrefix(null) === 99_999_999)
+  check('and null and undefined mean the same unprefixed series',
+    rules.serialBudgetForPrefix() === rules.serialBudgetForPrefix(null))
 
-  throws('serial 0 is refused — Rule 46(b) series are 1-based', () =>
-    rules.formatDocumentNumber({ financialYear: '2026-27', serial: 0 }))
-  throws('a fractional serial is refused', () =>
-    rules.formatDocumentNumber({ financialYear: '2026-27', serial: 1.5 }))
-  throws('a 5-character prefix is refused', () =>
-    rules.formatDocumentNumber({ financialYear: '2026-27', serial: 1, prefix: 'TOOBIG' }))
-  throws('a prefix containing a slash is refused (the formatter owns the separator)', () =>
-    rules.formatDocumentNumber({ financialYear: '2026-27', serial: 1, prefix: 'M/A' }))
-  throws('a malformed FY label is refused', () =>
-    rules.formatDocumentNumber({ financialYear: '2026', serial: 1 }))
-  // Overflow must THROW, never truncate: a truncated number is a DIFFERENT
-  // number and collides with an earlier document in the same series.
-  throws('an over-16 assembly throws rather than truncating', () =>
-    rules.formatDocumentNumber({ financialYear: '2026-27', serial: 10000, prefix: 'ABCD' }))
-}
+  // The arithmetic above, checked against the actual assembled string rather than
+  // trusted: the largest legal number for a prefix must be exactly 16 characters,
+  // and one more digit must not be.
+  const largest = (prefix: string | null) =>
+    `${prefix ? `${prefix}/` : ''}2026-27/${rules.serialBudgetForPrefix(prefix)}`
+  check("'MA/2026-27/99999' is exactly the Rule 46(b) limit",
+    largest('MA').length === 16 && rules.isGstDocumentNumber(largest('MA')))
+  check('one serial past the budget no longer fits',
+    !rules.isGstDocumentNumber(`MA/2026-27/${rules.serialBudgetForPrefix('MA') + 1}`))
+  check("the unprefixed ceiling is 16 characters too", largest(null).length === 16)
 
-console.log('\n── financial year: 1 April, in IST')
-{
-  const fy = (iso: string) => rules.financialYearOf(new Date(iso))
+  // THE FIX. The cap is derived from the floor, so the two cannot disagree.
+  check('a financial year must hold at least 99,999 documents',
+    rules.MIN_SERIALS_PER_FINANCIAL_YEAR === 99_999)
+  check('which makes 2 characters the longest admissible prefix',
+    rules.MAX_SERIES_PREFIX_LENGTH === 2)
+  check('every admissible prefix clears the floor',
+    rules.serialBudgetForPrefix('x'.repeat(rules.MAX_SERIES_PREFIX_LENGTH)) >= rules.MIN_SERIALS_PER_FINANCIAL_YEAR)
+  check('and one character more does not',
+    rules.serialBudgetForPrefix('x'.repeat(rules.MAX_SERIES_PREFIX_LENGTH + 1)) < rules.MIN_SERIALS_PER_FINANCIAL_YEAR)
 
-  check("mid-year is the FY that started in April", fy('2026-08-06T12:00:00Z') === '2026-27')
-  check('1 April IST opens the new FY', fy('2026-04-01T00:00:00+05:30') === '2026-27')
-  check('31 March IST is still the old FY', fy('2026-03-31T12:00:00+05:30') === '2025-26')
-  check('January belongs to the FY that started last April', fy('2026-01-15T12:00:00Z') === '2025-26')
-
-  // THE TRAP. 2026-03-31 23:00 UTC is 2026-04-01 04:30 in Kolkata. Computing
-  // the year off the UTC date puts this document back into a series that closed
-  // on 31 March — i.e. it reissues a number that is already printed.
-  check(
-    'IST, not UTC: 31 Mar 23:00 UTC is already FY 2026-27',
-    fy('2026-03-31T23:00:00Z') === '2026-27',
-  )
-  check(
-    'and 31 Mar 18:29 UTC (23:59 IST) is still FY 2025-26',
-    fy('2026-03-31T18:29:00Z') === '2025-26',
-  )
-
-  // The label must satisfy the same regex the DB CHECK enforces, at the century
-  // boundary too — '1999-0' would be rejected by Postgres after the fact.
-  check('century rollover zero-pads to 1999-00', fy('1999-06-01T12:00:00Z') === '1999-00')
-  check('every label matches the stored pattern', rules.FINANCIAL_YEAR_PATTERN.test(fy('2000-04-01T12:00:00Z')))
+  // The validation a caller actually hits, built from the same number.
+  check("the Maru specimen's 'MA' is still accepted", rules.SERIES_PREFIX_PATTERN.test('MA'))
+  check('a 4-character prefix is REFUSED at the door — this is the wedge, closed',
+    !rules.SERIES_PREFIX_PATTERN.test('ABCD'))
+  check('a 3-character prefix is refused too', !rules.SERIES_PREFIX_PATTERN.test('ABC'))
+  check('a prefix carrying a slash is refused — the DB owns the separator',
+    !rules.SERIES_PREFIX_PATTERN.test('M/'))
+  check('the empty prefix is not a prefix', !rules.SERIES_PREFIX_PATTERN.test(''))
 }
 
 console.log('\n── weight: actual AND charged (§11.2)')
@@ -172,6 +167,122 @@ console.log('\n── consignment value INCLUDES GST (§4.1, Rule 138 Explanatio
   )
   throws('a negative tax component is refused', () =>
     rules.consignmentValueInr({ taxableValueInr: 100, igstInr: -1 }))
+}
+
+console.log('\n── the §9.2 threshold gate refuses to guess')
+{
+  // The requirement §9.2 lists first — "threshold check on GST-INCLUSIVE
+  // consignment value" — as the single answer the issuance path puts in front of
+  // a user. The §4.1 worked example, end to end.
+  const hubballiToPune = rules.ewayBillRequirement({
+    consignmentValueInr: 50400, fromStateCode: '29', toStateCode: '27',
+  })
+  check('inter-state above the line: an e-way bill IS required', hubballiToPune.required === true)
+  check('classified as inter-state', hubballiToPune.movement === 'inter_state')
+  check('against the ₹50,000 figure no state may vary', hubballiToPune.threshold_inr === 50000)
+  check('and the value it judged is the GST-INCLUSIVE one', hubballiToPune.consignment_value_inr === 50400)
+
+  check('the same movement at ₹48,000 pre-tax would NOT have been flagged',
+    rules.ewayBillRequirement({ consignmentValueInr: 48000, fromStateCode: '29', toStateCode: '27' }).required === false)
+  check('exactly ₹50,000 does not need one ("exceeds")',
+    rules.ewayBillRequirement({ consignmentValueInr: 50000, fromStateCode: '29', toStateCode: '27' }).required === false)
+
+  // 🔴 THE REFUSAL. §4.2's intra-state table is per-state, effective-dated and
+  // partly contested (Rajasthan ₹2,00,000 intra-city, MP none intra-district, Goa
+  // only for 22 goods). Answering `false` here would read as "no e-way bill
+  // needed" on a movement whose real threshold this codebase does not know.
+  const intra = rules.ewayBillRequirement({
+    consignmentValueInr: 500000, fromStateCode: '29', toStateCode: '29',
+  })
+  check('intra-state is classified, not answered', intra.movement === 'intra_state' && intra.required === null)
+  check('even at ₹5,00,000 — silence, not a confident "no"', intra.required !== false)
+  check('no national threshold is asserted for it', intra.threshold_inr === null)
+  check('and the reason points the user at the state rule', /state/i.test(intra.reason))
+
+  const unknown = rules.ewayBillRequirement({ consignmentValueInr: 200000, fromStateCode: '29' })
+  check('one end missing is "unknown", never "not required"',
+    unknown.movement === 'unknown' && unknown.required === null)
+  check('with a reason that says what is missing', /state code|GSTIN/i.test(unknown.reason))
+
+  // The GSTIN's first two digits ARE the state code, which is how a movement gets
+  // classified without asking the user for the state a second time.
+  check('a state code is read off a GSTIN', rules.stateCodeOfGstin('29AABCV3609C1ZJ') === '29')
+  check('a non-GSTIN yields nothing rather than a wrong state', rules.stateCodeOfGstin('NOTAGSTIN') === null)
+  check('and so does a missing one', rules.stateCodeOfGstin(null) === null)
+}
+
+console.log('\n── every export earns its place')
+{
+  // 🔴 The structural check that would have caught an entire module of dead code.
+  //
+  // A helper whose only caller is this file inflates the pass count while
+  // exercising nothing that ships, which is worse than having no code at all —
+  // the green number says the opposite of the truth. Four helpers and a constant
+  // in this module were once in exactly that state while ~118 checks reported on
+  // them.
+  //
+  // "Used" means REACHABLE FROM PRODUCTION, not merely mentioned: an export is
+  // live if some other file under src/ names it, or if a live export of this
+  // module names it. A pair of dead helpers calling each other does not count.
+  const { readFileSync, readdirSync } = await import('node:fs')
+  const { join } = await import('node:path')
+
+  const rulesPath = new URL('../src/lib/documents/rules.ts', import.meta.url).pathname
+  const rulesSrc = readFileSync(rulesPath, 'utf8')
+
+  const otherSrc: string[] = []
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, entry.name)
+      if (entry.isDirectory()) walk(p)
+      else if (p.endsWith('.ts') && p !== rulesPath) otherSrc.push(readFileSync(p, 'utf8'))
+    }
+  }
+  walk(new URL('../src', import.meta.url).pathname)
+  const outside = otherSrc.join('\n')
+
+  // Carve rules.ts into one chunk per export so "X is referenced by Y" can be
+  // attributed to the right Y instead of to the file as a whole.
+  const decl = /export\s+(?:const|function|type)\s+(\w+)/g
+  const chunks: Array<{ name: string; start: number }> = []
+  for (let m = decl.exec(rulesSrc); m; m = decl.exec(rulesSrc)) {
+    chunks.push({ name: m[1], start: m.index })
+  }
+  const bodyOf = new Map<string, string>()
+  chunks.forEach((c, i) => {
+    bodyOf.set(c.name, rulesSrc.slice(c.start, chunks[i + 1]?.start ?? rulesSrc.length))
+  })
+
+  const runtimeExports = Object.keys(rules)
+  const live = new Set(runtimeExports.filter(n => new RegExp(`\\b${n}\\b`).test(outside)))
+
+  // Fixpoint: anything a live export mentions is itself live.
+  for (let grew = true; grew;) {
+    grew = false
+    for (const liveName of [...live]) {
+      const body = bodyOf.get(liveName) ?? ''
+      for (const candidate of runtimeExports) {
+        if (!live.has(candidate) && new RegExp(`\\b${candidate}\\b`).test(body)) {
+          live.add(candidate)
+          grew = true
+        }
+      }
+    }
+  }
+
+  const orphans = runtimeExports.filter(n => !live.has(n))
+  check(
+    `all ${runtimeExports.length} runtime exports are reachable from production code`,
+    orphans.length === 0,
+  )
+  if (orphans.length) console.log(`      orphaned: ${orphans.join(', ')}`)
+
+  // And the specific requirement that was unwired: §9.2's threshold gate has to
+  // be CALLED from the issuance path, not merely exist next to it.
+  const serviceSrc = readFileSync(
+    new URL('../src/lib/documents/service.ts', import.meta.url).pathname, 'utf8')
+  check('the §4.1 threshold gate is called from the invoice issuance path',
+    /ewayBillRequirement\s*\(/.test(serviceSrc) && /export async function issueFreightInvoice/.test(serviceSrc))
 }
 
 console.log('\n── e-way bill expiry: STORED, never derived (§4.4)')

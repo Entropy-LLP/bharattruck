@@ -18,6 +18,30 @@ export const VALID_TRANSITIONS: Record<BookingStatus, BookingStatus[]> = {
 }
 
 // -----------------------------------------------------------
+// TERMINAL_BOOKING_STATUSES
+//
+// Derived from VALID_TRANSITIONS rather than written out again, because a second
+// hand-maintained list of "frozen" statuses is a list that goes stale. A status
+// with no legal next state is terminal by definition: the booking will never move
+// again, so anything that hangs a new artefact off it is rewriting history rather
+// than recording it.
+//
+// This exists so the freight-document issuance gates (lib/documents/service.ts)
+// cannot drift from the lifecycle. A tax invoice or a consignment note minted
+// against a cancelled booking burns a serial out of a GAPLESS, legally sequenced
+// series for a trip that never ran, and migration 0024 has no void or cancel
+// concept that could take it back.
+// -----------------------------------------------------------
+
+export const TERMINAL_BOOKING_STATUSES: BookingStatus[] =
+  (Object.keys(VALID_TRANSITIONS) as BookingStatus[])
+    .filter(status => VALID_TRANSITIONS[status].length === 0)
+
+export function isTerminalBookingStatus(status: BookingStatus): boolean {
+  return TERMINAL_BOOKING_STATUSES.includes(status)
+}
+
+// -----------------------------------------------------------
 // assertValidTransition
 // Pure synchronous guard — throws BookingError on illegal moves.
 // The repository executes the actual DB UPDATE after this passes.

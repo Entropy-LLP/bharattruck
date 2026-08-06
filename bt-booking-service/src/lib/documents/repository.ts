@@ -24,13 +24,19 @@
 
 import { supabase } from '../supabase.js'
 import { BookingError } from '../types.js'
-import type { DocumentIssuerKind, EwbPortal } from './rules.js'
+import type { DocumentIssuerKind, EwbPortal, EwbStatus } from './rules.js'
 
 // PostgREST reports an unknown table as 42P01 / PGRST205 and an unknown function
 // as 42883 / PGRST202. Both mean the same thing here: migration 0024 has not been
 // applied to this database yet.
 const MISSING_RELATION_CODES = new Set(['42P01', 'PGRST205'])
 const MISSING_FUNCTION_CODES = new Set(['42883', 'PGRST202'])
+
+// 54000 program_limit_exceeded, raised by allocate_document_number when a series'
+// serials no longer fit Rule 46(b)'s 16 characters. It is NOT an internal fault:
+// the request was well formed and the platform's answer is "this series is full
+// for this financial year, open a second one" (Rule 46(b) permits multiple).
+const SERIES_EXHAUSTED_CODE = '54000'
 
 type DbError = { code?: string; message?: string } | null
 
@@ -40,6 +46,18 @@ function isMissingRelation(error: DbError): boolean {
 
 function isMissingFunction(error: DbError): boolean {
   return !!error?.code && MISSING_FUNCTION_CODES.has(error.code)
+}
+
+function isSeriesExhausted(error: DbError): boolean {
+  return error?.code === SERIES_EXHAUSTED_CODE
+}
+
+// An exhausted series is reported to the caller VERBATIM, because the SQL builds
+// the whole remedy into its message — which series, its budget, and that Rule
+// 46(b) permits opening a second one. Wrapping it in a generic 500 is what made
+// the original failure undiagnosable from the outside.
+function seriesExhausted(error: DbError): BookingError {
+  return new BookingError(error?.message ?? 'This document series is exhausted for the financial year', 'CONFLICT', 409)
 }
 
 // A write attempt on a database without 0024. UPSTREAM_ERROR/503 rather than 500:
@@ -111,6 +129,10 @@ export type DbEwayBillRecord = {
   /** Copied from the portal. NEVER recomputed — see rules.ewayBillExpiry. */
   valid_upto: string
   issuing_portal: EwbPortal
+  /** What a PERSON did to the bill (§4.5). Expiry is separate and always derived. */
+  status: EwbStatus
+  status_changed_at: string | null
+  status_reason: string | null
   part_b_entered_at: string | null
   document_number: string | null
   consignment_value_inr: string | number | null
@@ -144,6 +166,7 @@ export async function issueLorryReceipt(args: {
 
   if (error) {
     if (isMissingFunction(error) || isMissingRelation(error)) throw notMigrated('Issuing a lorry receipt')
+    if (isSeriesExhausted(error)) throw seriesExhausted(error)
     throw new BookingError(`Lorry receipt issue failed: ${error.message}`, 'INTERNAL', 500)
   }
   if (!data) throw new BookingError('Lorry receipt issue returned no row', 'INTERNAL', 500)
@@ -165,6 +188,7 @@ export async function issueFreightInvoice(args: {
 
   if (error) {
     if (isMissingFunction(error) || isMissingRelation(error)) throw notMigrated('Issuing an invoice')
+    if (isSeriesExhausted(error)) throw seriesExhausted(error)
     throw new BookingError(`Invoice issue failed: ${error.message}`, 'INTERNAL', 500)
   }
   if (!data) throw new BookingError('Invoice issue returned no row', 'INTERNAL', 500)
@@ -214,12 +238,57 @@ export async function recordEwayBill(args: {
 
   if (error) {
     if (isMissingRelation(error)) throw notMigrated('Recording an e-way bill')
-    // 23505 on ewb_number: this bill is already on file. A duplicate is a client
-    // mistake (two people recording the same paper), not a server fault.
+    // 23505 on (booking_id, ewb_number): this bill is already on file AGAINST THIS
+    // BOOKING. A duplicate is a client mistake (two people recording the same
+    // paper), not a server fault. Note the constraint is per-booking, not global:
+    // one e-way bill covering two bookings is the D-16 consolidated case and must
+    // not 409.
     if (error.code === '23505') {
-      throw new BookingError(`E-way bill ${args.ewbNumber} is already recorded`, 'CONFLICT', 409)
+      throw new BookingError(
+        `E-way bill ${args.ewbNumber} is already recorded against this booking`,
+        'CONFLICT',
+        409,
+      )
     }
     throw new BookingError(`E-way bill record failed: ${error.message}`, 'INTERNAL', 500)
+  }
+  return data as DbEwayBillRecord
+}
+
+/**
+ * §4.5 — file what the portal did to a bill (cancelled within 24h, rejected
+ * within 72h). Scoped by booking AND number: the same consolidated bill may cover
+ * another booking, and cancelling it there is a separate act with its own row.
+ */
+export async function setEwayBillStatus(args: {
+  bookingId: string
+  ewbNumber: string
+  status: EwbStatus
+  changedAt: string
+  reason?: string | null
+}): Promise<DbEwayBillRecord> {
+  const { data, error } = await supabase
+    .from('eway_bill_records')
+    .update({
+      status:            args.status,
+      status_changed_at: args.changedAt,
+      status_reason:     args.reason ?? null,
+    })
+    .eq('booking_id', args.bookingId)
+    .eq('ewb_number', args.ewbNumber)
+    .select('*')
+    .maybeSingle()
+
+  if (error) {
+    if (isMissingRelation(error)) throw notMigrated('Updating an e-way bill')
+    throw new BookingError(`E-way bill status update failed: ${error.message}`, 'INTERNAL', 500)
+  }
+  if (!data) {
+    throw new BookingError(
+      `E-way bill ${args.ewbNumber} is not recorded against this booking`,
+      'NOT_FOUND',
+      404,
+    )
   }
   return data as DbEwayBillRecord
 }
