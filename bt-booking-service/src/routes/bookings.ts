@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { BookingError, CreateBookingBodySchema } from '../lib/types.js'
 import * as svc from '../lib/service.js'
+import * as pod from '../lib/pod/service.js'
 
 const UuidParamSchema = z.object({ id: z.string().uuid('id must be a valid UUID') })
 
@@ -10,6 +11,12 @@ const UuidParamSchema = z.object({ id: z.string().uuid('id must be a valid UUID'
 // malformed — this is typed on a phone, often at the drop point, under time pressure.
 const ReceiverEmailBodySchema = z.object({
   receiver_email: z.string().trim().email('receiver_email must be a valid email address'),
+})
+
+// The server-held expected quantity a shipper/ops sets (never the driver, §5.7).
+const ExpectedQuantityBodySchema = z.object({
+  expected_quantity: z.number().nonnegative('expected_quantity must be >= 0'),
+  unit: z.string().trim().min(1).optional(),
 })
 
 function handleError(reply: FastifyReply, err: unknown) {
@@ -68,13 +75,92 @@ export async function bookingRoutes(app: FastifyInstance) {
   })
 
   // GET /bookings/:id/pod-context — assigned driver fetches POD context
-  // (status + consignee receiver_email) to request a receiver OTP.
+  // (status + consignee receiver_email + geofence gate result) to request a receiver OTP.
   app.get('/:id/pod-context', async (req, reply) => {
     const id = parseId(reply, req.params)
     if (!id) return
     try {
       const ctx = await svc.getPodContext(id, req.user, req.log)
       return reply.send({ success: true, data: ctx })
+    } catch (err) {
+      return handleError(reply, err)
+    }
+  })
+
+  // POST /bookings/:id/pod-evidence — assigned driver records a camera capture.
+  //
+  // Camera-only, on-device SHA-256 (stored verbatim), server-authoritative time. The
+  // bytes go straight to WORM object storage via the driver app's signed PUT; this only
+  // records metadata (§5.4). Idempotent on (booking, hash) — a retry is a no-op.
+  app.post('/:id/pod-evidence', async (req, reply) => {
+    const id = parseId(reply, req.params)
+    if (!id) return
+    const body = pod.EvidenceCaptureSchema.safeParse(req.body)
+    if (!body.success) {
+      return reply.status(400).send({ success: false, error: body.error.errors[0].message, code: 'VALIDATION_ERROR' })
+    }
+    try {
+      const result = await pod.captureEvidence(id, req.user, body.data, req.log)
+      return reply.status(result.created ? 201 : 200).send({ success: true, data: result })
+    } catch (err) {
+      return handleError(reply, err)
+    }
+  })
+
+  // POST /bookings/:id/discrepancy — assigned driver logs a shortage/damage note.
+  //
+  // Expected is SERVER-HELD (read off the booking, not the body — the schema refuses a
+  // client-sent expected_quantity); a photo is mandatory when counts differ; the driver
+  // is put on record and the two claim clocks (180-day booking / 7-day delivery) are
+  // surfaced. Idempotent on the booking.
+  app.post('/:id/discrepancy', async (req, reply) => {
+    const id = parseId(reply, req.params)
+    if (!id) return
+    const body = pod.DiscrepancySchema.safeParse(req.body)
+    if (!body.success) {
+      return reply.status(400).send({ success: false, error: body.error.errors[0].message, code: 'VALIDATION_ERROR' })
+    }
+    try {
+      const result = await pod.submitDiscrepancy(id, req.user, body.data, req.log)
+      return reply.status(result.created ? 201 : 200).send({ success: true, data: result })
+    } catch (err) {
+      return handleError(reply, err)
+    }
+  })
+
+  // POST /bookings/:id/assert-delivery — the no-confirmation branch.
+  //
+  // Receiver cannot confirm (no smartphone, night drop, warehouse hand-off). Driver has
+  // captured evidence; the trip moves in_transit → delivery_asserted (NOT completed) with
+  // pod_strength='asserted', and ops closes it later. Requires evidence to already exist.
+  app.post('/:id/assert-delivery', async (req, reply) => {
+    const id = parseId(reply, req.params)
+    if (!id) return
+    const body = pod.AssertDeliverySchema.safeParse(req.body)
+    if (!body.success) {
+      return reply.status(400).send({ success: false, error: body.error.errors[0].message, code: 'VALIDATION_ERROR' })
+    }
+    try {
+      const result = await pod.assertDelivery(id, req.user, body.data, req.log)
+      return reply.status(result.created ? 201 : 200).send({ success: true, data: result })
+    } catch (err) {
+      return handleError(reply, err)
+    }
+  })
+
+  // PATCH /bookings/:id/expected-quantity — shipper (or ops) sets the server-held
+  // expected delivery count the discrepancy flow reconciles against. Mirrors
+  // receiver-email: owning shipper or ops only, DELIBERATELY NOT the driver (§5.7).
+  app.patch('/:id/expected-quantity', async (req, reply) => {
+    const id = parseId(reply, req.params)
+    if (!id) return
+    const body = ExpectedQuantityBodySchema.safeParse(req.body)
+    if (!body.success) {
+      return reply.status(400).send({ success: false, error: body.error.errors[0].message, code: 'VALIDATION_ERROR' })
+    }
+    try {
+      const booking = await pod.setExpectedQuantity(id, body.data.expected_quantity, body.data.unit ?? null, req.user)
+      return reply.send({ success: true, data: booking })
     } catch (err) {
       return handleError(reply, err)
     }

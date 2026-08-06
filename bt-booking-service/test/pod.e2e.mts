@@ -21,26 +21,44 @@ const S1 = '66666666-6666-4666-8666-666666666666'
 const RECEIVER = 'consignee@example.com'
 
 type Row = Record<string, any>
+// A faithful PRE-0025 database: only these two tables EXIST. Every 0025 table
+// (pod_evidence, pod_state, pod_discrepancies, pod_audit_log) — and anything else the
+// hardening might read (users, geofence_events, trip_telemetry) — is ABSENT and answers
+// PostgREST's 42P01. This is the whole point of the file now: it pins that on a database
+// without 0025 the receiver-OTP POD behaves EXACTLY as it always did — no geofence gate,
+// no strength ledger, no extra field — because the feature probe comes back "not here".
 const store: Record<string, Row[]> = {
   bookings: [{ id: B1, driver_id: D1, shipper_id: S1, status: 'in_transit', receiver_email: RECEIVER }],
   drivers: [{ id: D1, user_id: U1 }, { id: D2, user_id: U2 }],
 }
+const MISSING_RELATION = { data: null, error: { code: '42P01', message: 'relation does not exist' } }
 class FakeQuery {
-  private filters: Array<['eq' | 'in', string, any]> = []
-  private mode: 'select' | 'update' = 'select'
+  private filters: Array<['eq' | 'in' | 'is', string, any]> = []
+  private mode: 'select' | 'update' | 'insert' | 'upsert' = 'select'
   private payload: Row | null = null
   constructor(private table: string) {}
   select() { return this }
+  insert(p: Row) { this.mode = 'insert'; this.payload = p; return this }
+  upsert(p: Row) { this.mode = 'upsert'; this.payload = p; return this }
   update(p: Row) { this.mode = 'update'; this.payload = p; return this }
   eq(c: string, v: any) { this.filters.push(['eq', c, v]); return this }
   in(c: string, v: any[]) { this.filters.push(['in', c, v]); return this }
-  private match(r: Row) { return this.filters.every(([o, c, v]) => (o === 'eq' ? r[c] === v : v.includes(r[c]))) }
+  is(c: string, v: any) { this.filters.push(['is', c, v]); return this }
+  limit() { return this }
+  order() { return this }
+  private match(r: Row) {
+    return this.filters.every(([o, c, v]) =>
+      o === 'eq' ? r[c] === v : o === 'in' ? v.includes(r[c]) : (r[c] ?? null) === v)
+  }
   private run() {
-    const rows = store[this.table] ?? []
+    // The pre-0025 truth: the table is not there.
+    if (!(this.table in store)) return MISSING_RELATION
+    const rows = store[this.table]
+    if (this.mode === 'insert' || this.mode === 'upsert') { const row = { ...this.payload }; rows.push(row); return { data: [row], error: null } }
     if (this.mode === 'update') { const hit = rows.filter(r => this.match(r)); hit.forEach(r => Object.assign(r, this.payload)); return { data: hit, error: null } }
     return { data: rows.filter(r => this.match(r)), error: null }
   }
-  maybeSingle() { const { data, error } = this.run(); return Promise.resolve({ data: data.length ? data[0] : null, error }) }
+  maybeSingle() { const { data, error } = this.run(); return Promise.resolve({ data: data?.length ? data[0] : null, error }) }
   single() { return this.maybeSingle() }
   then(f: (v: any) => any, r?: (e: any) => any) { return Promise.resolve(this.run()).then(f, r) }
 }
@@ -73,6 +91,11 @@ async function main() {
   let r = await app.inject({ method: 'GET', url: `/bookings/${B1}/pod-context`, headers: { authorization: `Bearer ${tok(U1, 'driver')}` } })
   check('pod-context assigned driver 200', r.statusCode === 200, `(got ${r.statusCode})`)
   check('pod-context returns receiver_email', r.json().data?.receiver_email === RECEIVER, JSON.stringify(r.json().data))
+  // PRE-0025 CONTRACT: no geofence gate ran, and the payload is exactly today's three
+  // fields — the feature probe (pod_evidence) came back 42P01, so getPodContext returned
+  // the base context untouched. A geofence key appearing here would mean the gate ran on
+  // a database that never got migration 0025.
+  check('pod-context carries NO geofence field pre-0025', r.json().data?.geofence === undefined, JSON.stringify(r.json().data))
   r = await app.inject({ method: 'GET', url: `/bookings/${B1}/pod-context`, headers: { authorization: `Bearer ${tok(U2, 'driver')}` } })
   check('pod-context non-assigned driver 403', r.statusCode === 403, `(got ${r.statusCode})`)
   r = await app.inject({ method: 'GET', url: `/bookings/${B1}/pod-context`, headers: { authorization: `Bearer ${tok(S1, 'shipper')}` } })

@@ -4,7 +4,7 @@
 > something I can. Nothing in this file is waiting on more engineering — each item needs a
 > credential, an account, a click, or a decision that is not mine to make.
 >
-> Last updated: **2026-08-03**
+> Last updated: **2026-08-06**
 
 ---
 
@@ -126,6 +126,38 @@ The checklist is in `INDIA_FREIGHT_COMPLIANCE.md §10`. Five items, the sharpest
 booking company, contractor, agent, broker"*, which is broad enough to reach a freight marketplace,
 and operating unregistered is still a punished act after the 2026 Jan Vishwas amendment. **That
 exposure is not solved by keeping our name off the LR.**
+
+---
+
+### B-8 · GCS WORM bucket — POD original-photo bytes
+
+**What's needed:** a Google Cloud Storage bucket in `asia-south1` with a **locked retention policy**
+(years, per `INDIA_FREIGHT_COMPLIANCE.md §8.1`) so POD originals are un-deletable for the retention
+period, and one env var — `POD_EVIDENCE_GCS_BUCKET` — set on `bt-booking-service` Cloud Run.
+
+**Where it stands:** the POD evidence path (migration 0025, `feat/pod-rebuild`) is built and the
+metadata half is fully live — `pod_evidence` records the on-device SHA-256, server time, geofence
+result and the intended object key. The BYTES half is **inert**: `bt-booking-service/src/lib/pod/storage.ts`
+computes the canonical `gs://…/pod/<booking>/<sha256>.bin` key and, with no bucket configured,
+**no-ops the upload and warns**, recording `storage_status='no_op'` on the row. No credential is invented.
+
+**Why GCS and not Supabase Storage:** the compliance requirement is true WORM / object-lock (§5.4
+server-side) — the hash and audit log are only credible if the bytes provably could not be swapped.
+GCS gives that via a locked bucket retention policy + object holds, enforced by the platform;
+Supabase Storage has no first-class immutability guarantee. The rest of the stack is already GCP
+`asia-south1`, so the trust boundary does not move. Rationale is in the file header.
+
+**Consequence while blocked:** a POD captured today has a durable, hashed, geofenced METADATA record
+but **no retained original image**. That is a legitimate-but-weaker state, surfaced in the logs (a
+`storage is inert` warn per capture) and on the row (`storage_status='no_op'`), never silently. The
+driver app should still PUT the original bytes to the signed URL once the bucket exists — this service
+never touches the pixels, precisely so it can never re-encode them (IT Act s.7(b)).
+
+**To unblock:** create the bucket with a locked retention policy, grant the `bt-booking-service`
+service account `roles/storage.objectCreator`, then
+`gcloud run services update bt-booking-service --region=asia-south1 --update-env-vars POD_EVIDENCE_GCS_BUCKET=<bucket>`.
+No code change, no migration. Confirm a fresh capture records `storage_status='stored'` and a
+`gs://…` URI rather than the inert warn.
 
 ---
 

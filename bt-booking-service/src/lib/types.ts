@@ -3,9 +3,16 @@ import { AppError, type ErrorCode } from '@bharattruck/shared/errors'
 
 // -----------------------------------------------------------
 // BookingStatus — mirrors the DB enum booking_status exactly
+//
+// 'delivery_asserted' (migration 0025) is the branch for a delivery the receiver
+// could not confirm: the driver captured evidence, the trip is delivered-but-
+// unconfirmed, and ops — not the driver — closes it to 'completed'. It is a real
+// enum value, so a database where 0025 has NOT been applied can never hold a
+// booking in this state, and the state machine below simply never routes into it
+// there. See docs/ARCHITECTURE_UNIFIED_IDENTITY.md §6.3.
 // -----------------------------------------------------------
 
-export type BookingStatus = 'pending' | 'accepted' | 'in_transit' | 'completed' | 'paid' | 'cancelled' | 'negotiating'
+export type BookingStatus = 'pending' | 'accepted' | 'in_transit' | 'delivery_asserted' | 'completed' | 'paid' | 'cancelled' | 'negotiating'
 
 // -----------------------------------------------------------
 // BookingType — direct (1:1) or auction (1:many quotes)
@@ -56,6 +63,13 @@ export type DbBooking = {
   // pairs a truck to the trip in bt-fleet-service.
   fleet_owner_id: string | null
   vehicle_id: string | null
+  // POD discrepancy reconciliation (migration 0025). The SERVER-HELD expected
+  // delivery quantity + its unit, set by the shipper/ops and NEVER the driver
+  // (§5.7). Both NULL on every pre-0025 booking, and read back as "no server-held
+  // count" by the discrepancy flow — so a database without 0025 selecting `*` off
+  // bookings simply never sees these columns, and nothing that reads them breaks.
+  pod_expected_quantity: number | null
+  pod_quantity_unit: string | null
   created_at: string
   updated_at: string
 }
