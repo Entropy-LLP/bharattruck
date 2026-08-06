@@ -8,6 +8,7 @@ import { quoteRoutes } from './routes/quotes.js'
 import { locationRoutes } from './routes/location.js'
 import { internalRoutes } from './routes/internal.js'
 import { opsRoutes } from './routes/ops.js'
+import { documentRoutes } from './routes/documents.js'
 import { notificationRoutes } from './routes/notifications.js'
 import { startDispatchLoop } from './lib/notifications/dispatcher.js'
 import { mailer, smtpConfigured } from './lib/notifications/mailer.js'
@@ -42,6 +43,9 @@ async function bootstrap() {
     await authedApp.register(bookingRoutes, { prefix: '/bookings' })
     await authedApp.register(quoteRoutes, { prefix: '/bookings' })
     await authedApp.register(opsRoutes, { prefix: '/bookings' })
+    // Freight documents (migration 0024) share the /bookings prefix so the edge
+    // needs no new route: bt-gateway already forwards /bookings here.
+    await authedApp.register(documentRoutes, { prefix: '/bookings' })
     await authedApp.register(locationRoutes, { prefix: '/location' })
   })
 
