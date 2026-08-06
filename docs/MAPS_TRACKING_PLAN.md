@@ -1,7 +1,7 @@
 # BharatTruck — Maps & Tracking PLAN
 
 > **Status: engineering narrative (living doc).**
-> This PLAN is the deep, prose-level companion to `docs/MAPS_TRACKING_CONTRACT.md`.
+> This PLAN is the deep, prose-level companion to the **frozen CONTRACT, now `docs/BIBLE.md §3.1`**.
 > **The CONTRACT is the single source of truth.** On ANY conflict between something written here and the CONTRACT, **the CONTRACT wins** — this PLAN references it, elaborates on the *how* and *why*, and must never silently contradict a LOCKED fact.
 > Decisions confirmed **2026-06-18**. Anything not locked that day is tagged inline **(INFERRED — confirm)** and must be pinned down (and the CONTRACT updated) before the relevant phase ships.
 >
@@ -1261,4 +1261,4 @@ These are **not frozen.** Each must be pinned during its phase; pinning one upda
 
 ---
 
-*End of PLAN. The CONTRACT (`docs/MAPS_TRACKING_CONTRACT.md`) wins on any interface conflict.*
+*End of PLAN. The CONTRACT (`docs/BIBLE.md §3.1`) wins on any interface conflict.*

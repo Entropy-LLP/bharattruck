@@ -1,162 +1,181 @@
 # BLOCKERS — things only a human can unblock
 
-> **Maintained live.** When I hit something I cannot do myself, it lands here and I move on to
-> something I can. Nothing in this file is waiting on more engineering — each item needs a
-> credential, an account, a click, or a decision that is not mine to make.
+> **The single list of what needs you.** Absorbed the old root `FOUNDER_ACTIONS.md` (2026-08-03) —
+> everything in it was either done or is carried below. Nothing here is waiting on more engineering:
+> each item needs a credential, an account, a console click, or a decision.
 >
-> Last updated: **2026-08-03**
-
----
-
-## Legend
+> **Every claim below was verified against prod on 2026-08-03**, not carried forward from a handoff.
+>
+> Last verified: **2026-08-03**
 
 | | |
 |---|---|
-| 🔴 | Blocks a shipped feature from working in production |
-| 🟠 | Blocks a feature from being *finished*; the code is built and inert |
+| 🔴 | A shipped feature is inert or unsafe in production until this is done |
+| 🟠 | Blocks a feature from being finished; code is built and inert |
 | 🟡 | Not blocking today; will block before the pilot |
 
 ---
 
-## 🔴 Blocking now
+## 🔴 B-0 · Migration `0023_payout_split.sql` is NOT applied
 
-### B-1 · Razorpay credentials — automated payouts
+**Verified:** the migration ledger's newest row is `0022_unified_identity`, and
+`payouts_booking_id_key` (the old `UNIQUE(booking_id)`) is still present on the live table.
+The file exists at `supabase/migrations/0023_payout_split.sql` and the **code is merged and deployed**.
 
-**What's needed:** `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`, and a Razorpay
-**Route** account (Route is the product that lets money move to *stakeholder-owned* linked accounts
-rather than resting with the platform — that is the design, and it is also what keeps us out of GTA
-territory, see `INDIA_FREIGHT_COMPLIANCE.md §1.3`).
+**Why it is safe right now:** the shipped write path deliberately uses **no `ON CONFLICT`**, so it
+works against both the pre- and post-0023 schema. Settlement is not broken. Additionally all 8 live
+`fleet_drivers` rows sit at `revenue_share_pct = 0.00`, so no split can currently arise.
 
-**Where it stands:** the three env vars are declared in `bt-payment-service/.env.example` and are
-**empty**; Cloud Run has none of them set. Searched the repo, the other services and GCP Secret
-Manager — the only secrets in the project belong to an unrelated app (`anvaya-*`).
+**Why it still matters:** a split needs **two payout rows per booking**, which the surviving
+`UNIQUE(booking_id)` forbids. **The first fleet owner who sets a real revenue share will hit a
+constraint violation on settlement.**
 
-**Consequence while blocked:** settlement stays **record-only**, which is exactly today's behaviour
-and is a legitimate MVP mode. Nothing is broken; the automated path is simply inert.
-
-**To unblock:** create the Razorpay account, enable Route, then
-`gcloud run services update bt-payment-service --region=asia-south1 --update-env-vars RAZORPAY_KEY_ID=…,RAZORPAY_KEY_SECRET=…,RAZORPAY_WEBHOOK_SECRET=…`
-(CD preserves existing env, so this is a one-time manual set — see `BIBLE.md §5.3`).
+**To unblock:** apply `0023` via the Supabase MCP (`execute_sql`, then write the
+`supabase_migrations.schema_migrations` ledger row by hand — `apply_migration` is classifier-blocked
+in this project; the procedure is in `BIBLE.md`).
 
 ---
 
-### B-2 · DLT registration — phone OTP
+## 🔴 B-1 · Geofencing is inert — ONE missing env var
 
-**What's needed:** TRAI **DLT** registration (entity ID + registered header + approved SMS templates),
-and an SMS provider account (MSG91 / Twilio / Gupshup).
+**Verified:**
 
-**Where it stands:** `POST /auth/send-otp` generates a real OTP and **console-logs it** — there is no
-SMS provider wired. Every phone-OTP send site goes through one seam so that wiring a provider is a
-config change, not a code change.
-
-**Consequence while blocked:** phone login is a dead end for real users. Email OTP works. POD receiver
-confirmation falls back to email.
-
-**Why it can't be rushed:** DLT template approval takes days to weeks and cannot start until the
-entity is registered. **This is the longest-lead item on the list — start it first.**
-
-**What DLT registration produces** (all three are needed before an operator carries a message):
-a **principal entity id** for the company; a **registered sender header** (the 6-character id the SMS
-appears from, e.g. `BHTRUK`); and one or more **pre-approved templates** — exact message text with
-variable slots. Text that does not match an approved template is rejected, and a run of rejections is
-what gets a header suspended. It is filed against the company's legal identity (GSTIN, authorised
-signatory, letterhead), so it needs the founder, not a code change.
-
-**The seam that is already built (D-14, 2026-08-03).** `bt-auth-service/src/lib/sms.ts` is the only
-way a phone OTP leaves the service. One `SmsProvider`, resolved once at boot:
-
-- **`ConsoleSmsProvider` — the default**, and what runs on every environment today. It prints the
-  same two lines this service printed before the seam existed, so nothing about the pilot changes.
-- **`Msg91SmsProvider`** — a real MSG91 flow-API call, **unreachable without env vars**.
-
-**The switch.** Live SMS is opt-in *and* all-or-nothing — `SMS_PROVIDER` must select a provider and
-every credential it needs must be non-empty, or the service logs one warning at boot and stays on the
-console. A half-filled config must not take phone login down, and must not fire a send the operator
-will reject anyway:
-
-| Env var | Source | Required |
+| Service | Var | State |
 |---|---|---|
-| `SMS_PROVIDER=msg91` | ours — the opt-in | yes |
-| `MSG91_AUTH_KEY` | MSG91 dashboard | yes |
-| `MSG91_SENDER_ID` | **DLT** — the registered header | yes |
-| `MSG91_TEMPLATE_ID` | **DLT** — a *pre-approved* template | yes |
-| `MSG91_TEMPLATE_VAR` | **DLT** — variable name in that template (default `otp`) | no |
-| `MSG91_DLT_TE_ID` | **DLT** — template entity id, when the operator wants it echoed | no |
-| `MSG91_BASE_URL`, `SMS_TIMEOUT_MS` | ours — overrides | no |
+| `bt-booking-service` | `TRACKING_SERVICE_URL` | ✅ set |
+| `bt-booking-service` | `INTERNAL_SERVICE_SECRET` | ✅ set |
+| `bt-tracking-service` | `INTERNAL_SERVICE_SECRET` | ❌ **MISSING** |
 
-Documented in `bt-auth-service/.env.example`; pinned by `bt-auth-service/test/sms-provider.e2e.mts`.
+`bt-tracking-service/src/plugins/internal-auth.ts:18` reads it and **refuses every internal request**
+without it. So booking-service sends the geofence evaluation and tracking-service rejects it.
+Geofencing is merged, deployed, and doing nothing.
 
-**When it clears:** set the vars on the `bt-auth-service` Cloud Run service and redeploy. No code
-change, no migration. Confirm the boot line reads `[sms] provider=msg91` rather than the
-`SMS_PROVIDER is unset` warning — that line is the difference between codes being delivered and codes
-being logged.
+```bash
+gcloud run services update bt-tracking-service --region=asia-south1 \
+  --update-env-vars INTERNAL_SERVICE_SECRET=<same value as the other services>
+```
 
----
-
-## 🟠 Blocking completion
-
-### B-3 · GSP contract — in-platform e-way bill generation
-
-**What's needed:** a contract with a GST Suvidha Provider, and likely **ISO 27001:2013** (at least one
-GSP requires it within 90 days of go-live — a 3–6 month exercise).
-
-**Where it stands:** deliberately **out of MVP** by your decision. We record and attach an
-externally-generated e-way bill instead. The full API contract, validations and error codes are
-documented in `INDIA_FREIGHT_COMPLIANCE.md §4.8` so the later swap is a base-URL-and-credentials
-change, not a rewrite.
-
-**Also needed per customer, and it cannot be automated:** every shipper *and* every fleet owner must
-log into the e-way bill portal → Registration → For GSP → OTP → pick the GSP → create an API
-username/password. ~2 minutes each, and it is the biggest onboarding-funnel drop-off risk.
+> ⚠️ **`--update-env-vars`, never `--set-env-vars`.** `--set` wipes every unlisted var — that is the
+> exact fault that crash-looped payment and pricing on 2026-07-28.
 
 ---
 
-### B-4 · Legal opinion — GTA exposure
+## 🟠 B-2 · DLT registration — phone OTP
 
-**What's needed:** a written opinion from Indian indirect-tax counsel.
+**The longest-lead item on the project. Nothing else on this list costs calendar days the way this
+does.**
 
-**Why:** issuing a consignment note in your own name is what makes a platform a **GTA** under GST.
-Two 2025-26 rulings held an e-commerce platform to be the GTA on exactly that basis, despite it owning
-no trucks. Our design (LR in the fleet owner's name, in their series) is the right structure and is
-well supported — but **no court has decided the case where the document names one party and the
-commercial substance points at another, and that case is ours.**
+TRAI **DLT** registration (entity ID, registered header, pre-approved SMS templates) plus an SMS
+provider account (MSG91 / Twilio / Gupshup). Template approval takes **days to weeks** and cannot
+start until the entity is registered.
 
-The checklist is in `INDIA_FREIGHT_COMPLIANCE.md §10`. Five items, the sharpest being
-**Carriage by Road Act s.3 registration** — s.2(a) defines "common carrier" to include *"a goods
-booking company, contractor, agent, broker"*, which is broad enough to reach a freight marketplace,
+**State:** `POST /auth/send-otp` generates a real OTP and **console-logs it** — no provider is wired.
+Phone login is a dead end for real users; email OTP works.
+
+---
+
+## 🟠 B-3 · Razorpay credentials — automated payouts
+
+**Verified:** `bt-payment-service` has **no** `RAZORPAY_*` vars set in prod. They are declared and
+empty in `.env.example`. GCP Secret Manager holds only unrelated `anvaya-*` secrets.
+
+Needs a Razorpay account with **Route** enabled — Route is the product that moves money to
+*stakeholder-owned* linked accounts rather than letting it rest with the platform. That is the design,
+and it is also what keeps us clear of GTA classification (`INDIA_FREIGHT_COMPLIANCE.md §1.3`).
+
+**Consequence while blocked:** settlement stays **record-only**, which is a legitimate MVP mode.
+Nothing is broken.
+
+---
+
+## 🟠 B-4 · Legal opinion — GTA exposure
+
+A written opinion from Indian indirect-tax counsel. Checklist in
+`INDIA_FREIGHT_COMPLIANCE.md §10`.
+
+Issuing a consignment note in your own name is what makes a platform a **GTA** under GST — two
+2025-26 rulings held an e-commerce platform to be the GTA on exactly that basis despite owning no
+trucks. Our design (LR in the fleet owner's name and series) is the right structure and well
+supported, but **no court has decided the case where the document names one party and the commercial
+substance points at another, and that case is ours.**
+
+Sharpest item: **Carriage by Road Act s.3 registration.** s.2(a) defines "common carrier" to include
+*"a goods booking company, contractor, agent, broker"* — broad enough to reach a freight marketplace —
 and operating unregistered is still a punished act after the 2026 Jan Vishwas amendment. **That
 exposure is not solved by keeping our name off the LR.**
 
 ---
 
-## 🟡 Not blocking yet
+## 🟠 B-5 · GSP contract — in-platform e-way bill generation
 
-### B-5 · Gateway returns HTML on 429
+Deliberately **out of MVP** (D-17): we record and attach an externally-generated e-way bill instead.
+Needs a GST Suvidha Provider contract and likely **ISO 27001:2013** (3–6 months; at least one GSP
+requires it within 90 days of go-live).
+
+Also, per customer and **not automatable**: every shipper *and* fleet owner must log into the e-way
+bill portal → Registration → For GSP → OTP → pick the GSP → create an API username/password.
+~2 minutes each, and the biggest onboarding-funnel drop-off risk.
+
+---
+
+## 🟡 B-6 · Confirm the leaked Maps **server** key was rotated
+
+The code fix has landed — **verified: no `AIzaSy` value exists anywhere in the working tree**, and the
+app Dockerfiles now take the browser key as a build ARG. But the previously-committed **server** key
+is still in **git history**, so the exposed value must be dead.
+
+**Only you can confirm:** Cloud Console → Google Maps Platform → Keys → regenerate the
+`bt-tracking-server` key, update `GOOGLE_MAPS_SERVER_KEY` on `bt-tracking-service`, and confirm it is
+API-restricted to Routes + Places (New).
+
+---
+
+## 🟡 B-7 · Surepass credentials — real KYC
+
+To replace the KYC **stub** with real verification. Post-pilot; KYC deliberately does not gate use at
+MVP (D-5).
+
+---
+
+## 🟡 B-8 · Gateway returns HTML on 429
 
 `bt-gateway` rate-limits `/api/auth/` and returns nginx's stock HTML error page. Both apps call
 `res.json()` on every response, so it throws and the user sees *"Server error — please try again"*
 instead of anything about rate limiting. Reachable by mistyping a password a few times.
 
-Fix is an `error_page 429` in the gateway returning the `{success, code}` envelope. Not done yet
-because it is a gateway config change and every service behind it shares the exposure — worth doing
-once, deliberately. Recorded in `BIBLE.md §5.4`.
+Fix is an `error_page 429` in the gateway returning the `{success, code}` envelope. Every service
+behind the gateway shares the exposure, so it is worth doing once, deliberately.
+Recorded in `BIBLE.md §5.4`.
 
-### B-6 · `SMTP_DAILY_BUDGET` defaults to 500/day
+---
 
-Now live across all auth mail. Fine at pilot scale; **raise it before any campaign**, because hitting
-it also stops real verification codes. `gcloud run services update bt-auth-service --update-env-vars SMTP_DAILY_BUDGET=…`
+## 🟡 B-9 · `SMTP_DAILY_BUDGET` is unset (defaults to 500/day)
 
-### B-7 · West Bengal e-way bill threshold is unverified
+**Verified:** `bt-auth-service` has `SMTP_HOST/PORT/USER/PASS/FROM` set but **no**
+`SMTP_DAILY_BUDGET`, so the code default of 500/day applies across all auth mail.
+
+Fine at pilot scale. **Raise it before any campaign** — hitting it also stops real verification codes.
+
+```bash
+gcloud run services update bt-auth-service --region=asia-south1 --update-env-vars SMTP_DAILY_BUDGET=2000
+```
+
+---
+
+## 🟡 B-10 · West Bengal e-way bill threshold unverified
 
 Two independent research passes reached **different conclusions** about when WB's intra-state
 threshold changed. The threshold table is built effective-dated with per-row notification provenance
-precisely so this is answerable later — but the WB row should be confirmed against the state gazette
-before anyone relies on it. `INDIA_FREIGHT_COMPLIANCE.md §0.2`.
+precisely so this stays answerable — but confirm the WB row against the state gazette before anyone
+relies on it. `INDIA_FREIGHT_COMPLIANCE.md §0.2`.
 
 ---
 
 ## ✅ Resolved
 
-| | Item | Resolution |
-|---|---|---|
-| ~~B-0~~ | Migration 0022 could not be applied — `apply_migration` is classifier-blocked | Founder authorised `execute_sql`; applied and verified 2026-08-03, ledger row written by hand. Procedure recorded for next time. |
+| Item | Resolution |
+|---|---|
+| Migration 0022 could not be applied (`apply_migration` classifier-blocked) | Founder authorised `execute_sql`; applied + verified 2026-08-03, ledger row written by hand |
+| CI/CD IAM + Workload Identity | Done — CD green, last 3 runs successful |
+| Maps server key committed in Dockerfiles | Code fixed; no key value in the tree. Rotation confirmation is B-6 |
+| "Get a testable app live" | Done — all 12 Cloud Run services healthy |

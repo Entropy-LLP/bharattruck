@@ -92,8 +92,9 @@ gap but nothing ever fixed the source file). Two different docs gave two differe
 which one a reader opened. All of that folded into this file so there is exactly one place to keep
 current, and exactly one place to check before assuming you know the state of the project.
 
-The originals aren't deleted — each has a short "superseded, see here" stub so git history and any
-external links still resolve. `docs/MAPS_TRACKING_PLAN.md` is the one file that stayed a real,
+The originals were stubbed on 2026-07-20 and **deleted outright on 2026-08-03** once the stubs had
+outlived their usefulness — git history still has every one of them. The `_Source:_` line under each
+section below records which file it came from, as provenance, not as a live pointer. `docs/MAPS_TRACKING_PLAN.md` is the one file that stayed a real,
 separate file (linked from §3.3) rather than folding in — it's a 1200+ line engineering narrative
 meant to be read as deep reference during a build phase, not top-to-bottom, and inlining it here would
 bury everything else.
