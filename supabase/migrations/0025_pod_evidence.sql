@@ -67,8 +67,9 @@ alter type booking_status add value if not exists 'delivery_asserted';
 --     row cannot exist at the storage layer, not merely at the API. The column exists so
 --     the control is auditable, and the CHECK is what makes it enforceable.
 --   * mock_location_detected + gps_source + gps_accuracy_m are recorded, not blocked:
---     an honest phone with developer options on can false-positive, so a mock fix
---     DOWNGRADES the proof (surfaced on pod_state) rather than rejecting a real delivery.
+--     an honest phone with developer options on can false-positive, so a mock fix is
+--     captured on the row and on the audit trail as a signal for dispute review, rather
+--     than hard-rejecting what may be a real delivery.
 create table if not exists public.pod_evidence (
   id                    uuid primary key default gen_random_uuid(),
   booking_id            uuid        not null references public.bookings(id) on delete cascade,
