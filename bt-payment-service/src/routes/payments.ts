@@ -1,9 +1,11 @@
 import type { FastifyInstance, FastifyReply, FastifyPluginOptions } from 'fastify'
 import { z } from 'zod'
 import { PaymentError } from '../lib/errors.js'
-import { settle, payoutView, type PaymentDeps } from '../lib/payment-service.js'
+import { settle, payoutView, assertSettlementParty, type PaymentDeps } from '../lib/payment-service.js'
 import { defaultBookingClient } from '../lib/booking-client.js'
 import { defaultPaymentStore } from '../lib/payment-store.js'
+import { getSupabase } from '../lib/supabase.js'
+import { resolvePersonas } from '@bharattruck/shared/personas'
 
 // NOTE: the previous Razorpay/escrow handlers here (order/webhook/release)
 // were fabricated stubs (`rzp_stub_order_id`, TODO Sprint 7). Escrow is OUT
@@ -36,6 +38,9 @@ export async function paymentRoutes(app: FastifyInstance, opts: PaymentRouteOpti
   const deps: PaymentDeps = opts.deps ?? {
     booking: defaultBookingClient(),
     store:   defaultPaymentStore(),
+    // Bind the shared persona resolver to the service-role client — this is the
+    // seam settle()/status authorize through (relation-to-booking, not role).
+    resolvePersonas: (userId, primaryPersona) => resolvePersonas(getSupabase(), userId, primaryPersona),
     logger:  app.log,
   }
 
@@ -70,11 +75,11 @@ export async function paymentRoutes(app: FastifyInstance, opts: PaymentRouteOpti
     }
     const bookingId = params.data.booking_id
     try {
-      if (req.user.role !== 'admin' && req.user.role !== 'shipper') {
-        throw new PaymentError('Not authorized to view settlement', 'FORBIDDEN', 403)
-      }
-      // Delegate ownership authz to booking-service (shipper must own it).
+      // Read first (booking-service enforces read access), then authorize on the
+      // caller's RELATION to the booking (D-27): the shipper, a to-pay consignee,
+      // or ops may read a settlement — the same parties who may record one.
       const booking = await deps.booking.getBooking(bookingId, req.headers.authorization!)
+      await assertSettlementParty(booking, req.user, deps)
       const payment = await deps.store.getPayment(bookingId)
       const payouts = await deps.store.getPayouts(bookingId)
       return reply.send({ success: true, data: { booking_id: bookingId, payment, ...payoutView(booking, payouts) } })

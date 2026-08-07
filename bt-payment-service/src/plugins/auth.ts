@@ -6,6 +6,13 @@ import jwt from 'jsonwebtoken'
 // JWT auth boundary for the money endpoints (P1 #11). Same custom
 // HS256 scheme as the other services (shared JWT_SECRET); the token
 // carries users.id as `userId` + `role`.
+//
+// `role` is a CLAIM, not an authorization axis (D-27): it is the caller's
+// primary persona (a mailing address / default surface), and the settlement
+// handlers authorize on RELATION-TO-BOOKING via @bharattruck/shared, never on
+// this string. It is still fed to resolvePersonas() as `primary_persona` and
+// kept as the ops/admin operator flag, which is a distinct axis from the
+// emergent personas — see assertSettlementParty.
 // -----------------------------------------------------------
 
 export type AuthenticatedUser = {

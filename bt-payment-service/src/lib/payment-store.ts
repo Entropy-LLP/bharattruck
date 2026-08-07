@@ -28,6 +28,12 @@ import { getSupabase } from './supabase.js'
 
 export type PaymentMode = 'cash' | 'upi' | 'direct'
 
+// freight_term — how the freight is billed on a booking's lorry receipt
+// (migration 0024). Only 'TO_PAY' matters to settlement authorization: it is the
+// consignee-pays consignment, the one case where the RECEIVER, not the shipper,
+// is the paying party and may therefore record the settlement (D-22 consignee).
+export type FreightTerm = 'PAID' | 'TO_PAY' | 'TO_BE_BILLED'
+
 // status MUST be a value the live payments_status_check allows
 // (pending|captured|settled|failed|refunded). A cash settlement is terminal, so
 // 'settled'. It is NOT 'recorded' — that violated the constraint and 500'd every
@@ -126,6 +132,12 @@ export interface PaymentStore {
   insertPendingPayoutIfAbsent(row: PayoutRecord): Promise<void>
   /** D-7/D-24 — the executing driver's cut of a fleet-won trip, and whether an affiliation backs it. */
   getDriverShare(fleetOwnerId: string, driverId: string): Promise<DriverShare>
+  /**
+   * D-22 — the booking's freight billing term, off its lorry receipt. Drives the
+   * consignee-pays settlement gate. null when the booking has no LR yet (or the
+   * schema predates 0024), which authorizes NOBODY new — a safe deny.
+   */
+  getFreightTerm(bookingId: string): Promise<FreightTerm | null>
 }
 
 // wirePayout — the row as it goes over the wire to PostgREST.
@@ -264,6 +276,27 @@ export class SupabasePaymentStore implements PaymentStore {
 
     const pct = Number(governing.revenue_share_pct ?? 0)
     return { affiliation: 'affiliated', share_pct: Number.isFinite(pct) ? pct : 0, status: governing.status }
+  }
+
+  // D-22 — the freight term off the booking's lorry receipt. One LR per booking
+  // (documents converge on the single document the consignee holds), so
+  // maybeSingle(). Read only when a consignee is asking to settle, so it costs
+  // one indexed lookup on that path alone.
+  async getFreightTerm(bookingId: string): Promise<FreightTerm | null> {
+    const { data, error } = await getSupabase()
+      .from('lorry_receipts')
+      .select('freight_term')
+      .eq('booking_id', bookingId)
+      .maybeSingle()
+
+    if (error) {
+      // A database predating migration 0024 has no lorry_receipts table / column
+      // at all; on it there is no consignee-pays term to honour, which is a safe
+      // DENY rather than a failure. Mirrors getDriverShare's schema-absent branch.
+      if (SCHEMA_ABSENT_CODES.has((error as { code?: string }).code ?? '')) return null
+      throw new Error(`lorry_receipts read failed: ${error.message}`)
+    }
+    return (data as { freight_term?: FreightTerm } | null)?.freight_term ?? null
   }
 }
 

@@ -84,11 +84,12 @@ jobs:
           # A change to this workflow file redeploys everything (safety — same convention as ci.yml).
           filters: |
             bt-gateway: ['bt-gateway/**', '.github/workflows/deploy.yml', 'cloudbuild.yaml', '.gcloudignore']
-            # bt-auth-service, bt-booking-service and bt-tracking-service consume packages/shared
-            # via a `file:` dependency (verified in their package.json), so a change there must
-            # redeploy them — otherwise a shared fix like the fleet tenant-isolation guard, or the
-            # persona resolver behind /auth/me, lands in the repo but never reaches the running
-            # services. bt-fleet-service does NOT depend on shared.
+            # bt-auth-service, bt-booking-service, bt-payment-service and bt-tracking-service
+            # consume packages/shared via a `file:` dependency (verified in their package.json),
+            # so a change there must redeploy them — otherwise a shared fix like the fleet
+            # tenant-isolation guard, the persona resolver behind /auth/me, or the relation-based
+            # settlement authz, lands in the repo but never reaches the running services.
+            # bt-fleet-service does NOT depend on shared.
             #
             # THIS LIST IS HAND-MAINTAINED AND GOES STALE SILENTLY: a service added to shared
             # without being added here still builds green and still merges, it just keeps serving
@@ -96,7 +97,7 @@ jobs:
             bt-auth-service: ['bt-auth-service/**', 'packages/shared/**', '.github/workflows/deploy.yml', 'cloudbuild.yaml', '.gcloudignore']
             bt-booking-service: ['bt-booking-service/**', 'packages/shared/**', '.github/workflows/deploy.yml', 'cloudbuild.yaml', '.gcloudignore']
             bt-pricing-service: ['bt-pricing-service/**', '.github/workflows/deploy.yml', 'cloudbuild.yaml', '.gcloudignore']
-            bt-payment-service: ['bt-payment-service/**', '.github/workflows/deploy.yml', 'cloudbuild.yaml', '.gcloudignore']
+            bt-payment-service: ['bt-payment-service/**', 'packages/shared/**', '.github/workflows/deploy.yml', 'cloudbuild.yaml', '.gcloudignore']
             bt-cargo-ledger: ['bt-cargo-ledger/**', '.github/workflows/deploy.yml', 'cloudbuild.yaml', '.gcloudignore']
             bt-tracking-service: ['bt-tracking-service/**', 'packages/shared/**', '.github/workflows/deploy.yml', 'cloudbuild.yaml', '.gcloudignore']
             bt-fleet-service: ['bt-fleet-service/**', '.github/workflows/deploy.yml', 'cloudbuild.yaml', '.gcloudignore']
@@ -111,9 +112,9 @@ jobs:
           CHANGES='${{ steps.filter.outputs.changes }}'
           # Backend services: the dir name IS the Cloud Run service name AND the Dockerfile dir.
           # NOTE `packages/shared` is a build input, not a deployable dir — it must never reach
-          # the services list, or CD would try to build and deploy a library as a service. The filter above already maps it onto its three real consumers
-          # (bt-auth-service, bt-booking-service, bt-tracking-service); this select drops the bare
-          # name, along with the four app dirs.
+          # the services list, or CD would try to build and deploy a library as a service. The filter above already maps it onto its four real consumers
+          # (bt-auth-service, bt-booking-service, bt-payment-service, bt-tracking-service); this
+          # select drops the bare name, along with the four app dirs.
           SERVICES=$(printf '%s' "$CHANGES" | jq -c '
             [ .[] | select(. == "driver" or . == "shipper" or . == "fleet"
                         or . == "bt-ops-web" or . == "packages/shared" | not) ]')

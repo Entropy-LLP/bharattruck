@@ -20,6 +20,7 @@ process.env.SUPABASE_SERVICE_ROLE_KEY = 'fake-key'
 
 import Fastify from 'fastify'
 import jwt from 'jsonwebtoken'
+import { resolvePersonas } from '@bharattruck/shared/personas'
 
 const B1 = '11111111-1111-4111-8111-111111111111' // completed — settle success + double
 const B2 = '22222222-2222-4222-8222-222222222222' // in_transit — non-completed 409
@@ -37,6 +38,8 @@ const BD = 'ddddddd1-dddd-4ddd-8ddd-ddddddddddd1' // completed — FLEET, share 
 const BE = 'eeeeeee1-eeee-4eee-8eee-eeeeeeeeeee1' // completed — solo, settled on the PRE-0023 schema
 const BF = 'fffffff1-ffff-4fff-8fff-fffffffffff1' // completed — FLEET split attempted on the PRE-0023 schema
 const BG = 'aaaaaaa2-aaaa-4aaa-8aaa-aaaaaaaaaaa2' // completed — FLEET, driver with NO affiliation (D-24)
+const BH = 'aaaaaaa3-aaaa-4aaa-8aaa-aaaaaaaaaaa3' // completed — TO_PAY, consignee may settle (D-22)
+const BI = 'aaaaaaa4-aaaa-4aaa-8aaa-aaaaaaaaaaa4' // completed — PAID, consignee may NOT settle (D-22)
 const D1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const D2 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab' // fleet driver on a 30% revenue share
 const D3 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaac' // fleet driver on 33.33% — the awkward one
@@ -51,6 +54,7 @@ const U5 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbf' // unaffiliated driver user (D
 const S1 = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' // shipper (owner) user
 const OTHER = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd' // shipper (non-owner)
 const ADMIN = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
+const CN = 'cccccccc-cccc-4ccc-8ccc-cccccccccc99' // consignee user (claimed, shipper-KIND)
 
 type Row = Record<string, any>
 const bstore: Record<string, Row[]> = {
@@ -82,6 +86,11 @@ const bstore: Record<string, Row[]> = {
     // D-24: the fleet won the work, but the driver of record holds no affiliation
     // with it — the sub-contracted case. The share lookup has nothing to read.
     { id: BG, driver_id: D5, fleet_owner_id: F1, shipper_id: S1, status: 'completed', quoted_price: 6000, final_price: 6000 },
+    // D-22 consignee-pays: same shipper + driver, both name CN as the claimed
+    // consignee. The freight_term (below) is what decides whether CN may settle —
+    // BH is 'TO_PAY' (CN owes it), BI is 'PAID' (CN owes nothing on this trip).
+    { id: BH, driver_id: D1, shipper_id: S1, consignee_user_id: CN, status: 'completed', quoted_price: 5000, final_price: 5000 },
+    { id: BI, driver_id: D1, shipper_id: S1, consignee_user_id: CN, status: 'completed', quoted_price: 5000, final_price: 5000 },
   ],
   drivers: [
     { id: D1, user_id: U1 }, { id: D2, user_id: U2 }, { id: D3, user_id: U3 },
@@ -112,6 +121,11 @@ class FakeQuery {
   private f: Array<['eq' | 'in' | 'is', string, any]> = []
   private mode: 'select' | 'update' | 'insert' | 'upsert' = 'select'
   private payload: Row | null = null
+  // .limit(n): the booking-service driver-read path (isFleetAffiliatedDriver /
+  // driverOwnsAnyVehicle) caps its existence probes at one row. Only reached now
+  // that settlement authz reads the booking as whoever is calling — a driver
+  // included — so the fake has to honour it or that read 500s instead of 403s.
+  private lim: number | null = null
   constructor(private table: string) {}
   select() { return this }
   insert(p: Row) { this.mode = 'insert'; this.payload = p; return this }
@@ -119,6 +133,7 @@ class FakeQuery {
   update(p: Row) { this.mode = 'update'; this.payload = p; return this }
   eq(c: string, v: any) { this.f.push(['eq', c, v]); return this }
   in(c: string, v: any[]) { this.f.push(['in', c, v]); return this }
+  limit(n: number) { this.lim = n; return this }
   is(c: string, v: any) { this.f.push(['is', c, v]); return this }
   private m(r: Row) {
     return this.f.every(([o, c, v]) =>
@@ -128,7 +143,8 @@ class FakeQuery {
     const rows = bstore[this.table] ?? []
     if (this.mode === 'insert' || this.mode === 'upsert') { const row = { ...this.payload }; rows.push(row); return { data: [row], error: null } }
     if (this.mode === 'update') { const h = rows.filter(r => this.m(r)); h.forEach(r => Object.assign(r, this.payload)); return { data: h, error: null } }
-    return { data: rows.filter(r => this.m(r)), error: null }
+    const data = rows.filter(r => this.m(r))
+    return { data: this.lim == null ? data : data.slice(0, this.lim), error: null }
   }
   maybeSingle() { const { data, error } = this.run(); return Promise.resolve({ data: data.length ? data[0] : null, error }) }
   single() { return this.maybeSingle() }
@@ -215,6 +231,19 @@ const fakeStore = {
       status: governing.status as string,
     }
   },
+  // D-22 — the freight term off the booking's lorry receipt. Only 'TO_PAY' opens
+  // the consignee-pays settlement gate; a booking with no LR reads as null (deny).
+  async getFreightTerm(bookingId: string) {
+    return (freightTerms[bookingId] as 'PAID' | 'TO_PAY' | 'TO_BE_BILLED' | undefined) ?? null
+  },
+}
+
+// LR freight_term per booking, as SupabasePaymentStore.getFreightTerm reads it.
+// Only the two consignee-pays fixtures carry one; every other booking has no LR
+// and settles as it always did (shipper/ops only).
+const freightTerms: Record<string, 'PAID' | 'TO_PAY' | 'TO_BE_BILLED'> = {
+  [BH]: 'TO_PAY',
+  [BI]: 'PAID',
 }
 
 // "The payout" stopped being a question with one answer, so every check below
@@ -265,6 +294,11 @@ async function main() {
   const deps = {
     booking: new HttpBookingClient(bookingBase, SECRET),
     store: fakeStore as any,
+    // The settlement authz seam (D-27): resolve the caller's persona snapshot from
+    // the SAME fake Supabase the booking-service runs on, so relation-to-booking is
+    // exercised end-to-end rather than stubbed.
+    resolvePersonas: (userId: string, primaryPersona: string) =>
+      resolvePersonas(fakeSupabase as any, userId, primaryPersona as any),
     logger: { warn: (obj: unknown, msg: string) => { warnings.push({ obj: obj as Record<string, unknown>, msg }) } },
   }
   const payApp = Fastify({ logger: false })
@@ -329,6 +363,21 @@ async function main() {
   console.log('\n── admin can settle ──')
   r = await settle({ booking_id: B5, amount: 6000, mode: 'cash' }, tok(ADMIN, 'admin'))
   check('admin settle completed booking 200 paid', r.statusCode === 200 && r.json().data?.status === 'paid', `(got ${r.statusCode})`)
+
+  console.log('\n── consignee-pays settlement (D-22): the freight_term gates it, not the relation ──')
+  // A claimed consignee is a party to the booking, but being the receiver does NOT
+  // by itself make them the payer. They may settle ONLY the consignee-pays case —
+  // a booking whose LR carries freight_term 'TO_PAY'. On a 'PAID' consignment the
+  // shipper has already paid and the receiver owes nothing, so the SAME consignee
+  // on the SAME kind of booking must be refused. Relation + freight_term together.
+  r = await settle({ booking_id: BI, amount: 5000, mode: 'cash' }, tok(CN, 'shipper'))
+  check('consignee settling a PAID booking 403 FORBIDDEN', r.statusCode === 403 && r.json().code === 'FORBIDDEN', `(got ${r.statusCode}/${r.json().code})`)
+  check('refused consignee settle left the booking completed', bStatus(BI) === 'completed', `(got ${bStatus(BI)})`)
+  check('refused consignee settle wrote no payment', !(await fakeStore.getPayment(BI)), JSON.stringify(await fakeStore.getPayment(BI)))
+  r = await settle({ booking_id: BH, amount: 5000, mode: 'cash', reference: 'UTR-TOPAY' }, tok(CN, 'shipper'))
+  check('consignee settling a TO_PAY booking 200 paid', r.statusCode === 200 && bStatus(BH) === 'paid', `(got ${r.statusCode}/${bStatus(BH)})`)
+  check('consignee-settled TO_PAY booking recorded the driver payout', (await payoutOf(BH))?.amount === 5000, JSON.stringify(await payoutOf(BH)))
+  check('consignee, like a shipper, is recorded as the settling actor', (await payoutOf(BH))?.recorded_by === CN, JSON.stringify(await payoutOf(BH)))
 
   console.log('\n── money integrity: settled amount vs agreed price ──')
   // The whole point: a shipper must not be able to name their own price at

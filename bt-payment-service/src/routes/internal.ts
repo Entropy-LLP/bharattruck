@@ -4,6 +4,8 @@ import { PaymentError } from '../lib/errors.js'
 import { onTripCompleted, type PaymentDeps } from '../lib/payment-service.js'
 import { defaultPaymentStore } from '../lib/payment-store.js'
 import { defaultBookingClient } from '../lib/booking-client.js'
+import { getSupabase } from '../lib/supabase.js'
+import { resolvePersonas } from '@bharattruck/shared/personas'
 
 const TripCompletedBody = z.object({
   booking_id: z.string().uuid(),
@@ -32,6 +34,10 @@ export async function internalPaymentRoutes(app: FastifyInstance, opts: Internal
   const deps: PaymentDeps = opts.deps ?? {
     booking: defaultBookingClient(),
     store:   defaultPaymentStore(),
+    // The saga consumer below never authorizes on a persona, but PaymentDeps is
+    // one shape shared with the public settle path — bind it the same way so the
+    // type stays honest rather than making the field optional and nullable.
+    resolvePersonas: (userId, primaryPersona) => resolvePersonas(getSupabase(), userId, primaryPersona),
     logger:  app.log,
   }
 
