@@ -1,7 +1,7 @@
 /**
  * Maps helpers for the shipper live-tracking view.
  *
- * Per the FROZEN Maps & Tracking contract (docs/MAPS_TRACKING_CONTRACT.md):
+ * Per the FROZEN Maps & Tracking contract (docs/BIBLE.md §3.1):
  *  - Provider is Google Maps Platform; the browser layer uses
  *    `@vis.gl/react-google-maps` + the Maps JavaScript API only.
  *  - Env-key names are locked — use exactly these, and only the public

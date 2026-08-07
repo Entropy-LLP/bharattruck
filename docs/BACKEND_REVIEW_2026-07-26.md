@@ -1,5 +1,13 @@
 # BharatTruck — backend capability + review brief
 
+> ⚠️ **POINT-IN-TIME FINDINGS REGISTER — verify before acting (banner added 2026-08-07).** This is a
+> snapshot of a since-merged branch, not a description of `main` today. Some findings have landed:
+> the `[CRITICAL] canFleetAccessBooking` cross-tenant read is **fixed** — clause 4 is now guarded by
+> `!booking.fleet_owner_id` (`packages/shared/src/fleet.ts`). Others (e.g. the unpruned
+> `fleet:{id}:drivers` Redis set) still look open. It is kept because no live doc carries these
+> findings, but **re-verify every item against the code before you act on it**, and the `file:line`
+> citations have drifted. Nothing here overrides `docs/BIBLE.md §5` on current state.
+>
 > Produced 2026-07-26 by a 31-agent parallel sweep over `feat/fleet-owner`, then an adversarial
 > verification pass. Only findings that survived refutation are listed in the two review sections.
 > Every claim is cited as `file:line`. Where verification corrected a claim, the corrected form is
@@ -76,7 +84,7 @@ Uncovered and registered in production: `roadDistanceKm` (`lib/geo.ts:36-39`), t
 
 `app.get('/health', …)` is registered on the root instance at `index.ts:20`, before both encapsulated scopes (`index.ts:24-27` auth + pricing, `:31-34` internal), and asserts `status: 'ok'` unconditionally. `bootstrap()` (`index.ts:16-37`) reads only `process.env.PORT` — no env assertion, no fail-fast. Every secret is read lazily per request: `auth.ts:31` (`jwt.verify` with `undefined` → `JsonWebTokenError` → swallowed into 401 at `auth.ts:32-33`), `lib/supabase.ts:10-14` (throws → 500 via `routes/pricing.ts:103-105`), `plugins/internal-auth.ts:13-17` (503). `docker-compose.yml:133-152` gives the service only `NODE_ENV` (`:143`) and `PORT` (`:144`) with no `env_file`, while `bt-auth-service` gets `SUPABASE_URL`/`JWT_SECRET` at `docker-compose.yml:86-88` and `bt-booking-service` at `:116-118` — pricing is the anomaly. The compose healthcheck polls the always-ok endpoint (`docker-compose.yml:147-152`), as does the deploy script's own gate (`scripts/deploy/deploy-all.sh:112-116`).
 
-**Failure scenario.** The stack reports healthy; every `POST /pricing/quote` returns 401 (undefined JWT secret) or 500 (`SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set`). No alarm fires. **Caveat:** `scripts/deploy/deploy-all.sh:84` *does* wire all four on a full run; what keeps the gap alive is `.github/workflows/deploy.yml:143-151`, which deploys with `--source` and no `--set-env-vars`. `bt-pricing-service/HANDOFF_NOTE.md:10-15` records all four still blank on Cloud Run as of 2026-07-19 — a document assertion, not verified against the live service. Fix is a boot-time env assertion in `bootstrap()` before `app.listen`.
+**Failure scenario.** The stack reports healthy; every `POST /pricing/quote` returns 401 (undefined JWT secret) or 500 (`SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set`). No alarm fires. **Caveat:** `scripts/deploy/deploy-all.sh:84` *does* wire all four on a full run; what keeps the gap alive is `.github/workflows/deploy.yml:143-151`, which deploys with `--source` and no `--set-env-vars`. the former `bt-pricing-service/HANDOFF_NOTE.md` (deleted 2026-08-07) recorded all four still blank on Cloud Run as of 2026-07-19 — a document assertion, never verified against the live service. Fix is a boot-time env assertion in `bootstrap()` before `app.listen`.
 
 ---
 

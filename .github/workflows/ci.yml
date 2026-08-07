@@ -7,7 +7,7 @@ name: ci
 # `next build` for apps — this IS the typecheck+compile gate since there are no separate
 # typecheck scripts) + `npm test --if-present`. Path-filtered so a PR only builds what it touched
 # (a booking change is not blocked by an unrelated service's state). The CTO integrates to `main`
-# only when this is green (docs/CTO_ENGINEERING_STANDARDS.md §2).
+# only when this is green (docs/BIBLE.md §4.2).
 
 on:
   pull_request:

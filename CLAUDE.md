@@ -27,9 +27,8 @@ BharatTruck is an India interstate/intrastate freight-booking marketplace built 
 - `shipper/` — shipper app: live-tracking map.
 
 **Authoritative specs:** `docs/BIBLE.md §1` (product spec) and `docs/BIBLE.md §2` (how we build +
-committed cuts — including the still-open 2026-07-12 escrow/RL scope-reversal note). `ROADMAP.md` at
-the repo root is a pre-consolidation historical index only — it's been banner-marked superseded since
-2026-07-04 and predates the Bible too. These sections win over ad-hoc narrative.
+committed cuts — including the still-open 2026-07-12 escrow/RL scope-reversal note). These sections
+win over ad-hoc narrative.
 
 ---
 
@@ -103,7 +102,7 @@ the **live Cloud Run deployment**, not local dev — the whole stack is already 
 ## Global conventions
 - **Monorepo:** all code lives in this one repo; cross-service changes go in a single PR. Never push to the retired `Entropy-LLP/*` standalones or `deltaos1997/*` mirrors.
 - **Trunk-based:** short-lived `feat/*` branches, PR + green CI before merge to `main`; keep `main` demoable; no stubs/TODOs left in `main`.
-- **Trust order for build state:** frozen CONTRACT → code → per-folder `ROADMAP.md` → root docs. Several `README.md`/`API.md` files are stale/aspirational — do not trust them over the code.
+- **Trust order for build state:** frozen CONTRACT (`docs/BIBLE.md §3.1`) → code → `docs/BIBLE.md §5`. The per-service `README.md`/`API.md`/`ROADMAP.md` files were deleted on 2026-08-07 because they asserted behaviour the code contradicts; do not recreate them. A service folder gets a README only if it documents something the code cannot state itself (`bt-fleet-service/README.md` is the model), and the code still wins.
 - **Auth/identity gotcha:** the JWT carries `users.id` as `userId`; `drivers.id` is a *separate* row (resolved via `getDriverByUserId`). `bookings.driver_id`, `quotes.driver_id`, and Redis `loc:*` keys reference `drivers.id`, **not** `users.id`.
 - **Tracking endpoints:** snake_case JSON everywhere; namespaced under `/api/tracking/...`; `:bookingId` path param.
 - **Do not rebuild GPS ingestion** in `bt-booking-service` — it already exists and stays there.
