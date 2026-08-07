@@ -1,4 +1,5 @@
 import { supabase } from './supabase.js'
+import { consigneeSchemaNotMigrated, isConsigneeSchemaMissing } from './consignee/repository.js'
 import type {
   AuthenticatedUser,
   BookingStatus,
@@ -11,12 +12,17 @@ import type {
 // createBooking
 // Inserts a new pending booking. Shipper identity comes from
 // the authenticated actor — never from the request body.
+//
+// consigneeUserId is the users.id already resolved by the service layer (linked
+// to an existing party, or a fresh unclaimed record) — null when the caller took
+// the legacy receiver_email-only path.
 // -----------------------------------------------------------
 
 export async function createBooking(
   body: CreateBookingBody,
   actor: AuthenticatedUser,
   quotedPrice: number,
+  consigneeUserId: string | null = null,
 ): Promise<DbBooking> {
   // Fetch shipper profile from DB — JWT only carries userId + role
   const { data: userRow } = await supabase
@@ -46,17 +52,37 @@ export async function createBooking(
       pickup_date:          body.pickup_date,
       pickup_time_slot:     body.pickup_time_slot ?? null,
       special_instructions: body.special_instructions ?? null,
-      receiver_email:       body.receiver_email,
+      // Still written, and still the address bt-cargo-ledger emails the POD code
+      // to. Taken from the consignee's email when one was given, so a client that
+      // has moved to `consignee` keeps the POD flow working unchanged. It is
+      // NEVER read off a LINKED party's profile — echoing a stranger's stored
+      // email back onto the caller's booking would turn "post a load naming this
+      // phone number" into an address-lookup oracle.
+      receiver_email:       body.consignee?.email ?? body.receiver_email ?? null,
       booking_type:         body.booking_type ?? 'direct',
       target_driver_id:     body.target_driver_id ?? null,
       auction_deadline:     body.auction_deadline ?? null,
       dimensions_json:      body.dimensions_json ?? null,
       status:               'pending',
+      // Omitted ENTIRELY when there is no consignee, rather than sent as null —
+      // the same trick LocationBreadcrumb uses for vehicle_id. A legacy
+      // receiver_email-only create therefore writes the exact column set it
+      // always has and keeps working on a database where 0026 has not landed.
+      ...(consigneeUserId ? { consignee_user_id: consigneeUserId } : {}),
     })
     .select('*')
     .single()
 
-  if (error) throw new Error(`DB insert failed: ${error.message}`)
+  if (error) {
+    // A create that NAMES a consignee on a pre-0026 database. Loud 503 naming
+    // the migration, never a silent drop: the consignee is the party the goods
+    // are for and the only contact that can close the trip, so pretending the
+    // booking was recorded correctly is the one outcome worse than failing.
+    if (consigneeUserId && isConsigneeSchemaMissing(error)) {
+      throw consigneeSchemaNotMigrated('Recording a booking with a consignee')
+    }
+    throw new Error(`DB insert failed: ${error.message}`)
+  }
   return data as DbBooking
 }
 
