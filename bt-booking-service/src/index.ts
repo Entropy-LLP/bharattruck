@@ -5,6 +5,7 @@ import authPlugin from './plugins/auth.js'
 import internalAuthPlugin from './plugins/internal-auth.js'
 import { bookingRoutes } from './routes/bookings.js'
 import { quoteRoutes } from './routes/quotes.js'
+import { feedRoutes } from './routes/feed.js'
 import { locationRoutes } from './routes/location.js'
 import { internalRoutes } from './routes/internal.js'
 import { opsRoutes } from './routes/ops.js'
@@ -47,6 +48,9 @@ async function bootstrap() {
     // needs no new route: bt-gateway already forwards /bookings here.
     await authedApp.register(documentRoutes, { prefix: '/bookings' })
     await authedApp.register(locationRoutes, { prefix: '/location' })
+    // The unified home feed (D-38). Its own /me prefix — it is a per-CALLER
+    // surface, not a per-booking one — reached through the gateway's /api/me/*.
+    await authedApp.register(feedRoutes, { prefix: '/me' })
   })
 
   // Internal service-to-service routes (shared-secret gated, not public)
