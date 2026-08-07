@@ -62,7 +62,7 @@ http {
   # development needs a locally-run gateway or a proxy, not a hole in the prod allow-list.
   map $http_origin $cors_origin {
     default                                              "";
-    "~^https://bt-(shipper|driver|ops-web|fleet-console)-[^/]+\.run\.app$" $http_origin;
+    "~^https://bt-(shipper|driver|ops-web|fleet-console|app)-[^/]+\.run\.app$" $http_origin;
   }
 
   limit_req_zone $binary_remote_addr zone=otp_zone:10m rate=5r/m;
