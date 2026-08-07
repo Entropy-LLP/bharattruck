@@ -227,11 +227,17 @@ http {
     # is the "what needs me right now?" aggregate (D-38); the service does its own
     # JWT + capability resolution. Polled on each home render, so it shares the
     # dashboard burst rather than the default api rate.
-    location /api/me/ {
+    #
+    # NOTE the specific prefix: /me/ is SHARED — the feed lives in bt-booking-service,
+    # while /me/completeness and /me/acknowledgements live in bt-auth-service (the
+    # /api/me/ auth block). nginx longest-prefix matching sends /api/me/feed here and
+    # everything else under /api/me/ to auth. Keep this block MORE specific than the
+    # auth /api/me/ block; do not collapse the two — they route to different services.
+    location /api/me/feed {
       limit_req zone=api_zone burst=30 nodelay;
-      set $me_upstream ${BOOKING_SERVICE_URL};
+      set $me_feed_upstream ${BOOKING_SERVICE_URL};
       rewrite ^/api/me/(.*) /me/$1 break;
-      proxy_pass $me_upstream;
+      proxy_pass $me_feed_upstream;
     }
 
     # Maps & Tracking read-through (bt-tracking-service, routes mounted at /tracking).
