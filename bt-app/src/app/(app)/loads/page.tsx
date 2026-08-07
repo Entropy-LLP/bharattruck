@@ -33,9 +33,15 @@ import { inr, timeAgo } from '@/lib/format'
 import { bookingStatusConfig } from '@/lib/status'
 import type { Booking } from '@/lib/types'
 
+// A load is "mine" if the server says I'm its shipper (viewer.relations) OR its
+// shipper_id is my user id. Either alone is enough: the relations block is the
+// intended signal (and correctly excludes the open board a unified shipper+carrier
+// can also see), and shipper_id is a robust fallback so a transient relations hiccup
+// can never hide a shipper's own load. The open board never matches shipper_id.
 function postedByCaller(b: Booking, userId: string | null): boolean {
-  if (b.viewer) return b.viewer.relations.includes('shipper')
-  return userId != null && b.shipper_id === userId
+  const byRelation = b.viewer?.relations.includes('shipper') ?? false
+  const byOwnership = userId != null && b.shipper_id === userId
+  return byRelation || byOwnership
 }
 
 export default function LoadsPage() {
