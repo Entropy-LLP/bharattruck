@@ -1,5 +1,5 @@
 import type { BookingClient } from './booking-client.js'
-import type { PaymentStore, PaymentMode, PayoutPayee, PayoutRecord, PayoutKey } from './payment-store.js'
+import type { DriverShare, PaymentStore, PaymentMode, PayoutPayee, PayoutRecord, PayoutKey } from './payment-store.js'
 import { PaymentError } from './errors.js'
 import { emitTripEconomics } from './fleet-emit.js'
 import type { AuthenticatedUser } from '../plugins/auth.js'
@@ -119,6 +119,71 @@ export function resolvePayees(
   return []
 }
 
+// A fact about a settlement that is not a failure — the money is recorded and the
+// trip closes — but that nobody may be left to discover from the ledger weeks
+// later. Returned to the caller as well as logged, because the ledger records
+// amounts, not the facts we were missing when we wrote them: an anomaly that lived
+// only in a log line is invisible to the console that recorded the settlement.
+export type SettlementAnomaly = {
+  code: 'UNAFFILIATED_EXECUTING_DRIVER'
+  message: string
+  driver_id: string
+  fleet_owner_id: string
+}
+
+// resolveSettlement — the payees for one settled trip, plus anything about the
+// affiliation those payees were derived from that an operator has to be told.
+//
+// D-24: the CARRIER that won the work and the TRUCK + DRIVER that executed it are
+// separate facts, and no code may assume they coincide. The contract payee is
+// correctly the winning carrier — the platform pays whoever won the work — but the
+// D-7 split is a term of the executing driver's AFFILIATION with that carrier, and
+// this is the seam where the two meet.
+//
+// `affiliation: 'none'` means there is no such term because there is no such
+// relationship. The old code read that as a share of 0 and paid the driver nothing:
+// no row, no error, no log, indistinguishable in the ledger from a salaried trip
+// the owner is meant to keep. A silent zero-rupee payout is the worst failure a
+// freight platform has, because the only party who notices is the one who drove.
+//
+// The payout POLICY is deliberately unchanged — what a sub-contracted driver is
+// owed is post-MVP and is not this function's to invent, so the carrier is still
+// paid the whole freight — but the settlement now says out loud which fact it was
+// missing when it decided that.
+//
+// Pure, for the same reason resolvePayees is: the split AND the anomaly are
+// exercisable without a database.
+export function resolveSettlement(
+  booking: { driver_id: string | null; fleet_owner_id?: string | null },
+  amount: number,
+  share: DriverShare | null,
+): { payees: PayoutSplit[]; anomalies: SettlementAnomaly[] } {
+  const payees = resolvePayees(booking, amount, share?.share_pct ?? 0)
+
+  // Only a fleet trip WITH an executing driver can have a missing affiliation: a
+  // solo booking has no carrier to be unaffiliated from, and a fleet booking with no
+  // driver assigned has nobody whose cut could have gone missing.
+  if (share?.affiliation !== 'none' || !booking.fleet_owner_id || !booking.driver_id) {
+    return { payees, anomalies: [] }
+  }
+
+  return {
+    payees,
+    anomalies: [
+      {
+        code: 'UNAFFILIATED_EXECUTING_DRIVER',
+        driver_id: booking.driver_id,
+        fleet_owner_id: booking.fleet_owner_id,
+        message:
+          `Driver ${booking.driver_id} executed this trip for fleet ${booking.fleet_owner_id} but holds no ` +
+          'affiliation with it, so there is no revenue-share term to split on. The entire settled amount is ' +
+          'recorded to the fleet and NO driver payout is written — this is NOT a salaried trip. Settle the ' +
+          "driver's cut off-platform, or record the affiliation so the next trip splits.",
+      },
+    ],
+  }
+}
+
 // planPayoutWrites — turn "these are the payees" into "do exactly this to the
 // booking's payout rows". Pure, so the reconciliation is testable without a
 // database and without a settlement.
@@ -181,10 +246,15 @@ export async function settle(args: SettleArgs, actor: AuthenticatedUser, bearer:
   const booking = await deps.booking.getBooking(args.bookingId, bearer)
   const existing = await deps.store.getPayment(args.bookingId)
 
+  // Anomalies belong to the settlement that RESOLVED the payees, which is the one
+  // that read the affiliation — every other path here resolves nothing and so
+  // asserts nothing new about it. The log line written below is the durable record.
+  const anomalies: SettlementAnomaly[] = []
+
   // Idempotent full-retry: already settled + already flipped to paid.
   if (booking.status === 'paid' && existing) {
     const payouts = await deps.store.getPayouts(args.bookingId)
-    return { booking_id: args.bookingId, status: 'paid', already_settled: true, payment: existing, ...payoutView(booking, payouts) }
+    return { booking_id: args.bookingId, status: 'paid', already_settled: true, payment: existing, anomalies, ...payoutView(booking, payouts) }
   }
 
   if (booking.status !== 'completed') {
@@ -241,15 +311,35 @@ export async function settle(args: SettleArgs, actor: AuthenticatedUser, bearer:
     // paid out, and migration 016's CHECK would reject the payout row anyway —
     // better to refuse up front than to record money we cannot disburse.
     //
-    // The D-7 share is read here and only here. It governs how the freight is
-    // divided, so it must be the share in force when the money is recorded —
-    // not one cached from trip completion, by which time the owner may have
-    // renegotiated it. Reading it costs one indexed lookup on a path that
-    // already makes two cross-service HTTP calls.
-    const sharePct = booking.fleet_owner_id && booking.driver_id
-      ? await deps.store.getDriverRevenueSharePct(booking.fleet_owner_id, booking.driver_id)
-      : 0
-    const payees = resolvePayees(booking, args.amount, sharePct) // pilot: no platform fee — the payees split the whole settled amount
+    // The D-7 share — and, since D-24, whether an affiliation backs it at all —
+    // is read here and only here. It governs how the freight is divided, so it
+    // must be the share in force when the money is recorded — not one cached
+    // from trip completion, by which time the owner may have renegotiated it.
+    // Reading it costs one indexed lookup on a path that already makes two
+    // cross-service HTTP calls.
+    const share = booking.fleet_owner_id && booking.driver_id
+      ? await deps.store.getDriverShare(booking.fleet_owner_id, booking.driver_id)
+      : null
+    // pilot: no platform fee — the payees split the whole settled amount
+    const { payees, anomalies: resolved } = resolveSettlement(booking, args.amount, share)
+    anomalies.push(...resolved)
+    for (const anomaly of resolved) {
+      // warn, not error: nothing failed and the settlement proceeds. But it carries
+      // every id somebody needs to chase the driver's money without first having to
+      // work out which trip the log line is about — a settlement that pays the
+      // executing driver ₹0 is exactly the event nobody may have to reconstruct.
+      deps.logger?.warn(
+        {
+          booking_id: args.bookingId,
+          code: anomaly.code,
+          driver_id: anomaly.driver_id,
+          fleet_owner_id: anomaly.fleet_owner_id,
+          amount: args.amount,
+          actor: actor.userId,
+        },
+        anomaly.message,
+      )
+    }
     if (payees.length === 0) {
       throw new PaymentError('Booking has no payee (neither a driver nor a fleet owner)', 'INVALID_STATE', 409)
     }
@@ -344,7 +434,7 @@ export async function settle(args: SettleArgs, actor: AuthenticatedUser, bearer:
 
   const payment = existing ?? (await deps.store.getPayment(args.bookingId))
   const payouts = await deps.store.getPayouts(args.bookingId)
-  return { booking_id: args.bookingId, status: 'paid', already_settled: !!existing, payment, ...payoutView(booking, payouts) }
+  return { booking_id: args.bookingId, status: 'paid', already_settled: !!existing, payment, anomalies, ...payoutView(booking, payouts) }
 }
 
 // payoutView — the settlement's payouts, shaped for the wire.
