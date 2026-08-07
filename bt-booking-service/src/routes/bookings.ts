@@ -129,6 +129,25 @@ export async function bookingRoutes(app: FastifyInstance) {
     }
   })
 
+  // PATCH /bookings/:id/direct-attach — the shipper moves their OWN load with
+  // their OWN fleet or truck (D-10), skipping the auction.
+  //
+  // No body: the carrier is the caller's own resolved persona, and letting a
+  // request name it would turn this into "assign the load to whoever I say",
+  // which is ops' reassign route, not this one. Sits alongside /accept because it
+  // is the same edge of the state machine (pending|negotiating → accepted) —
+  // only the party performing it, and the award path recorded, differ.
+  app.patch('/:id/direct-attach', async (req, reply) => {
+    const id = parseId(reply, req.params)
+    if (!id) return
+    try {
+      const booking = await svc.directAttachBooking(id, req.user, req.log)
+      return reply.send({ success: true, data: booking })
+    } catch (err) {
+      return handleError(reply, err)
+    }
+  })
+
   // PATCH /bookings/:id/start — assigned driver moves accepted → in_transit
   app.patch('/:id/start', async (req, reply) => {
     const id = parseId(reply, req.params)
