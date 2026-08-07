@@ -18,7 +18,7 @@ import type {
   Booking, BookingType, ConsigneeInput,
   PriceQuote, PriceQuoteInput, PriceQuoteVehicleType,
   TrackData, DriverLocation,
-  LocationUpdate, PodContext, RequestOtpResult, RouteData, PumpsData, FuelData, AlertsData,
+  LocationUpdate, PodContext, RequestOtpResult, VerifyOtpResult, RouteData, PumpsData, FuelData, AlertsData,
 } from './types'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
@@ -627,6 +627,21 @@ export function getPodContext(bookingId: string) {
 export function requestPodOtp(bookingId: string) {
   return request<RequestOtpResult>('/cargo/pod/request-otp', {
     method: 'POST', body: JSON.stringify({ booking_id: bookingId }),
+  })
+}
+
+/**
+ * Submit the delivery code to close the trip (POST /cargo/pod/verify-otp).
+ *
+ * The code was sent to the RECEIVER (their phone/email) — the driver asks the receiver
+ * for it at the drop and enters it here. The endpoint is unauthenticated by design (§6.3:
+ * the secret sits off the driver's device; it can only be produced by the receiver who is
+ * present), TTL- and attempt-bounded. On success the backend has already moved the trip to
+ * 'completed'. A wrong/expired code throws an ApiError the caller shows inline.
+ */
+export function verifyPodOtp(bookingId: string, otp: string) {
+  return request<VerifyOtpResult>('/cargo/pod/verify-otp', {
+    method: 'POST', body: JSON.stringify({ booking_id: bookingId, otp }),
   })
 }
 
