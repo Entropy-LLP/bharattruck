@@ -814,3 +814,112 @@ export type DriverLocation = {
   booking_id: string | null
   updated_at: string
 }
+
+// ── Drive surfaces (My Trips / Navigate / POD capture — Phase 3) ────────────────
+//
+// The driver-side wire shapes bt-booking-service, bt-tracking-service and
+// bt-cargo-ledger speak for a trip being DRIVEN. Ported from driver/src/lib (api.ts
+// interfaces) and kept snake_case verbatim — a field rename in a service is a compile
+// error here rather than a silent `undefined`. bt-app is a standalone Next project
+// with no @bharattruck/shared dep (same as fleet/ and driver/), so the wire shapes are
+// restated rather than imported.
+
+/** A single GPS fix the driver pushes while in transit (POST /location/update). */
+export type LocationUpdate = {
+  lat: number
+  lng: number
+  heading?: number
+  speed_kmh?: number
+  accuracy_m?: number
+  booking_id?: string
+}
+
+/**
+ * What the driver needs to trigger the delivery code (GET /bookings/:id/pod-context).
+ * `receiver_email` is the inbox the one-time code is sent to — null when the shipper
+ * never set one, which the UI must surface rather than let the driver tap into a
+ * dead end.
+ */
+export type PodContext = {
+  booking_id: string
+  status: string
+  receiver_email: string | null
+}
+
+/** Result of asking for the delivery OTP (POST /cargo/pod/request-otp). */
+export type RequestOtpResult = {
+  booking_id: string
+  /** MASKED receiver email (e.g. j****@x.com) — show the full address from
+   *  PodContext instead. */
+  sent_to: string
+  expires_in_seconds: number
+}
+
+/** Cached base polyline for the lane (GET /tracking/route/:id). One call per trip. */
+export type RouteData = {
+  polyline: string
+  distance_m: number
+  static_duration_s: number
+  bounds: { ne_lat: number; ne_lng: number; sw_lat: number; sw_lng: number }
+  cached: boolean
+}
+
+export type PetrolPump = {
+  place_id: string
+  name: string
+  lat: number
+  lng: number
+  distance_m: number
+  address: string | null
+  brand: string | null
+}
+
+export type PumpsData = {
+  booking_id: string
+  origin: { lat: number; lng: number }
+  /** Which position the search was anchored at, so the UI can say so honestly. */
+  origin_source: 'live_position' | 'last_breadcrumb' | 'pickup_point'
+  limit: number
+  radius_m: number
+  pump_count: number
+  pumps: PetrolPump[]
+  cached: boolean
+}
+
+export type FuelData = {
+  booking_id: string
+  vehicle_id: string | null
+  distance_basis: 'override' | 'driven' | 'planned' | 'unknown'
+  distance_note: string
+  distance_km: number
+  mileage_kmpl: number
+  diesel_price_inr: number
+  litres_required: number
+  diesel_cost_inr: number
+  def_cost_inr: number
+  estimated_fuel_cost_inr: number
+  vehicle_class: string | null
+  basis: 'vehicle_norms' | 'vehicle_class' | 'default'
+  /** Plain-language provenance — render it, never present an estimate as measured. */
+  basis_note: string
+  inputs_overridden: string[]
+}
+
+export type TripAlert = {
+  id: string
+  type: string
+  message: string | null
+  severity: 'info' | 'warning' | 'critical'
+  acknowledged: boolean
+  resolved_at: string | null
+  created_at: string
+}
+
+export type AlertsData = {
+  booking_id: string
+  evaluated_at: string
+  thresholds: { off_route_m: number; idle_seconds: number; near_drop_m: number; speeding_kmh: number }
+  current_location: { deviation_m: number | null; off_route: boolean | null; distance_to_drop_m: number } | null
+  open_count: number
+  alerts: TripAlert[]
+}

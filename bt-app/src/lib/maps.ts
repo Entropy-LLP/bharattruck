@@ -82,3 +82,30 @@ export function lerp(a: LatLng, b: LatLng, t: number): LatLng {
     lng: a.lng + (b.lng - a.lng) * clamped,
   }
 }
+
+/**
+ * Navigation deep-link handoff to the phone's Google Maps app (the drive surface's
+ * Navigate button). FROZEN Maps contract: navigation is a deep-link handoff — NO
+ * in-app turn-by-turn, NO backend (docs/BIBLE.md §3.1, Maps D-004). Copied from
+ * driver/src/lib/nav.ts.
+ *
+ * We return the universal `https://www.google.com/maps/dir/?api=1` link as the single
+ * reliable target: it opens the Google Maps app when installed and otherwise falls back
+ * to web Google Maps / Apple Maps. We deliberately do NOT emit a bare `comgooglemaps://`
+ * link on iOS — that scheme silently dead-ends when Google Maps isn't installed, and we
+ * don't implement a real https fallback for it. The universal link already deep-links
+ * into the app when present, so a driver without the app still lands somewhere usable.
+ * Destination-only lets Google Maps use the device's live location as the start point.
+ */
+export function buildNavDeepLink({
+  destination,
+  origin,
+}: {
+  destination: LatLng
+  origin?: LatLng
+}): string {
+  const dest = `${destination.lat},${destination.lng}`
+  let url = `https://www.google.com/maps/dir/?api=1&destination=${dest}`
+  if (origin) url += `&origin=${origin.lat},${origin.lng}`
+  return url
+}
