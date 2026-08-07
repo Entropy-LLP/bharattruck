@@ -9,6 +9,7 @@ import type { JwtPayload } from '../lib/authenticate.js'
 import { authenticate } from '../lib/authenticate.js'
 import { consume, isLockedOut, recordFailure, clearFailures, envInt } from '../lib/rate-limit.js'
 import { getSmsProvider } from '../lib/sms.js'
+import { callbackOriginAllowlist, isAllowedCallbackUrl } from '../lib/callback-url.js'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -262,6 +263,25 @@ function resetLinkBase(role: string | undefined): string {
   }
 }
 
+/** Every role whose emailed-link base is configurable. Order does not matter — this feeds a set. */
+const LINK_ROLES = ['shipper', 'driver', 'fleet_owner'] as const
+
+/**
+ * Origins a caller-supplied `callback_url` may point at.
+ *
+ * Built from the bases this service would pick on its own for every role, so the
+ * allowlist tracks the deployment automatically: point a *_MAGIC_LINK_URL at a new
+ * front-end and that front-end may immediately name itself, with no second list to
+ * remember. ALLOWED_CALLBACK_ORIGINS covers origins that have no link var yet.
+ *
+ * Recomputed per request rather than frozen at import: the env vars are read lazily
+ * everywhere else in this file too, and six URL parses are nothing next to the DB
+ * round-trip and the SMTP send that follow.
+ */
+function allowedCallbackOrigins(): ReadonlySet<string> {
+  return callbackOriginAllowlist(LINK_ROLES.flatMap((role) => [magicLinkBase(role), resetLinkBase(role)]))
+}
+
 // fleet_owners.company_name is NOT NULL, so fall through the identity fields we actually
 // have. The owner renames the fleet properly via PATCH /fleet/owners/me — this only has to
 // be a truthful, non-empty placeholder so the row can exist from the moment the role is set.
@@ -340,6 +360,10 @@ const EmailLoginBody     = z.object({ email: z.string().email(), password: z.str
 const ResendOtpBody      = z.object({ email: z.string().email() })
 // `role` here CREATES the account when the email is unknown, so it must be constrained to
 // the live user_role enum — an unconstrained string reaches the insert and 500s on a bad value.
+//
+// `.url()` on callback_url is shape-checking only — it accepts every host on the internet
+// and non-http schemes besides. The check that matters is the origin allowlist applied in
+// the handler; see lib/callback-url.ts for why this parameter is dangerous unvalidated.
 const MagicLinkSendBody  = z.object({
   email:        z.string().email(),
   role:         z.enum(['shipper', 'driver', 'fleet_owner']).optional(),
@@ -719,6 +743,15 @@ export async function authRoutes(app: FastifyInstance) {
     }
     const { email, role, callback_url } = body.data
 
+    // Refused BEFORE the throttle, the upsert and the send — order is the whole point.
+    // The generic responses on the enumeration-safe routes exist so a caller cannot
+    // learn whether an address has an account; a 400 raised here is decided purely by
+    // the callback_url, is identical for every address, and touches no account state,
+    // so it cannot become that oracle. Answering after the lookup would.
+    if (callback_url && !isAllowedCallbackUrl(callback_url, allowedCallbackOrigins())) {
+      return reply.status(400).send({ success: false, error: 'callback_url is not an allowed origin' })
+    }
+
     // Gated before the upsert: this route creates an account for any address it
     // is handed, so without a throttle one loop both fills `users` with junk
     // rows and drains the SMTP quota.
@@ -753,8 +786,10 @@ export async function authRoutes(app: FastifyInstance) {
     )
     await app.redis.set(`magic:${user.id}`, linkToken, 'EX', MAGIC_TTL_S)
 
-    // Prefer the callback URL provided by the frontend (it knows its own origin).
-    // Fall back to per-role env vars so production deployments can override without a code change.
+    // Prefer the callback URL provided by the frontend (it knows its own origin) — it has
+    // already been checked against the origin allowlist above, so it can only be one of
+    // ours. Fall back to per-role env vars so production deployments can override without
+    // a code change.
     const redirectBase = callback_url ?? magicLinkBase(user.role ?? role)
     const link = `${redirectBase}?token=${encodeURIComponent(linkToken)}`
     await sendMagicLinkEmail(email, link)
@@ -827,6 +862,13 @@ export async function authRoutes(app: FastifyInstance) {
     const { email, callback_url } = body.data
     const generic = { success: true, data: { message: 'If an account exists for that email, a reset link has been sent.' } }
 
+    // Same placement as /magic-link/send, for the same reason: refused before the
+    // throttle and before the user lookup, so this 400 says something about the request
+    // and nothing about the account. Everything past this line stays enumeration-safe.
+    if (callback_url && !isAllowedCallbackUrl(callback_url, allowedCallbackOrigins())) {
+      return reply.status(400).send({ success: false, error: 'callback_url is not an allowed origin' })
+    }
+
     // Was an inline per-email counter; folded into the shared gate so this
     // route also draws down the global daily send budget rather than being the
     // one mail-producing path that can drain the quota around it.
@@ -851,6 +893,8 @@ export async function authRoutes(app: FastifyInstance) {
       // Single-use: reset-password checks this key matches AND deletes it, so a token
       // cannot be replayed and a second request invalidates the first.
       await app.redis.set(`pwreset:${user.id}`, resetToken, 'EX', PWRESET_TTL_S)
+      // Allowlisted above — an unchecked callback_url here mails a live reset token
+      // straight to whatever origin the requester named.
       const base = callback_url ?? resetLinkBase(user.role)
       const link = `${base}?token=${encodeURIComponent(resetToken)}`
       try {
