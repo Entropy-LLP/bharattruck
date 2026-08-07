@@ -116,9 +116,13 @@ jobs:
           # the services list, or CD would try to build and deploy a library as a service. The filter above already maps it onto its four real consumers
           # (bt-auth-service, bt-booking-service, bt-payment-service, bt-tracking-service); this
           # select drops the bare name, along with the four app dirs.
+          # bt-app is an APP (dir==service name, but it builds like driver/shipper/fleet, not
+          # like a backend service), so it is excluded here and classified under APPS below.
+          # Its name starts with bt- like the real services, so without this it falls through
+          # and CD tries to build it a second time as a service — which fails (no service build).
           SERVICES=$(printf '%s' "$CHANGES" | jq -c '
             [ .[] | select(. == "driver" or . == "shipper" or . == "fleet"
-                        or . == "bt-ops-web" or . == "packages/shared" | not) ]')
+                        or . == "bt-app" or . == "bt-ops-web" or . == "packages/shared" | not) ]')
           # Apps: dir → Cloud Run service name (driver→bt-driver, shipper→bt-shipper,
           # fleet→bt-fleet-console, ops-web unchanged).
           # maps=true for the apps that render a Google Map (driver/shipper/fleet) → they get the
