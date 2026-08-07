@@ -59,6 +59,42 @@ export const DROP_RADIUS_M = 750
 // -----------------------------------------------------------
 export const NEAR_DROP_M = 2000
 
+// -----------------------------------------------------------
+// MAX_FIX_AGE_MS — how recent a telemetry fix must be to be allowed to BLOCK.
+//
+// 10 minutes, and this one is a safety interlock rather than a tuning knob. The
+// gate's blocking branch reasons "the truck is demonstrably somewhere else" — a
+// claim that is only true of a fix taken moments ago. trip_telemetry.last_fix_at
+// is whatever the evaluator last wrote, and it does NOT expire: a driver whose
+// phone died 40 km short, or who lost signal in a tunnel and finished the last
+// leg dark, leaves a last fix that is hours old and permanently far from the
+// drop. Trusting it would hard-block a driver who is genuinely standing at the
+// dock, with no way for them to clear it — the exact failure the degrade branch
+// exists to avoid, arrived at from the other side.
+//
+// 10 minutes is ~50x the 10s GPS poll and ~50x the ~12s breadcrumb/evaluator
+// cadence (BREADCRUMB_THROTTLE_SECONDS), so a live phone is never near it while
+// one that has stopped reporting crosses it quickly. A fix older than this is
+// treated as ABSENT: the gate falls through to the geofence-event branch and
+// then to degrade, which is allow-but-flagged — never a silent pass.
+// -----------------------------------------------------------
+export const MAX_FIX_AGE_MS = 10 * 60 * 1000
+
+// isFixFresh — may this fix's timestamp carry the weight of a BLOCK decision?
+//
+// A NULL/unparseable timestamp answers false on purpose. An undated fix cannot be
+// shown to be recent, and the whole point of the age check is that only a fix we
+// can PROVE is recent may deny a driver their delivery code. Unknown age therefore
+// degrades exactly like an old one.
+export function isFixFresh(atIso: string | null, now: number = Date.now()): boolean {
+  if (!atIso) return false
+  const t = new Date(atIso).getTime()
+  if (!Number.isFinite(t)) return false
+  // Future-dated fixes (a phone with a fast clock) are still fresh — the skew is a
+  // signal recorded on the evidence row, not a reason to discard a live position.
+  return now - t <= MAX_FIX_AGE_MS
+}
+
 // Result of comparing a fix against the drop. Kept as a coarse verdict because the
 // evidence table stores exactly these three strings (pod_evidence.geofence_result).
 export type GeofenceVerdict = 'inside' | 'outside' | 'unknown'

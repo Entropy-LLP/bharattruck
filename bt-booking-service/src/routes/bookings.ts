@@ -87,6 +87,26 @@ export async function bookingRoutes(app: FastifyInstance) {
     }
   })
 
+  // GET /bookings/:id/pod — the POD ledger for one trip: proof strength, the evidence
+  // list, the discrepancy and its claim clocks.
+  //
+  // The read that makes the ledger useful — 'confirmed' (receiver OTP) vs 'asserted'
+  // (evidence only) is invisible from bookings.status alone, and ops must see which one
+  // they are closing. Relation-gated (D-27), not role-gated: shipper / carrier /
+  // assigned driver / claimed consignee / ops. Forensic fields — the WORM storage
+  // handle, EXIF, device fingerprint, fraud signals — are narrower still (see
+  // POD_FORENSIC_RELATIONS). Every read writes an evidence_access audit line.
+  app.get('/:id/pod', async (req, reply) => {
+    const id = parseId(reply, req.params)
+    if (!id) return
+    try {
+      const record = await pod.getPodRecord(id, req.user, req.log)
+      return reply.send({ success: true, data: record })
+    } catch (err) {
+      return handleError(reply, err)
+    }
+  })
+
   // POST /bookings/:id/pod-evidence — assigned driver records a camera capture.
   //
   // Camera-only, on-device SHA-256 (stored verbatim), server-authoritative time. The

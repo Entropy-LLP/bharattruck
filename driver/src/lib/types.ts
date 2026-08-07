@@ -1,4 +1,8 @@
-export type BookingStatus = 'pending' | 'accepted' | 'negotiating' | 'in_transit' | 'completed' | 'cancelled' | 'paid'
+// 'delivery_asserted' (migration 0025) is the no-confirmation POD branch: the driver
+// captured evidence but the receiver could not confirm, so the trip parks here until
+// ops closes it to 'completed'. Listed so the state is REPRESENTABLE — the API can
+// return it, and a union that cannot hold it turns a real status into a type lie.
+export type BookingStatus = 'pending' | 'accepted' | 'negotiating' | 'in_transit' | 'delivery_asserted' | 'completed' | 'cancelled' | 'paid'
 export type BookingType = 'direct' | 'auction'
 export type QuoteStatus = 'submitted' | 'countered' | 'accepted' | 'rejected' | 'withdrawn' | 'expired'
 

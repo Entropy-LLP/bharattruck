@@ -171,6 +171,23 @@ export async function hasEvidence(bookingId: string): Promise<boolean> {
   return (data?.length ?? 0) > 0
 }
 
+// listEvidence — every capture on a trip, newest first (the pod_evidence_booking_idx
+// order). A READ, so a pre-0025 database answers "no evidence" rather than raising:
+// the POD read endpoint must still describe an OTP-completed trip on a database where
+// the hardening has not landed, which is the whole missing-relation contract above.
+export async function listEvidence(bookingId: string): Promise<EvidenceRow[]> {
+  const { data, error } = await supabase
+    .from('pod_evidence')
+    .select('*')
+    .eq('booking_id', bookingId)
+    .order('created_at', { ascending: false })
+  if (error) {
+    if (isMissingRelation(error)) return []
+    throw new Error(`pod_evidence list failed: ${error.message}`)
+  }
+  return (data ?? []) as EvidenceRow[]
+}
+
 // updateEvidenceStorage — record where the WORM store put the bytes (or that it
 // no-op'd). Best-effort: the evidence row already exists and is the durable record;
 // the storage outcome is metadata on top of it.
@@ -317,6 +334,10 @@ export type DiscrepancyRow = DiscrepancyInsert & {
   driver_ack_at: string
   consignee_ack_at: string | null
   consignee_ack_via: string | null
+  // users.id of the party who acknowledged as consignee, when that party has CLAIMED
+  // an account (bookings.consignee_user_id, migration 0026). NULL for the unclaimed
+  // consignee — which is most of them, and whose access path is the OTP, not a login.
+  consignee_user_id: string | null
   created_at: string
   updated_at: string
 }
@@ -349,15 +370,28 @@ export async function getDiscrepancy(bookingId: string): Promise<DiscrepancyRow 
 // stampConsigneeAck — the second half of the dual acknowledgement, landed when the
 // consignee verifies the OTP (rides completeBookingViaPod). Best-effort; a delivery
 // with no discrepancy simply has nothing to stamp.
+//
+// consigneeUserId is bookings.consignee_user_id (migration 0026) and is what turns
+// "someone acknowledged" into "THIS party acknowledged". A joint damage certificate
+// names both signatories; an ack row that records only a timestamp names one. NULL is
+// the honest answer for an unclaimed consignee — they hold no account, and the OTP
+// they entered is the identity evidence — so the column is nullable and never guessed.
 export async function stampConsigneeAckBestEffort(
   bookingId: string,
   via: string,
+  consigneeUserId: string | null,
   log?: { warn(obj: unknown, msg: string): void },
 ): Promise<void> {
   const now = new Date().toISOString()
   const { error } = await supabase
     .from('pod_discrepancies')
-    .update({ consignee_ack_at: now, consignee_ack_via: via, delivery_date: now, updated_at: now })
+    .update({
+      consignee_ack_at: now,
+      consignee_ack_via: via,
+      consignee_user_id: consigneeUserId,
+      delivery_date: now,
+      updated_at: now,
+    })
     .eq('booking_id', bookingId)
     .is('consignee_ack_at', null)
   if (error && !isMissingRelation(error)) {

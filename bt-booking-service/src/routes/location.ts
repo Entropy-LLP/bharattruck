@@ -11,7 +11,7 @@ import {
   BREADCRUMB_THROTTLE_SECONDS,
 } from '../lib/redis.js'
 import { supabase } from '../lib/supabase.js'
-import { BookingError, type AuthenticatedUser, type DbBooking } from '../lib/types.js'
+import { BookingError, type AuthenticatedUser, type BookingStatus, type DbBooking } from '../lib/types.js'
 import * as repo from '../lib/repository.js'
 import { emitLocationFix } from '../lib/tracking-emit.js'
 
@@ -141,14 +141,46 @@ async function assertCanAccessDriverLocation(driverId: string, user: Authenticat
 // which we resolve server-side when the client did not name a trip.
 // -----------------------------------------------------------
 
+// -----------------------------------------------------------
+// Location tracking window — when a trip has a position at all.
+//
+// 'delivery_asserted' IS tracked, and that is a decision, not an oversight. The state
+// means the driver claims to have delivered with no receiver to confirm it (migration
+// 0025); the trip is NOT over — ops still has to close it, and until they do the truck
+// is physically at the drop with cargo possibly still coming off.
+//
+// Going dark at the moment of assertion would be exactly backwards. The assertion is
+// the WEAKEST proof the platform accepts, so the window right after it is when the
+// positional record matters most: it is the only thing that can corroborate the driver
+// stayed at the address they claimed to deliver to, and — with POD_GEOFENCE_GATE off
+// for the pilot — the only thing that can contradict an assertion filed from 40 km out.
+// Cutting the trail there would hand a driver a way to erase themselves from the map by
+// pressing a button, and would 409 the driver app's 10s poll into a visible error the
+// instant they assert. It also keeps this list identical to EVIDENCE_CAPTURABLE in
+// lib/pod/service.ts: the camera and the GPS trail that dates its photos stay live
+// together, which is the whole basis of the "internally consistent for hours" control.
+//
+// Tracking still ends at 'completed'/'paid'/'cancelled' — the ops close is the event
+// that ends the trip, and it is the same terminal boundary as before 0025.
+//
+// The list is repo.ACTIVE_TRIP_STATUSES rather than a local copy: it is the SAME
+// question ("is this driver on a trip right now?") that resolveDriverActiveBooking and
+// the fleet-reach check below already ask. A second list here is how the write path
+// starts accepting a fix the read path then refuses to hand back.
+// -----------------------------------------------------------
+
+function isLocationTracked(status: BookingStatus): boolean {
+  return repo.ACTIVE_TRIP_STATUSES.includes(status)
+}
+
 // The client named a trip: it must be this driver's, and it must be live.
 async function loadDriverActiveBooking(bookingId: string, driverId: string): Promise<DbBooking> {
   const booking = await repo.getBookingById(bookingId)
   if (!booking) throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
   if (booking.driver_id !== driverId) throw new BookingError('You are not assigned to this booking', 'FORBIDDEN', 403)
-  if (booking.status !== 'accepted' && booking.status !== 'in_transit') {
+  if (!isLocationTracked(booking.status)) {
     throw new BookingError(
-      `Booking is in '${booking.status}' status — location tracking only allowed for accepted or in_transit bookings`,
+      `Booking is in '${booking.status}' status — location tracking only allowed for ${repo.ACTIVE_TRIP_STATUSES.join(', ')} bookings`,
       'INVALID_TRANSITION',
       409,
     )
@@ -337,11 +369,11 @@ export async function locationRoutes(app: FastifyInstance) {
       return reply.send({ success: true, data: null, message: 'No driver assigned to this booking yet' })
     }
 
-    if (booking.status !== 'accepted' && booking.status !== 'in_transit') {
+    if (!isLocationTracked(booking.status)) {
       return reply.send({
         success: true,
         data: null,
-        message: `Booking is in '${booking.status}' status — live tracking only available for accepted or in_transit bookings`,
+        message: `Booking is in '${booking.status}' status — live tracking only available for ${repo.ACTIVE_TRIP_STATUSES.join(', ')} bookings`,
       })
     }
 
@@ -362,7 +394,10 @@ async function shipperHasActiveBookingWithDriver(shipperId: string, driverId: st
     .select('id')
     .eq('shipper_id', shipperId)
     .eq('driver_id', driverId)
-    .in('status', ['accepted', 'in_transit'])
+    // Same window as every other "is this trip live?" test here — see the note above
+    // ACTIVE_TRIP_STATUSES. A shipper must not lose sight of their driver at the exact
+    // moment the driver asserts a delivery they cannot yet confirm.
+    .in('status', repo.ACTIVE_TRIP_STATUSES)
     .limit(1)
 
   if (error) throw new Error(`DB query failed: ${error.message}`)

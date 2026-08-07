@@ -15,9 +15,23 @@
 -- STRICTLY ADDITIVE + IDEMPOTENT. Runs against the live DB (677 bookings) with no
 -- backfill and no destructive change: add-column-if-not-exists, create-table-if-not-
 -- exists, and the enum value behind `add value if not exists`. Every existing row is
--- untouched and every existing query keeps its shape. Do NOT depend on 0023/0024/0025
--- having been APPLIED — this file references only its own new objects plus columns
--- that predate it (bookings, drivers, pod_evidence within this file).
+-- untouched and every existing query keeps its shape. It references only its own new
+-- objects plus tables that predate the whole 002x series (bookings, drivers, users),
+-- so its number is a filename, not a dependency.
+--
+-- OUT-OF-ORDER APPLY IS EXPECTED AND SAFE. 0022/0023/0024 and 0026 are already live on
+-- production; this file never was, and it keeps its number (0026 and 0027 are taken) so
+-- it lands AFTER a higher number. That is fine in both directions:
+--   * nothing here reads or alters anything 0026 added. 0026 touches users (gstin,
+--     claimed_at) and bookings (consignee_user_id); this file adds different columns to
+--     bookings and references public.users(id) only — a key that has existed since 001.
+--   * pod_discrepancies.consignee_user_id below points at users(id), NOT at
+--     bookings.consignee_user_id, so it does not require 0026 either. The value is
+--     COPIED from the booking by the service at acknowledgement time; on a database
+--     without 0026 the booking simply has none and the ack records NULL, which is the
+--     same honest answer an unclaimed consignee produces.
+-- The enum `add value if not exists` and every `if not exists` guard mean a re-run is a
+-- no-op, so a partial apply can be repeated rather than untangled.
 --
 -- APPLY IS GATED on live-Supabase access and is done BY HAND (BLOCKERS.md B-0 precedent,
 -- CLAUDE.md migration procedure). The service code tolerates a database where this has
@@ -209,6 +223,14 @@ create table if not exists public.pod_discrepancies (
   driver_id             uuid            null references public.drivers(id) on delete set null,
   consignee_ack_at      timestamptz     null,
   consignee_ack_via     text            null,
+  -- WHO acknowledged as the consignee. A joint damage certificate is signed by two NAMED
+  -- parties; a timestamp alone names one of them and leaves the other as "someone typed
+  -- the code", which is exactly the half-evidence §5.7 warns a free-text remark becomes.
+  -- Copied from bookings.consignee_user_id (0026) when the ack lands, and NULL when the
+  -- consignee is UNCLAIMED — which is most of them: a receiver with a name and a phone
+  -- and no login, whose access path is the POD OTP (D-13), not a session. Nullable and
+  -- never inferred, so "we do not know who" cannot be mistaken for "nobody".
+  consignee_user_id     uuid            null references public.users(id) on delete set null,
 
   -- Claim-clock anchors, snapshotted so the record is self-contained years later.
   -- booking_date drives the 180-day pre-suit notice (Carriage by Road Act s.16 — runs
@@ -226,7 +248,7 @@ create index if not exists pod_discrepancies_booking_idx
   on public.pod_discrepancies (booking_id);
 
 comment on table public.pod_discrepancies is
-  'Structured delivery discrepancy (§5.7): server-held expected vs driver actual, typed reason, mandatory photo when delta<>0, dual driver+consignee acknowledgement, and snapshotted 180-day (booking) / 7-day (delivery) claim-clock anchors.';
+  'Structured delivery discrepancy (§5.7): server-held expected vs driver actual, typed reason, mandatory photo when delta<>0, dual NAMED driver+consignee acknowledgement (consignee_user_id NULL for an unclaimed receiver), and snapshotted 180-day (booking) / 7-day (delivery) claim-clock anchors.';
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 5. pod_audit_log — append-only trail of access, export and modification (§5.4 rule 5).

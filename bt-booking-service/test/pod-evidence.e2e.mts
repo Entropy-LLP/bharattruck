@@ -9,9 +9,11 @@
  *
  * Each block pins a DECISION and the failure mode it prevents (§ = INDIA_FREIGHT_COMPLIANCE.md):
  *   1. camera-only, on-device hash stored-not-recomputed, server time authoritative (§5.4)
- *   2. geofence-gated OTP — block 40 km out, degrade on no signal (§5.5, D-14)
- *   3. structured discrepancy — server-held expected, dual ack, claim clocks (§5.7)
+ *   2. geofence-gated OTP — block 40 km out, degrade on no signal, IGNORE a stale fix,
+ *      and observe-without-refusing while POD_GEOFENCE_GATE is off (§5.5, D-14)
+ *   3. structured discrepancy — server-held expected, dual NAMED ack, claim clocks (§5.7)
  *   4. delivery_asserted vs completed; confirmed vs asserted strength (§6.3)
+ *   5. the POD read path — relation-gated, forensics narrower still, audited (D-27, §5.4)
  *
  * Run: npx tsx test/pod-evidence.e2e.mts
  */
@@ -21,6 +23,7 @@ process.env.SUPABASE_URL = 'http://fake.local'
 process.env.SUPABASE_SERVICE_ROLE_KEY = 'fake-key'
 delete process.env.PAYMENT_SERVICE_URL   // payout emit skips silently
 delete process.env.POD_EVIDENCE_GCS_BUCKET // storage inert by default (toggled below)
+delete process.env.POD_GEOFENCE_GATE       // kill switch OFF by default (toggled below)
 
 import Fastify from 'fastify'
 import jwt from 'jsonwebtoken'
@@ -33,6 +36,9 @@ const U_OTHER = '44444444-4444-4444-8444-444444444444'
 const D2 = '55555555-5555-4555-8555-555555555555'
 const S1 = '66666666-6666-4666-8666-666666666666'
 const U_ADMIN = '77777777-7777-4777-8777-777777777777'
+// A consignee who has CLAIMED an account (bookings.consignee_user_id, migration 0026) —
+// the only kind that resolves to a viewer relation at all.
+const U_CONSIGNEE = '88888888-8888-4888-8888-888888888888'
 
 // Mumbai drop; a fix 0.001° north is ~111 m (inside), 0.012° is ~1.3 km (near band),
 // 0.4° is ~44 km (clearly gone — the 40 km hole).
@@ -40,6 +46,13 @@ const DEST_LAT = 19.0
 const DEST_LNG = 72.8
 const SHA_A = 'a'.repeat(64)
 const SHA_B = 'b'.repeat(64)
+
+// Telemetry freshness is RELATIVE, never a literal: a hard-coded last_fix_at silently
+// ages past MAX_FIX_AGE_MS the day after it is written, and the suite would then pass
+// for the wrong reason (every fix stale, every gate degraded). These two helpers are
+// the two sides of the stale-fix guard.
+const freshFixAt = () => new Date(Date.now() - 60_000).toISOString()        // 1 min old — live
+const staleFixAt = () => new Date(Date.now() - 45 * 60_000).toISOString()   // 45 min old — dead phone
 
 type Row = Record<string, any>
 let store: Record<string, Row[]>
@@ -229,11 +242,16 @@ async function main() {
   delete process.env.POD_EVIDENCE_GCS_BUCKET
 
   // ═══ DECISION 2 — GEOFENCE-GATED OTP (§5.5, D-14) ═══════════════════════════
-  console.log('\n── geofence-gated OTP: pass / block / degrade')
+  console.log('\n── geofence-gated OTP: pass / block / degrade (gate ENFORCED)')
+  // Every case below is run with the kill switch ON. The switch's own two positions are
+  // the last block in this section — the decisions must be identical either way, because
+  // an observing gate that decides differently from an enforcing one tells you nothing
+  // about what will happen when you flip it.
+  process.env.POD_GEOFENCE_GATE = 'on'
 
   // Live telemetry at the drop → PASS, corroborated (strong).
   seed()
-  store.trip_telemetry.push({ booking_id: B1, last_lat: DEST_LAT + 0.001, last_lng: DEST_LNG, last_fix_at: '2026-08-06T10:00:00Z' })
+  store.trip_telemetry.push({ booking_id: B1, last_lat: DEST_LAT + 0.001, last_lng: DEST_LNG, last_fix_at: freshFixAt() })
   r = await podCtx()
   check('DECISION-2 at-drop telemetry → pod-context 200', r.statusCode === 200, `(got ${r.statusCode})`)
   check('geofence gated=true, verdict inside', r.json().data?.geofence?.gated === true && r.json().data?.geofence?.verdict === 'inside', JSON.stringify(r.json().data?.geofence))
@@ -241,27 +259,53 @@ async function main() {
 
   // Live telemetry 40 km out → BLOCK. This is the "driver phones ahead" hole.
   seed()
-  store.trip_telemetry.push({ booking_id: B1, last_lat: DEST_LAT + 0.4, last_lng: DEST_LNG, last_fix_at: '2026-08-06T10:00:00Z' })
+  store.trip_telemetry.push({ booking_id: B1, last_lat: DEST_LAT + 0.4, last_lng: DEST_LNG, last_fix_at: freshFixAt() })
   r = await podCtx()
-  check('DECISION-2 40km-out telemetry → OTP BLOCKED 409', r.statusCode === 409, `(got ${r.statusCode})`)
+  check('DECISION-2 FRESH 40km-out telemetry → OTP BLOCKED 409', r.statusCode === 409, `(got ${r.statusCode})`)
   check('and an otp_gate_block audit line was written', store.pod_audit_log.some(a => a.action === 'otp_gate_block'))
+
+  // 🔴 THE STALE-FIX GUARD. Same 40 km distance, but the fix is 45 minutes old — a phone
+  // that died short of the drop, or a driver who ran the last leg with no signal.
+  // trip_telemetry.last_fix_at never expires, so without the guard this row would block
+  // a driver STANDING AT THE DOCK, forever and with no way to clear it. A fix we cannot
+  // show is recent is treated as no fix at all: fall through, degrade, let them deliver.
+  seed()
+  store.trip_telemetry.push({ booking_id: B1, last_lat: DEST_LAT + 0.4, last_lng: DEST_LNG, last_fix_at: staleFixAt() })
+  r = await podCtx()
+  check('DECISION-2 STALE 40km-out telemetry does NOT block (200)', r.statusCode === 200, `(got ${r.statusCode})`)
+  check('and it degrades rather than passing silently', r.json().data?.geofence?.source === 'none' && r.json().data?.geofence?.verdict === 'unknown', JSON.stringify(r.json().data?.geofence))
+  check('no otp_gate_block line for a stale fix', !store.pod_audit_log.some(a => a.action === 'otp_gate_block'))
+
+  // A stale fix must not SUPPRESS corroboration either — it falls through to the
+  // geofence-event branch, which still proves the truck reached the fence.
+  seed()
+  store.trip_telemetry.push({ booking_id: B1, last_lat: DEST_LAT + 0.4, last_lng: DEST_LNG, last_fix_at: staleFixAt() })
+  store.geofence_events.push({ id: randomUUID(), booking_id: B1, kind: 'drop', event: 'enter', lat: DEST_LAT, lng: DEST_LNG, occurred_at: staleFixAt() })
+  r = await podCtx()
+  check('stale fix + drop-enter on record → pass via geofence_event', r.statusCode === 200 && r.json().data?.geofence?.source === 'geofence_event', JSON.stringify(r.json().data?.geofence))
+
+  // An UNDATED fix cannot be shown to be recent, so it is treated like a stale one.
+  seed()
+  store.trip_telemetry.push({ booking_id: B1, last_lat: DEST_LAT + 0.4, last_lng: DEST_LNG, last_fix_at: null })
+  r = await podCtx()
+  check('an undated fix does not block either (unknown age = stale)', r.statusCode === 200, `(got ${r.statusCode})`)
 
   // Near band + a drop-enter event → PASS (dock-scale GPS drift, corroborated).
   seed()
-  store.trip_telemetry.push({ booking_id: B1, last_lat: DEST_LAT + 0.012, last_lng: DEST_LNG, last_fix_at: '2026-08-06T10:00:00Z' })
-  store.geofence_events.push({ id: randomUUID(), booking_id: B1, kind: 'drop', event: 'enter', lat: DEST_LAT, lng: DEST_LNG, occurred_at: '2026-08-06T09:00:00Z' })
+  store.trip_telemetry.push({ booking_id: B1, last_lat: DEST_LAT + 0.012, last_lng: DEST_LNG, last_fix_at: freshFixAt() })
+  store.geofence_events.push({ id: randomUUID(), booking_id: B1, kind: 'drop', event: 'enter', lat: DEST_LAT, lng: DEST_LNG, occurred_at: freshFixAt() })
   r = await podCtx()
   check('DECISION-2 near-band + drop-enter event → pass 200', r.statusCode === 200 && r.json().data?.geofence?.gated === true, `(got ${r.statusCode})`)
 
   // Near band with NO corroborating enter event → BLOCK.
   seed()
-  store.trip_telemetry.push({ booking_id: B1, last_lat: DEST_LAT + 0.012, last_lng: DEST_LNG, last_fix_at: '2026-08-06T10:00:00Z' })
+  store.trip_telemetry.push({ booking_id: B1, last_lat: DEST_LAT + 0.012, last_lng: DEST_LNG, last_fix_at: freshFixAt() })
   r = await podCtx()
   check('near-band WITHOUT a drop-enter event → block 409', r.statusCode === 409, `(got ${r.statusCode})`)
 
   // No live fix but a recorded drop-enter → PASS (arrived; no live fix to lean on).
   seed()
-  store.geofence_events.push({ id: randomUUID(), booking_id: B1, kind: 'drop', event: 'enter', lat: DEST_LAT, lng: DEST_LNG, occurred_at: '2026-08-06T09:00:00Z' })
+  store.geofence_events.push({ id: randomUUID(), booking_id: B1, kind: 'drop', event: 'enter', lat: DEST_LAT, lng: DEST_LNG, occurred_at: freshFixAt() })
   r = await podCtx()
   check('no telemetry but a drop-enter on record → pass 200', r.statusCode === 200 && r.json().data?.geofence?.source === 'geofence_event', JSON.stringify(r.json().data?.geofence))
 
@@ -272,6 +316,43 @@ async function main() {
   check('DECISION-2 no geofence signal → DEGRADE, not blocked (200)', r.statusCode === 200, `(got ${r.statusCode})`)
   check('geofence gated=false, verdict unknown (documented weaker path)', r.json().data?.geofence?.gated === false && r.json().data?.geofence?.verdict === 'unknown', JSON.stringify(r.json().data?.geofence))
   check('and an otp_gate_degraded audit line was written', store.pod_audit_log.some(a => a.action === 'otp_gate_degraded'))
+
+  console.log('\n── the kill switch: POD_GEOFENCE_GATE off observes, on refuses')
+
+  // 🔴 OFF IS THE DEFAULT, and off must not REFUSE. Applying migration 0025 arms the
+  // gate's machinery on the live POD path — the only path a trip has to reach
+  // 'completed'. Without a switch, the migration itself would start turning real drivers
+  // away on thresholds nobody has measured on a real corridor yet.
+  seed()
+  delete process.env.POD_GEOFENCE_GATE
+  store.trip_telemetry.push({ booking_id: B1, last_lat: DEST_LAT + 0.4, last_lng: DEST_LNG, last_fix_at: freshFixAt() })
+  r = await podCtx()
+  check('DECISION-2 gate OFF: a 40km-out driver is NOT refused (200)', r.statusCode === 200, `(got ${r.statusCode})`)
+  check('and the response says the gate is not enforcing', r.json().data?.geofence?.enforced === false, JSON.stringify(r.json().data?.geofence))
+
+  // 🔴 OFF IS NOT BLIND. The whole value of shipping the switch off is that production
+  // answers "how often WOULD this have blocked someone?" before anyone flips it. So the
+  // gate still decides, and still writes the block line — tagged enforced=false.
+  const offLine = store.pod_audit_log.find(a => a.action === 'otp_gate_block')
+  check('DECISION-2 gate OFF still RECORDS the block it would have made', offLine !== undefined)
+  check('the recorded line is tagged enforced=false', offLine?.detail?.enforced === false, JSON.stringify(offLine?.detail))
+  check('and it still carries the distance, so the threshold is reviewable', typeof offLine?.detail?.distance_m === 'number', JSON.stringify(offLine?.detail))
+
+  // ON refuses the same driver — same decision, different consequence.
+  seed()
+  process.env.POD_GEOFENCE_GATE = 'on'
+  store.trip_telemetry.push({ booking_id: B1, last_lat: DEST_LAT + 0.4, last_lng: DEST_LNG, last_fix_at: freshFixAt() })
+  r = await podCtx()
+  check('DECISION-2 gate ON: the same driver IS refused 409', r.statusCode === 409, `(got ${r.statusCode})`)
+  check('and the enforced line is on the trail too', store.pod_audit_log.some(a => a.action === 'otp_gate_block' && a.detail?.enforced === true))
+
+  // Only an explicit opt-in counts — a typo must never silently arm a refusal.
+  seed()
+  process.env.POD_GEOFENCE_GATE = 'yes-please'
+  store.trip_telemetry.push({ booking_id: B1, last_lat: DEST_LAT + 0.4, last_lng: DEST_LNG, last_fix_at: freshFixAt() })
+  r = await podCtx()
+  check('an unrecognised POD_GEOFENCE_GATE value stays OFF', r.statusCode === 200, `(got ${r.statusCode})`)
+  delete process.env.POD_GEOFENCE_GATE
 
   // ═══ DECISION 3 — STRUCTURED DISCREPANCY (§5.7) ═════════════════════════════
   console.log('\n── discrepancy: server-held expected, driver cannot edit it')
@@ -361,6 +442,75 @@ async function main() {
   check('pod_strength recorded as confirmed', store.pod_state.find(s => s.booking_id === B1)?.pod_strength === 'confirmed')
   check('DECISION-3 dual ack completed — consignee_ack stamped by the OTP', store.pod_discrepancies[0].consignee_ack_at !== null)
   check('confirmed and asserted are distinguishable strengths', store.pod_state.find(s => s.booking_id === B1)?.pod_strength === 'confirmed')
+  // An UNCLAIMED consignee holds no account, so the ack records NULL rather than guessing.
+  check('an unclaimed consignee acks with a NULL user id (not a guess)', store.pod_discrepancies[0].consignee_user_id === null, String(store.pod_discrepancies[0].consignee_user_id))
+
+  // 🔴 DUAL ACK NAMES BOTH PARTIES when the consignee has claimed an account (0026). A
+  // joint damage certificate signed by "someone who typed the code" is half a document.
+  seed({ pod_expected_quantity: 100, consignee_user_id: U_CONSIGNEE })
+  store.users.push({ id: U_CONSIGNEE, email: 'receiver@acme.co.in', full_name: 'Receiver' })
+  const cap4 = await capture(validCapture)
+  await discrepancy({ actual_quantity: 95, reason: 'shortage', evidence_id: cap4.json().data?.evidence_id })
+  await app.inject({ method: 'POST', url: `/internal/bookings/${B1}/complete-pod`, headers: { 'x-internal-secret': SECRET } })
+  check('DECISION-3 a CLAIMED consignee ack names the acknowledging party', store.pod_discrepancies[0].consignee_user_id === U_CONSIGNEE, String(store.pod_discrepancies[0].consignee_user_id))
+  check('and a consignee_ack audit line was written', store.pod_audit_log.some(a => a.action === 'consignee_ack'))
+
+  // ═══ DECISION 5 — THE READ PATH (D-27, §5.4 rule 5) ═════════════════════════
+  console.log('\n── GET /bookings/:id/pod: relation-gated, forensics narrower, audited')
+  seed({ consignee_user_id: U_CONSIGNEE })
+  store.users.push({ id: U_CONSIGNEE, email: 'receiver@acme.co.in', full_name: 'Receiver' })
+  process.env.POD_EVIDENCE_GCS_BUCKET = 'bt-pod-worm' // so there IS a URI worth hiding
+  await capture({ ...validCapture, device_id: 'pixel-7a', mock_location_detected: true })
+  delete process.env.POD_EVIDENCE_GCS_BUCKET
+  await assertDel({ assert_reason: 'no_receiver_present' })
+
+  const readPod = (hdr: any) => app.inject({ method: 'GET', url: `/bookings/${B1}/pod`, headers: hdr })
+
+  // THE POINT OF THE ENDPOINT: 'completed' cannot tell you which proof you are holding.
+  r = await readPod({ authorization: `Bearer ${tok(U_ADMIN, 'admin')}` })
+  check('DECISION-5 ops reads the POD record 200', r.statusCode === 200, `(got ${r.statusCode}) ${r.body.slice(0, 160)}`)
+  check('and can see this delivery is ASSERTED, not confirmed', r.json().data?.pod_strength === 'asserted', String(r.json().data?.pod_strength))
+  check('the evidence list is returned', r.json().data?.evidence?.length === 1, String(r.json().data?.evidence?.length))
+  check('ops sees the WORM storage handle (they resolve exports and legal holds)', String(r.json().data?.evidence?.[0]?.original_bytes_uri).startsWith('gs://'))
+
+  // The shipper adjudicates a claim about their own consignment — full forensics.
+  r = await readPod({ authorization: `Bearer ${tok(S1, 'shipper')}` })
+  check('DECISION-5 the owning shipper reads it 200', r.statusCode === 200, `(got ${r.statusCode})`)
+  check('and is a party by RELATION, not by role string', r.json().data?.viewer_relations?.includes('shipper') === true, JSON.stringify(r.json().data?.viewer_relations))
+  check('shipper sees the forensic tier', typeof r.json().data?.evidence?.[0]?.original_bytes_uri === 'string')
+
+  // 🔴 The capturing side does NOT get the detection output aimed at it. A solo driver is
+  // the CARRIER here, and handing them "this photo tripped mock-location" is a lesson in
+  // how to defeat the control next trip.
+  r = await readPod(driverHdr)
+  check('DECISION-5 the assigned driver reads it 200', r.statusCode === 200, `(got ${r.statusCode})`)
+  check('and still learns the proof strength', r.json().data?.pod_strength === 'asserted')
+  check('DECISION-5 driver gets NO raw storage URI', r.json().data?.evidence?.[0]?.original_bytes_uri === undefined, JSON.stringify(r.json().data?.evidence?.[0]))
+  check('driver gets NO fraud signals (mock_location / clock skew)', r.json().data?.evidence?.[0]?.mock_location_detected === undefined && r.json().data?.evidence?.[0]?.clock_skew_seconds === undefined)
+  check('driver gets NO device fingerprint or EXIF', r.json().data?.evidence?.[0]?.device_id === undefined && r.json().data?.evidence?.[0]?.exif_raw === undefined)
+  check('but DOES get the durable proof facts (hash, server time, geofence, storage_status)',
+    r.json().data?.evidence?.[0]?.sha256_original === SHA_A &&
+    typeof r.json().data?.evidence?.[0]?.captured_at_server === 'string' &&
+    r.json().data?.evidence?.[0]?.geofence_result === 'inside' &&
+    r.json().data?.evidence?.[0]?.storage_status === 'stored',
+    JSON.stringify(r.json().data?.evidence?.[0]))
+
+  // The claimed consignee is a party to the consignment — and downstream of its forensics.
+  r = await readPod({ authorization: `Bearer ${tok(U_CONSIGNEE, 'shipper')}` })
+  check('DECISION-5 the CLAIMED consignee may read it 200', r.statusCode === 200, `(got ${r.statusCode})`)
+  check('and holds the consignee relation', r.json().data?.viewer_relations?.includes('consignee') === true, JSON.stringify(r.json().data?.viewer_relations))
+  check('consignee gets no forensic tier either', r.json().data?.evidence?.[0]?.original_bytes_uri === undefined)
+
+  // An observer gets 404, not 403: a stranger must not be able to probe which booking ids
+  // exist by reading the difference between the two codes.
+  r = await readPod({ authorization: `Bearer ${tok(U_OTHER, 'driver')}` })
+  check('DECISION-5 an unrelated driver gets 404 (id existence not leaked)', r.statusCode === 404, `(got ${r.statusCode})`)
+
+  // §5.4 rule 5 — reads go on the append-only trail, and a REJECTED read does not.
+  const accessLines = store.pod_audit_log.filter(a => a.action === 'evidence_access')
+  check('DECISION-5 every authorized read wrote an evidence_access line', accessLines.length === 4, String(accessLines.length))
+  check('and the line records the relation that authorized it', accessLines.some(a => Array.isArray(a.detail?.relations) && a.detail.relations.includes('shipper')))
+  check('a rejected read leaves NO line behind', !accessLines.some(a => a.actor_user_id === U_OTHER))
 
   await app.close()
   console.log(`\n${failures.length ? 'RESULT: FAIL' : 'RESULT: PASS'} — ${passed} checks passed, ${failures.length} failed`)

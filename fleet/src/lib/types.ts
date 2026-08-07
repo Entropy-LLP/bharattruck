@@ -11,8 +11,12 @@ export type FleetDriverStatus = 'pending' | 'active' | 'rejected' | 'suspended' 
 // Both enums are the LIVE database values, confirmed by introspection rather than
 // read off a migration file — booking_status in particular has no 'expired' member,
 // because migration 0004 was never applied.
+// 'delivery_asserted' (migration 0025) is the no-confirmation POD branch: the driver
+// captured evidence but the receiver could not confirm, so the trip parks here until
+// ops closes it to 'completed'. Listed so the state is REPRESENTABLE — the API can
+// return it, and a union that cannot hold it turns a real status into a type lie.
 export type BookingStatus =
-  | 'pending' | 'negotiating' | 'accepted' | 'in_transit' | 'completed' | 'cancelled' | 'paid'
+  | 'pending' | 'negotiating' | 'accepted' | 'in_transit' | 'delivery_asserted' | 'completed' | 'cancelled' | 'paid'
 export type QuoteStatus =
   | 'submitted' | 'countered' | 'accepted' | 'rejected' | 'withdrawn' | 'expired'
 

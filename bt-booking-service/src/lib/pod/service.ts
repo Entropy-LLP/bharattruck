@@ -16,13 +16,15 @@
 // ============================================================
 
 import { z } from 'zod'
+import { relationsToBooking, resolvePersonas, type BookingRelation } from '@bharattruck/shared/personas'
 import type { AuthenticatedUser, BookingStatus, BookingWithProfiles } from '../types.js'
 import { BookingError } from '../types.js'
 import { assertValidTransition } from '../state.js'
 import * as repo from '../repository.js'
+import { supabase } from '../supabase.js'
 import * as podRepo from './repository.js'
 import { defaultEvidenceStorage, type EvidenceStorage } from './storage.js'
-import { DROP_RADIUS_M, NEAR_DROP_M, geofenceVerdict, haversineMeters } from './geo.js'
+import { DROP_RADIUS_M, NEAR_DROP_M, geofenceVerdict, haversineMeters, isFixFresh } from './geo.js'
 
 type Logger = { warn(obj: unknown, msg: string): void }
 
@@ -121,12 +123,18 @@ async function resolveAssignedDriver(
 // It answers PASS / BLOCK / DEGRADE, never silently allowing a code to issue 40 km
 // out and never hard-blocking a legitimate delivery where tracking simply was not
 // running:
-//   * live fix within the drop radius            → PASS
-//   * live fix in the corroboration band AND a
-//     'drop' geofence-enter already recorded      → PASS (dock-scale GPS drift)
-//   * live fix beyond that                        → BLOCK (this is the 40 km hole)
-//   * no live fix but a 'drop' enter on record    → PASS (arrived; no live fix to lean on)
+//   * FRESH live fix within the drop radius       → PASS
+//   * FRESH live fix in the corroboration band AND
+//     a 'drop' geofence-enter already recorded    → PASS (dock-scale GPS drift)
+//   * FRESH live fix beyond that                  → BLOCK (this is the 40 km hole)
+//   * STALE live fix (any distance)               → ignored entirely; falls through
+//   * no usable fix but a 'drop' enter on record  → PASS (arrived; no live fix to lean on)
 //   * no signal at all                            → DEGRADE (allow, flagged weaker)
+//
+// "FRESH" is load-bearing and is why isFixFresh exists: trip_telemetry.last_fix_at
+// never expires, so an hours-old fix left behind by a dead phone would otherwise
+// block a driver who is standing at the dock, permanently and with no way out. A
+// stale fix is treated as no fix at all — see MAX_FIX_AGE_MS in geo.ts.
 //
 // Any read failure resolves toward DEGRADE, not an exception: the gate is an added
 // control and must never convert a POD request that worked into a 500.
@@ -139,38 +147,83 @@ export type OtpGateResult = {
   verdict: 'inside' | 'outside' | 'unknown'
   distance_m: number | null
   source: 'telemetry' | 'geofence_event' | 'none'
+  // Whether this decision is ENFORCED or merely observed — see geofenceGateEnforced.
+  // The caller refuses issuance only on decision==='block' AND enforced===true; the
+  // audit line is written either way.
+  enforced: boolean
+}
+
+// -----------------------------------------------------------
+// POD_GEOFENCE_GATE — the kill switch, DEFAULT OFF.
+//
+// WHY OFF BY DEFAULT: applying migration 0025 is what makes podFeatureAvailable()
+// answer true, and that alone would arm a hard 409 across the LIVE POD path — the
+// only path a trip has to reach 'completed' — on thresholds (DROP_RADIUS_M,
+// MAX_FIX_AGE_MS) that have never been measured against a real drive. Coupling
+// "the tables exist" to "the gate refuses deliveries" makes the migration itself
+// the risky act, with no lever short of rolling back schema. This is that lever:
+// apply 0025 whenever it is convenient, watch the audit trail, and turn the gate
+// on deliberately once the first real corridor drive says the numbers are right.
+//
+// OFF DOES NOT MEAN BLIND. The gate still runs, still resolves a full decision,
+// and still writes its otp_gate_pass / otp_gate_block / otp_gate_degraded audit
+// line carrying enforced=false — so the very first thing anyone asks ("how often
+// WOULD this have blocked a real driver?") is answerable from production data
+// before the switch is ever flipped. A kill switch that also blinds you buys
+// nothing: you would flip it on with exactly as little evidence as you had today.
+//
+// Read per call, not cached at module load, so a Cloud Run revision can be
+// toggled by env alone and the tests can exercise both positions in one process
+// (the same shape storage.ts uses for POD_EVIDENCE_GCS_BUCKET).
+// -----------------------------------------------------------
+const GEOFENCE_GATE_ENV = 'POD_GEOFENCE_GATE'
+
+export function geofenceGateEnforced(): boolean {
+  const raw = process.env[GEOFENCE_GATE_ENV]?.trim().toLowerCase()
+  // Explicit opt-in only. Anything else — unset, empty, 'false', a typo — is OFF,
+  // because the failure mode of guessing wrong here is refusing real deliveries.
+  return raw === 'on' || raw === 'true' || raw === '1'
 }
 
 export async function evaluateOtpGate(
   booking: BookingWithProfiles,
   log?: Logger,
 ): Promise<OtpGateResult> {
+  const enforced = geofenceGateEnforced()
   try {
     const telem = await podRepo.getTelemetryLastFix(booking.id)
     const haveDest = Number.isFinite(booking.dest_lat) && Number.isFinite(booking.dest_lng)
 
-    if (telem && haveDest) {
+    // A fix we cannot show is recent is not evidence of where the truck is NOW, so it
+    // is dropped here rather than inside the branches — the fall-through below then
+    // reaches the geofence-event / degrade paths exactly as if telemetry never ran.
+    if (telem && !isFixFresh(telem.at)) {
+      log?.warn(
+        { booking_id: booking.id, last_fix_at: telem.at },
+        'OTP geofence gate ignoring a stale telemetry fix — falling through to corroboration',
+      )
+    } else if (telem && haveDest) {
       const d = haversineMeters(telem.lat, telem.lng, booking.dest_lat, booking.dest_lng)
       if (d <= DROP_RADIUS_M) {
-        return { decision: 'pass', verdict: 'inside', distance_m: d, source: 'telemetry' }
+        return { decision: 'pass', verdict: 'inside', distance_m: d, source: 'telemetry', enforced }
       }
       if (d <= NEAR_DROP_M && (await podRepo.hasDropEnterEvent(booking.id))) {
-        return { decision: 'pass', verdict: 'inside', distance_m: d, source: 'telemetry' }
+        return { decision: 'pass', verdict: 'inside', distance_m: d, source: 'telemetry', enforced }
       }
-      // A live fix clearly away from the drop. Do not let a stale enter event override
+      // A fresh fix clearly away from the drop. Do not let a stale enter event override
       // it — issuing the code while the truck is demonstrably elsewhere is the fraud.
-      return { decision: 'block', verdict: 'outside', distance_m: d, source: 'telemetry' }
+      return { decision: 'block', verdict: 'outside', distance_m: d, source: 'telemetry', enforced }
     }
 
     if (await podRepo.hasDropEnterEvent(booking.id)) {
-      return { decision: 'pass', verdict: 'inside', distance_m: null, source: 'geofence_event' }
+      return { decision: 'pass', verdict: 'inside', distance_m: null, source: 'geofence_event', enforced }
     }
 
-    return { decision: 'degrade', verdict: 'unknown', distance_m: null, source: 'none' }
+    return { decision: 'degrade', verdict: 'unknown', distance_m: null, source: 'none', enforced }
   } catch (err) {
     // No signal we can trust → degrade, never fail the caller's POD request.
     log?.warn({ err, booking_id: booking.id }, 'OTP geofence gate read failed — degrading')
-    return { decision: 'degrade', verdict: 'unknown', distance_m: null, source: 'none' }
+    return { decision: 'degrade', verdict: 'unknown', distance_m: null, source: 'none', enforced }
   }
 }
 
@@ -179,6 +232,13 @@ export async function evaluateOtpGate(
 // the (currently inert) WORM store, and audits. Idempotent on (booking, hash).
 // -----------------------------------------------------------
 
+// The statuses in which the trip is still LIVE ON THE GROUND — the truck is at or
+// approaching the drop and the driver is still working the delivery. Deliberately
+// the same set the location routes track through (see LOCATION_TRACKED_STATUSES in
+// routes/location.ts): a driver who asserts delivery and then finds the receiver
+// after all, or who is asked by ops for one more photo of a damaged pallet, is in
+// the same physical situation they were a minute earlier. Two lists that disagree
+// would mean the camera works while the GPS trail that dates it has gone dark.
 const EVIDENCE_CAPTURABLE: BookingStatus[] = ['in_transit', 'delivery_asserted']
 
 export type CaptureResult = {
@@ -205,7 +265,7 @@ export async function captureEvidence(
 
   if (!EVIDENCE_CAPTURABLE.includes(booking.status)) {
     throw new BookingError(
-      `POD evidence can only be captured while the trip is in_transit (booking is '${booking.status}')`,
+      `POD evidence can only be captured while the trip is ${EVIDENCE_CAPTURABLE.join(' or ')} (booking is '${booking.status}')`,
       'INVALID_TRANSITION',
       409,
     )
@@ -328,6 +388,8 @@ export function computeClaimClocks(bookingDateIso: string | null, deliveryDateIs
 // submitDiscrepancy — structured shortage/damage capture (§5.7). Idempotent on booking.
 // -----------------------------------------------------------
 
+// Same live-on-the-ground window as EVIDENCE_CAPTURABLE, and for the same reason:
+// the shortage is usually found while unloading, which can straddle the assertion.
 const DISCREPANCY_LOGGABLE: BookingStatus[] = ['in_transit', 'delivery_asserted']
 
 export type DiscrepancyResult = {
@@ -354,7 +416,7 @@ export async function submitDiscrepancy(
 
   if (!DISCREPANCY_LOGGABLE.includes(booking.status)) {
     throw new BookingError(
-      `A discrepancy can only be logged while the trip is in_transit (booking is '${booking.status}')`,
+      `A discrepancy can only be logged while the trip is ${DISCREPANCY_LOGGABLE.join(' or ')} (booking is '${booking.status}')`,
       'INVALID_TRANSITION',
       409,
     )
@@ -528,6 +590,226 @@ export async function assertDelivery(
     assert_reason: body.assert_reason,
     asserted_at: new Date().toISOString(),
     created: true,
+  }
+}
+
+// -----------------------------------------------------------
+// getPodRecord — the READ half of the POD ledger, and the only way anyone outside
+// this service can tell a CONFIRMED delivery from an ASSERTED one.
+//
+// Without it, migration 0025 writes proof nobody can look at: pod_strength decides
+// which proof a claim adjuster is holding (§6.3) and ops closes delivery_asserted
+// trips, so ops needs to see the difference before they close one. It also makes the
+// 'evidence_access' audit action real — §5.4 rule 5 wants reads on the trail, not
+// just writes, because "who looked at this photo, and when" is part of what makes the
+// hash and the timestamps credible in a dispute.
+//
+// AUTHORIZATION IS RELATION-TO-OBJECT, NOT ROLE (D-27). The same relationsToBooking()
+// gate consignee/service.ts and getBooking use: shipper, carrier, assigned driver,
+// claimed consignee — plus ops/admin, who hold no relation by construction and are
+// carved out explicitly. An empty relation set is observer-only and gets a 404 rather
+// than a 403, matching getBooking: a stranger must not be able to probe which booking
+// ids exist by reading the difference between the two.
+// -----------------------------------------------------------
+
+// The relations that see FORENSIC detail — the WORM storage handle, the raw EXIF, the
+// device fingerprint, the precise fix, and the fraud signals (mock_location_detected,
+// clock_skew_seconds).
+//
+// THE DECISION, stated so widening it cannot happen by accident:
+//   * ops/admin and the SHIPPER get it. They are the parties who prosecute or defend a
+//     claim about this consignment, and the storage URI is the handle an export or a
+//     legal hold resolves against. The shipper paid for the carriage and is the one who
+//     must be able to say "produce the original bytes".
+//   * the CARRIER, the assigned DRIVER and the CONSIGNEE do not. Two separate reasons,
+//     both deliberate. The fraud signals are DETECTION OUTPUT aimed at the capturing
+//     side: handing a driver the list of which of their photos tripped the mock-location
+//     or clock-skew check teaches them precisely what to change next time, which is how
+//     a control gets defeated by its own transparency. And the consignee is downstream
+//     of the carriage — they are a stakeholder in the shipment, not in its forensics
+//     (the same line seesCommercialsOnBooking draws for money).
+//   * NOBODY gets a raw object URI they could hand on. Everyone still sees
+//     storage_status, so "was the original retained?" is answerable without it.
+//
+// This is deliberately the tight end of the range. Widening it — a fleet owner
+// defending their driver has a real claim — should be a decision with a reason, not a
+// field that quietly appeared in a payload.
+const POD_FORENSIC_RELATIONS: BookingRelation[] = ['shipper']
+
+// What every party to the consignment sees: the durable proof facts. This is enough to
+// answer "is there evidence, when was it taken, was it at the drop, and is the original
+// retained" — which is the whole question a non-adjudicating party has.
+export type PodEvidenceView = {
+  evidence_id: string
+  captured_at_server: string
+  capture_method: string
+  sha256_original: string
+  geofence_result: string
+  geofence_distance_m: number | null
+  storage_status: string
+  lr_number: string | null
+}
+
+// The adjudicating tier, merged onto the view above for POD_FORENSIC_RELATIONS.
+export type PodEvidenceForensics = {
+  captured_at_device: string | null
+  clock_skew_seconds: number | null
+  lat: number | null
+  lng: number | null
+  gps_accuracy_m: number | null
+  gps_source: string | null
+  mock_location_detected: boolean
+  sha256_received: string | null
+  original_bytes_uri: string | null
+  device_id: string | null
+  os_version: string | null
+  app_version: string | null
+  exif_raw: Record<string, unknown> | null
+}
+
+export type PodDiscrepancyView = {
+  discrepancy_id: string
+  expected_quantity: number | null
+  actual_quantity: number
+  delta: number | null
+  quantity_unit: string | null
+  reason: string
+  evidence_id: string | null
+  driver_ack_at: string
+  consignee_ack_at: string | null
+  consignee_ack_via: string | null
+  consignee_user_id: string | null
+  claim_clocks: ClaimClocks
+}
+
+export type PodRecord = {
+  booking_id: string
+  status: BookingStatus
+  viewer_relations: BookingRelation[]
+  // false on a database without migration 0025: the tables are not there, so the
+  // record reads as "no POD hardening here" instead of failing. A trip completed by
+  // the email OTP still answers, with an empty evidence list and a null strength.
+  pod_hardening_available: boolean
+  pod_strength: 'confirmed' | 'asserted' | null
+  confirmed_at: string | null
+  confirmed_via: string | null
+  asserted_at: string | null
+  assert_reason: string | null
+  closed_by_ops_at: string | null
+  evidence: Array<PodEvidenceView & Partial<PodEvidenceForensics>>
+  discrepancy: PodDiscrepancyView | null
+}
+
+export async function getPodRecord(
+  bookingId: string,
+  actor: AuthenticatedUser,
+  log?: Logger,
+): Promise<PodRecord> {
+  const booking = await repo.getBookingById(bookingId)
+  if (!booking) {
+    throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
+  }
+
+  // Ops/admin hold no relation to a booking by construction — they act for the platform
+  // on both parties' behalf — so they are carved out before the relation set is resolved
+  // rather than being bent into one. Same carve-out attachConsignees and listBookings make.
+  const isOps = actor.role === 'admin'
+  let relations: BookingRelation[] = []
+  if (!isOps) {
+    const snapshot = await resolvePersonas(supabase, actor.userId, actor.role)
+    relations = relationsToBooking(booking, snapshot)
+    if (relations.length === 0) {
+      throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
+    }
+  }
+
+  const forensic = isOps || relations.some(r => POD_FORENSIC_RELATIONS.includes(r))
+
+  // All three reads degrade to "nothing recorded" on a pre-0025 database (the READ half
+  // of the missing-relation contract), so this endpoint answers for every booking that
+  // exists, not only for the ones the hardening has touched.
+  const available = await podRepo.podFeatureAvailable(log)
+  const [state, evidence, discrepancy] = await Promise.all([
+    podRepo.getPodState(bookingId),
+    podRepo.listEvidence(bookingId),
+    podRepo.getDiscrepancy(bookingId),
+  ])
+
+  // §5.4 rule 5 — the read goes on the append-only trail with the relation that
+  // authorized it, so a later "who saw this evidence" question has an answer. Written
+  // AFTER authorization so a rejected probe leaves no line, and best-effort, so a full
+  // audit table can never make the evidence unreadable.
+  await podRepo.appendAudit(
+    {
+      booking_id: bookingId,
+      action: 'evidence_access',
+      actor_user_id: actor.userId,
+      actor_role: actor.role,
+      detail: {
+        relations: isOps ? ['ops'] : relations,
+        forensic,
+        evidence_count: evidence.length,
+      },
+    },
+    log,
+  )
+
+  return {
+    booking_id: bookingId,
+    status: booking.status,
+    viewer_relations: relations,
+    pod_hardening_available: available,
+    pod_strength: state?.pod_strength ?? null,
+    confirmed_at: state?.confirmed_at ?? null,
+    confirmed_via: state?.confirmed_via ?? null,
+    asserted_at: state?.asserted_at ?? null,
+    assert_reason: state?.assert_reason ?? null,
+    closed_by_ops_at: state?.closed_by_ops_at ?? null,
+    evidence: evidence.map((row) => {
+      const base: PodEvidenceView = {
+        evidence_id: row.id,
+        captured_at_server: row.captured_at_server,
+        capture_method: row.capture_method,
+        sha256_original: row.sha256_original,
+        geofence_result: row.geofence_result,
+        geofence_distance_m: row.geofence_distance_m,
+        storage_status: row.storage_status,
+        lr_number: row.lr_number,
+      }
+      if (!forensic) return base
+      return {
+        ...base,
+        captured_at_device: row.captured_at_device,
+        clock_skew_seconds: row.clock_skew_seconds,
+        lat: row.lat,
+        lng: row.lng,
+        gps_accuracy_m: row.gps_accuracy_m,
+        gps_source: row.gps_source,
+        mock_location_detected: row.mock_location_detected,
+        sha256_received: row.sha256_received,
+        original_bytes_uri: row.original_bytes_uri,
+        device_id: row.device_id,
+        os_version: row.os_version,
+        app_version: row.app_version,
+        exif_raw: row.exif_raw,
+      }
+    }),
+    discrepancy: discrepancy
+      ? {
+          discrepancy_id: discrepancy.id,
+          expected_quantity: discrepancy.expected_quantity,
+          actual_quantity: discrepancy.actual_quantity,
+          delta: discrepancy.delta,
+          quantity_unit: discrepancy.quantity_unit,
+          reason: discrepancy.reason,
+          evidence_id: discrepancy.evidence_id,
+          driver_ack_at: discrepancy.driver_ack_at,
+          consignee_ack_at: discrepancy.consignee_ack_at,
+          consignee_ack_via: discrepancy.consignee_ack_via,
+          consignee_user_id: discrepancy.consignee_user_id ?? null,
+          claim_clocks: computeClaimClocks(discrepancy.booking_date, discrepancy.delivery_date),
+        }
+      : null,
   }
 }
 

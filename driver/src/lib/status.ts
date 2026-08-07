@@ -20,6 +20,9 @@ export const bookingStatusConfig: Record<BookingStatus, { label: string; color: 
   negotiating:{ label: 'In negotiation', color: 'bg-amber-500/15 text-amber-500' },
   accepted:   { label: 'Ready to start', color: 'bg-emerald-500/15 text-emerald-500' },
   in_transit: { label: 'In transit',     color: 'bg-purple-500/15 text-purple-400' },
+  // Delivered, but nobody confirmed it — ops has to close it, and the driver should
+  // read it as "waiting on us", not as done.
+  delivery_asserted: { label: 'Awaiting confirmation', color: 'bg-amber-500/15 text-amber-500' },
   completed:  { label: 'Delivered',      color: 'bg-emerald-500/15 text-emerald-500' },
   paid:       { label: 'Paid',           color: 'bg-emerald-500/15 text-emerald-500' },
   cancelled:  { label: 'Cancelled',      color: 'bg-secondary text-muted-foreground' },

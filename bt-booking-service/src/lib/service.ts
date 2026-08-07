@@ -724,6 +724,11 @@ export type PodGeofence = {
   verdict: 'inside' | 'outside' | 'unknown'
   distance_m: number | null
   source: 'telemetry' | 'geofence_event' | 'none'
+  // Whether a 'block' verdict would actually have refused issuance (POD_GEOFENCE_GATE).
+  // Surfaced rather than hidden so the driver app can say "we could not confirm you are
+  // at the drop" without implying a refusal that is not happening — and so a QA pass can
+  // tell an observing gate from an enforcing one without reading the deployment env.
+  enforced: boolean
 }
 
 export type PodContext = {
@@ -791,12 +796,24 @@ export async function getPodContext(
   }
 
   const gate: OtpGateResult = await evaluateOtpGate(booking, log)
-  if (gate.decision === 'block') {
-    await podRepo.appendAudit(
-      { booking_id: booking.id, action: 'otp_gate_block', actor_user_id: actor.userId, actor_role: actor.role,
-        detail: { distance_m: gate.distance_m, source: gate.source } },
-      log,
-    )
+
+  // The audit line is written for EVERY decision, before the refusal and regardless of
+  // whether the gate is enforced (POD_GEOFENCE_GATE, default off — see pod/service.ts).
+  // That ordering is the point of the kill switch: with the switch off, production keeps
+  // answering "how often would this have blocked a real driver, and how far out were
+  // they" from otp_gate_block lines carrying enforced=false, so the switch is eventually
+  // flipped on evidence instead of on hope.
+  await podRepo.appendAudit(
+    { booking_id: booking.id,
+      action: gate.decision === 'block' ? 'otp_gate_block'
+        : gate.decision === 'degrade' ? 'otp_gate_degraded'
+        : 'otp_gate_pass',
+      actor_user_id: actor.userId, actor_role: actor.role,
+      detail: { verdict: gate.verdict, distance_m: gate.distance_m, source: gate.source, enforced: gate.enforced } },
+    log,
+  )
+
+  if (gate.decision === 'block' && gate.enforced) {
     const km = gate.distance_m !== null ? ` (~${(gate.distance_m / 1000).toFixed(1)} km away)` : ''
     throw new BookingError(
       `You are not at the delivery location yet${km} — the delivery code is issued only from the drop point`,
@@ -805,14 +822,16 @@ export async function getPodContext(
     )
   }
 
-  await podRepo.appendAudit(
-    { booking_id: booking.id, action: gate.decision === 'degrade' ? 'otp_gate_degraded' : 'otp_gate_pass',
-      actor_user_id: actor.userId, actor_role: actor.role,
-      detail: { verdict: gate.verdict, distance_m: gate.distance_m, source: gate.source } },
-    log,
-  )
-
-  return { ...base, geofence: { gated: gate.decision === 'pass', verdict: gate.verdict, distance_m: gate.distance_m, source: gate.source } }
+  return {
+    ...base,
+    geofence: {
+      gated: gate.decision === 'pass',
+      verdict: gate.verdict,
+      distance_m: gate.distance_m,
+      source: gate.source,
+      enforced: gate.enforced,
+    },
+  }
 }
 
 // -----------------------------------------------------------
@@ -851,12 +870,20 @@ export async function completeBookingViaPod(bookingId: string, log?: Logger): Pr
   // pod_state/consignee-ack/audit simply do not exist to write to.
   //   * pod_strength='confirmed' — the receiver held the secret, the strongest tier.
   //   * consignee_ack — the second half of a dual-ack discrepancy, landed by the OTP the
-  //     consignee just entered (the driver was already on record at submission).
+  //     consignee just entered (the driver was already on record at submission). It
+  //     carries bookings.consignee_user_id (0026) so the ack NAMES the acknowledging
+  //     party when they hold an account; NULL is the honest answer when they do not.
   //   * an append-only audit line, so the confirmation is on the trail like everything else.
   await podRepo.setConfirmedBestEffort(bookingId, 'receiver_otp', log)
-  await podRepo.stampConsigneeAckBestEffort(bookingId, 'receiver_otp', log)
+  await podRepo.stampConsigneeAckBestEffort(bookingId, 'receiver_otp', booking.consignee_user_id ?? null, log)
   await podRepo.appendAudit(
     { booking_id: bookingId, action: 'pod_confirmed', detail: { via: 'receiver_otp' } },
+    log,
+  )
+  await podRepo.appendAudit(
+    { booking_id: bookingId, action: 'consignee_ack',
+      actor_user_id: booking.consignee_user_id ?? null,
+      detail: { via: 'receiver_otp', claimed_account: Boolean(booking.consignee_user_id) } },
     log,
   )
 
