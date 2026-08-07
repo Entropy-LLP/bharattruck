@@ -10,12 +10,15 @@
 //   - assetless fleet driver does NOT get a load board                (§1.2)
 //   - owner-driver on a fleet booking SEES the money                  (§1.1 — this is the change)
 //   - a shipper who also owns trucks reads as 'shipper' on their own load  (D-10 direct-attach)
+//   - ...and still HOLDS the carrier relation in the full set             (D-10, relationsToBooking)
+//   - a claimed consignee sees their inbound shipment but no economics    (§1.1)
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   capabilitiesFrom,
   relationToBooking,
+  relationsToBooking,
   seesCommercialsOnBooking,
   resolvePersonas,
   type PersonaFacts,
@@ -142,6 +145,124 @@ test('an unrelated human is an observer', () => {
   assert.equal(rel, 'observer')
 })
 
+// ── the FULL relation set: one human, two relations ──────────────────────────
+//
+// relationToBooking() answers "which view renders". relationsToBooking() answers "what may this
+// human do here", and those diverge exactly where the single value has to drop a relation on the
+// floor — direct-attach (D-10) being the case the unified app is built around.
+
+test('direct-attach: the distributor is shipper AND carrier, both (D-10)', () => {
+  const rels = relationsToBooking(
+    { shipper_id: 'u1', fleet_owner_id: 'f1' },
+    snapshot({ user_id: 'u1', fleet_owner_id: 'f1' }),
+  )
+  assert.deepEqual(rels, ['shipper', 'carrier'], 'the carrier relation must survive, not be shadowed')
+})
+
+test('a SOLO driver holds carrier, not driver — the assignment IS the win', () => {
+  const rels = relationsToBooking(
+    { shipper_id: 'someone-else', driver_id: 'd1', fleet_owner_id: null },
+    snapshot({ user_id: 'u2', driver_id: 'd1' }),
+  )
+  assert.deepEqual(rels, ['carrier'], 'nobody stands between them and the load; there is no staff relation')
+})
+
+test('a FLEET-EMPLOYED driver holds driver only', () => {
+  const rels = relationsToBooking(
+    { shipper_id: 'someone-else', driver_id: 'd1', fleet_owner_id: 'f9' },
+    snapshot({ user_id: 'u2', driver_id: 'd1' }),
+  )
+  assert.deepEqual(rels, ['driver'])
+})
+
+test('a fleet owner driving their own truck is carrier AND driver', () => {
+  const rels = relationsToBooking(
+    { shipper_id: 's', driver_id: 'd1', fleet_owner_id: 'f1' },
+    snapshot({ user_id: 'u2', driver_id: 'd1', fleet_owner_id: 'f1' }),
+  )
+  assert.deepEqual(rels, ['carrier', 'driver'])
+})
+
+test('a CLAIMED consignee sees their inbound shipment', () => {
+  const rels = relationsToBooking({ shipper_id: 's', consignee_user_id: 'u4' }, snapshot({ user_id: 'u4' }))
+  assert.deepEqual(rels, ['consignee'])
+})
+
+test('an UNCLAIMED consignee has no relation — they have no session to resolve', () => {
+  // The common case: a name and a phone, no login. Their access path is the POD OTP (D-13), so the
+  // absence of a users.id must read as "no relation", never as an unmatched-everything wildcard.
+  const rels = relationsToBooking(
+    { shipper_id: 's', consignee_user_id: null },
+    snapshot({ user_id: 'u4', driver_id: null, fleet_owner_id: null }),
+  )
+  assert.deepEqual(rels, [])
+})
+
+test('an unrelated human holds NO relations — the empty set is observer', () => {
+  const rels = relationsToBooking({ shipper_id: 'x', driver_id: 'y' }, snapshot({ user_id: 'z' }))
+  assert.deepEqual(rels, [], "'observer' is the absence of a relation, not a member of the set")
+})
+
+test('the shipper who is also the consignee holds both', () => {
+  // Stock transfer: same business posts the load and receives it at its own warehouse.
+  const rels = relationsToBooking(
+    { shipper_id: 'u1', consignee_user_id: 'u1' },
+    snapshot({ user_id: 'u1' }),
+  )
+  assert.deepEqual(rels, ['shipper', 'consignee'])
+})
+
+// ── regression: the single-value picker is unchanged ─────────────────────────
+
+test('relationToBooking still returns exactly what it returned before the set existed', () => {
+  // relationToBooking() is now relationsToBooking()[0]. Every caller in every service depends on
+  // this truth table, so it is pinned as a table rather than as prose.
+  const cases: Array<[string, Parameters<typeof relationToBooking>[0], PersonaSnapshot, string]> = [
+    ['poster', { shipper_id: 'u1' }, snapshot({ user_id: 'u1' }), 'shipper'],
+    [
+      'direct-attach',
+      { shipper_id: 'u1', fleet_owner_id: 'f1' },
+      snapshot({ user_id: 'u1', fleet_owner_id: 'f1' }),
+      'shipper',
+    ],
+    [
+      'fleet that won it',
+      { shipper_id: 's', fleet_owner_id: 'f1' },
+      snapshot({ user_id: 'u2', fleet_owner_id: 'f1' }),
+      'carrier',
+    ],
+    [
+      'solo driver',
+      { shipper_id: 's', driver_id: 'd1', fleet_owner_id: null },
+      snapshot({ user_id: 'u2', driver_id: 'd1' }),
+      'carrier',
+    ],
+    [
+      'fleet-employed driver',
+      { shipper_id: 's', driver_id: 'd1', fleet_owner_id: 'f9' },
+      snapshot({ user_id: 'u2', driver_id: 'd1' }),
+      'driver',
+    ],
+    [
+      'fleet owner driving their own truck',
+      { shipper_id: 's', driver_id: 'd1', fleet_owner_id: 'f1' },
+      snapshot({ user_id: 'u2', driver_id: 'd1', fleet_owner_id: 'f1' }),
+      'carrier',
+    ],
+    ['stranger', { shipper_id: 'x', driver_id: 'y' }, snapshot({ user_id: 'z' }), 'observer'],
+    [
+      'claimed consignee',
+      { shipper_id: 's', consignee_user_id: 'u4' },
+      snapshot({ user_id: 'u4' }),
+      'consignee',
+    ],
+  ]
+
+  for (const [label, booking, snap, expected] of cases) {
+    assert.equal(relationToBooking(booking, snap), expected, label)
+  }
+})
+
 // ── commercial visibility follows OWNERSHIP, not affiliation (§1.1) ───────────
 
 test('shipper sees their own freight', () => {
@@ -173,6 +294,27 @@ test('owning SOME truck does not unmask a booking run on someone else\'s', () =>
     false, // this particular trip is on the fleet's truck
   )
   assert.equal(sees, false, 'visibility is per-asset, not a global flag')
+})
+
+test('a consignee does NOT see carrier economics', () => {
+  // They may owe the freight on a To Pay consignment, but what they are owed-and-shown is a
+  // per-document disclosure on the LR/invoice — not the carrier's margin on the booking.
+  const sees = seesCommercialsOnBooking(
+    { shipper_id: 's', consignee_user_id: 'u4', fleet_owner_id: 'f9' },
+    snapshot({ user_id: 'u4' }),
+    true, // even claiming to own a truck must not unmask them here
+  )
+  assert.equal(sees, false)
+})
+
+test('a shipper who is also the consignee still sees their own freight', () => {
+  // The granting relation must not be shadowed by the weaker one it shares the booking with.
+  const sees = seesCommercialsOnBooking(
+    { shipper_id: 'u1', consignee_user_id: 'u1' },
+    snapshot({ user_id: 'u1' }),
+    false,
+  )
+  assert.equal(sees, true)
 })
 
 test('an observer never sees freight', () => {

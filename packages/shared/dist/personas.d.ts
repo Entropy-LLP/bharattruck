@@ -105,24 +105,52 @@ export declare function can(snapshot: PersonaSnapshot, capability: Capability): 
 /**
  * How a viewer relates to ONE booking. This is what makes "one app, no mode switch" work: the
  * object supplies the context, so the same screen renders the shipper view to the person who
- * posted the load and the carrier view to the person who won it.
+ * posted the load and the carrier view to the person who won it — and the inbound-shipment view to
+ * the consignee waiting on it.
  */
-export type BookingRelation = 'shipper' | 'carrier' | 'driver' | 'observer';
+export type BookingRelation = 'shipper' | 'carrier' | 'driver' | 'consignee' | 'observer';
 export interface ViewerBooking {
     shipper_id: string;
     fleet_owner_id?: string | null;
     driver_id?: string | null;
     vehicle_id?: string | null;
+    /**
+     * users.id of the consignee, when that party has CLAIMED an account — null otherwise.
+     *
+     * The consignee (the receiver) is a first-class freight party, the same kind of entity as a
+     * shipper, and most of them are UNCLAIMED: a record with a name and a phone, no login. An
+     * unclaimed consignee therefore has NO viewer relation, because there is no session to resolve —
+     * their access path is the POD OTP (D-13), not a logged-in read. Resolving by users.id is what
+     * makes that fall out for free: the relation simply does not match until the party claims an
+     * account, at which point their inbound shipment appears with no backfill.
+     */
+    consignee_user_id?: string | null;
 }
 /**
- * Resolve the viewer's relation to a booking.
+ * Every relation the viewer holds to a booking, strongest claim first.
+ *
+ * One human can hold TWO relations to ONE booking, and that is not an edge case: under direct-attach
+ * (D-10) a distributor posts a load AND wins it with their own fleet, so they are shipper AND
+ * carrier. A single value has to drop one of those, which is right for "which screen do I render"
+ * and wrong for "may this human do X" — hence both functions.
  *
  * Order is significant and is not alphabetical:
- *   shipper first  — you posted it, and under direct-attach (D-10) you may ALSO be the carrier.
- *                    Whoever is paying sees the paying side; that is the relation with the
- *                    stronger claim on the screen.
+ *   shipper first  — you posted it. Whoever is paying sees the paying side; that is the relation
+ *                    with the stronger claim on the screen.
  *   carrier next   — the winning party, fleet or solo.
- *   driver last    — assigned to run it, which on a fleet booking is an employee relation.
+ *   driver next    — assigned to run it, which on a fleet booking is an employee relation.
+ *   consignee last — the receiving end. The weakest claim: they are downstream of the trip, not a
+ *                    party to its commercials.
+ *
+ * An EMPTY array means observer-only. 'observer' is deliberately not an element — it is the absence
+ * of a relation, and putting it in the set would make `.includes('observer')` read as a permission.
+ */
+export declare function relationsToBooking(booking: ViewerBooking, snapshot: PersonaSnapshot): BookingRelation[];
+/**
+ * The viewer's single strongest relation to a booking — the one that decides which view renders.
+ *
+ * This is `relationsToBooking()[0]`, and it must stay that way: the ordering above is exactly the
+ * precedence this function has always applied, so the set is the primitive and this is the picker.
  */
 export declare function relationToBooking(booking: ViewerBooking, snapshot: PersonaSnapshot): BookingRelation;
 /**
