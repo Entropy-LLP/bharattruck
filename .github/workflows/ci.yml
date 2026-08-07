@@ -190,3 +190,98 @@ jobs:
           run_case "no env at all" noenv
 
           [ "$fail" -eq 0 ] || { echo "gateway config is NOT fail-open"; exit 1; }
+
+  # Both workflows HAND-LIST which packages a `packages/shared/**` change rebuilds (here) and
+  # redeploys (deploy.yml). That list has already been wrong once, and it fails SILENTLY: a service
+  # that consumes shared but is missing from the list still builds green, still merges, and just
+  # keeps serving the old library forever. Derive the true consumer set from the package.json files
+  # and fail when the workflows disagree. Deliberately unconditional (no path filter) — the drift
+  # arrives via a package.json edit that touches nothing under packages/shared.
+  shared-consumers:
+    name: shared-consumer list matches reality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare declared filters against the real `file:` dependents
+        run: |
+          set -uo pipefail
+
+          # Truth: a top-level package declaring @bharattruck/shared as a `file:` dependency.
+          # packages/shared itself is nested one level deeper, so the glob cannot match it.
+          truth() {
+            for pj in */package.json; do
+              dep=$(jq -r '.dependencies["@bharattruck/shared"] // ""' "$pj")
+              case "$dep" in file:*) echo "${pj%/package.json}" ;; esac
+            done | sort -u
+          }
+
+          # Claim: every paths-filter key whose pattern list includes 'packages/shared/**'.
+          # `packages/shared`'s own entry is a self-build, not a consumer — drop it.
+          claim() {
+            grep -E "^ +[A-Za-z0-9_/-]+: \[.*'packages/shared/\*\*'" "$1" \
+              | sed -E "s/^ *([A-Za-z0-9_/-]+):.*/\1/" \
+              | grep -vx 'packages/shared' | sort -u
+          }
+
+          truth > /tmp/truth.txt
+          echo "real consumers of @bharattruck/shared:"; sed 's/^/  /' /tmp/truth.txt
+
+          fail=0
+          for wf in .github/workflows/ci.yml .github/workflows/deploy.yml; do
+            claim "$wf" > /tmp/claim.txt
+            if diff -u /tmp/truth.txt /tmp/claim.txt > /tmp/diff.txt; then
+              echo "  PASS  $wf"
+            else
+              echo "  FAIL  $wf lists the wrong set (-real +listed):"
+              sed 's/^/    /' /tmp/diff.txt
+              fail=1
+            fi
+          done
+
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::A package's @bharattruck/shared dependency and the 'packages/shared/**' path filters have drifted. Add (or remove) 'packages/shared/**' in that package's filter line in BOTH ci.yml and deploy.yml — otherwise a shared-only fix merges green and never reaches the running service."
+            exit 1
+          fi
+
+  # supabase/migrations/ is the source of truth, but migrations are applied BY HAND — CD never
+  # touches the database. Nothing anywhere signals that a merged migration is still unapplied, which
+  # is how the repo ended up with service code deployed against migrations that had not been run.
+  # This job cannot verify anything (CI has no DB credentials, and giving PR builds read access to
+  # production would be worse than the problem) — it exists purely so the reminder is impossible to
+  # miss on the PR that introduces the migration.
+  migrations:
+    name: migration hand-apply reminder
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          list-files: shell
+          filters: |
+            migrations: ['supabase/migrations/**']
+      - name: Report repo migrations + hand-apply reminder
+        if: steps.filter.outputs.migrations == 'true'
+        env:
+          CHANGED: ${{ steps.filter.outputs.migrations_files }}
+        run: |
+          set -uo pipefail
+          {
+            echo "## Migrations are applied BY HAND — this PR does not apply them"
+            echo
+            echo "CD deploys code only. Every file below must be run against Supabase manually,"
+            echo "**before or with** the deploy of the service that reads it, or the service will"
+            echo "answer 503 (\`42P01\` / \`PGRST205\`) against a table that does not exist yet."
+            echo
+            echo "### Touched by this change"
+            for f in $CHANGED; do echo "- \`$f\`"; done
+            echo
+            echo "### Every migration in the repo (ledger order)"
+            for f in supabase/migrations/*.sql; do echo "- \`$(basename "$f")\`"; done
+            echo
+            echo "> **Limitation:** this check reports what the REPO contains. It does not and cannot"
+            echo "> tell you what the production database has actually had applied — CI holds no"
+            echo "> database credentials, by design. Confirm applied state yourself against Supabase."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::This change touches supabase/migrations/. Migrations are hand-applied — see the job summary for the full list and apply them with the deploy."
+          cat "$GITHUB_STEP_SUMMARY"
