@@ -104,6 +104,7 @@ jobs:
             driver: ['driver/**', '.github/workflows/deploy.yml', 'cloudbuild.yaml', '.gcloudignore']
             shipper: ['shipper/**', '.github/workflows/deploy.yml', 'cloudbuild.yaml', '.gcloudignore']
             fleet: ['fleet/**', '.github/workflows/deploy.yml', 'cloudbuild.yaml', '.gcloudignore']
+            bt-app: ['bt-app/**', '.github/workflows/deploy.yml', 'cloudbuild.yaml', '.gcloudignore']
             bt-ops-web: ['bt-ops-web/**', '.github/workflows/deploy.yml', 'cloudbuild.yaml', '.gcloudignore']
       - id: split
         name: partition changed dirs → backend services (dir==svc) vs apps (dir→svc, maps flag)
@@ -127,11 +128,12 @@ jobs:
           # client ID would just be an unconsumed build arg.
           APPS=$(printf '%s' "$CHANGES" | jq -c '
             [ .[]
-              | select(. == "driver" or . == "shipper" or . == "fleet" or . == "bt-ops-web")
+              | select(. == "driver" or . == "shipper" or . == "fleet" or . == "bt-app" or . == "bt-ops-web")
               | { dir: .,
                   service: (if . == "driver" then "bt-driver"
                             elif . == "shipper" then "bt-shipper"
                             elif . == "fleet" then "bt-fleet-console"
+                            elif . == "bt-app" then "bt-app"
                             else "bt-ops-web" end),
                   maps: (if . == "bt-ops-web" then "false" else "true" end),
                   google: (if . == "driver" or . == "shipper" then "true" else "false" end) } ]')
