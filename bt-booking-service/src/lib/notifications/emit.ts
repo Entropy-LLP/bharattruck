@@ -20,7 +20,6 @@
 
 import { enqueueNotification } from '@bharattruck/shared/notifications'
 import type { DbBooking, DbQuote } from '../types.js'
-import * as quoteRepo from '../quote-repository.js'
 import {
   carrierDisplayName,
   carrierRecipient,
@@ -139,10 +138,15 @@ export async function emitQuoteCountered(
  *
  * The losing-bidder notice is the half that is easy to skip and shouldn't be: a
  * carrier who never hears back holds capacity for a load they did not get.
+ *
+ * `losingQuotes` is passed IN rather than looked up here, and that is load-bearing:
+ * awarding expires every other open quote, so by the time this runs there is nothing
+ * live left to find. The caller has to snapshot the set before it awards.
  */
 export async function emitQuoteAwarded(
   booking: DbBooking,
   winningQuote: DbQuote,
+  losingQuotes: DbQuote[],
   log?: Logger,
 ): Promise<void> {
   await safely(log, 'quote_awarded', async () => {
@@ -157,10 +161,11 @@ export async function emitQuoteAwarded(
       }, log)
     }
 
-    // Losing bidders. Best-effort and non-fatal: if this lookup fails the winner has
-    // already been told, which is the part that matters.
-    const losers = await quoteRepo.listLosingQuotes(booking.id, winningQuote.id)
-    for (const loser of losers) {
+    // Losing bidders. Whoever was still in play at award time; the winner is not in
+    // this set. Guarded against a stale snapshot that still includes the winner, so a
+    // future caller cannot mail the winner a loss notice.
+    for (const loser of losingQuotes) {
+      if (loser.id === winningQuote.id) continue
       const recipient = await carrierRecipient(loser)
       if (!recipient) continue
       await enqueueNotification({

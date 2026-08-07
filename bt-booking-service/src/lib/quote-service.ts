@@ -307,6 +307,16 @@ export async function acceptQuote(
     throw new BookingError('Booking already has an awarded quote', 'ALREADY_AWARDED', 409)
   }
 
+  // Snapshot who is still in play BEFORE awarding. awardBooking expires every
+  // other open quote as part of the award, and listLosingQuotes only returns live
+  // ones — read it afterwards and the set is always empty, so nobody is ever told
+  // they lost. Same ordering the direct-attach path uses.
+  //
+  // Unlike the emit itself, this read is allowed to fail the accept: nothing has
+  // been committed yet, so a throw here leaves the booking exactly as it was and
+  // the shipper can retry. Swallowing it would silently reinstate the bug.
+  const losingQuotes = await quoteRepo.listLosingQuotes(bookingId, quoteId)
+
   const awarded = await quoteRepo.awardBooking(bookingId, quoteId, bidderOfQuote(quote), quote.amount)
   if (!awarded) {
     throw new BookingError('Booking was already awarded — race condition', 'ALREADY_AWARDED', 409)
@@ -314,12 +324,12 @@ export async function acceptQuote(
 
   // Tell the winner they won, and every other live bidder that they did not. The
   // losing side matters: a carrier who never hears back holds capacity for a load
-  // they are not getting.
+  // they are not getting. Only reached once the award actually landed.
   //
   // (The blockchain anchor that used to be called here went with jobs.ts — the
   // hash-anchor ledger is a committed MVP cut, see CLAUDE.md, and the stub had
   // never done anything.)
-  await notify.emitQuoteAwarded(awarded, quote, log)
+  await notify.emitQuoteAwarded(awarded, quote, losingQuotes, log)
 
   return awarded
 }
