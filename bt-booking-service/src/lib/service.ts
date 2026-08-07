@@ -1,4 +1,10 @@
-import { can, relationsToBooking, resolvePersonas, type PersonaSnapshot } from '@bharattruck/shared/personas'
+import {
+  can,
+  relationsToBooking,
+  resolvePersonas,
+  type BookingRelation,
+  type PersonaSnapshot,
+} from '@bharattruck/shared/personas'
 import type { AuthenticatedUser, BookingStatus, BookingWithProfiles, CreateBookingBody, DbBooking } from './types.js'
 import { BookingError } from './types.js'
 import { assertFleetAssignmentReady, assertValidTransition } from './state.js'
@@ -6,6 +12,7 @@ import * as repo from './repository.js'
 import * as quoteRepo from './quote-repository.js'
 import { supabase } from './supabase.js'
 import {
+  bidderFromSnapshot,
   hasLiveVehicleAssignment,
   isEmployedDriver,
   stripCommercialFields,
@@ -18,6 +25,34 @@ import * as podRepo from './pod/repository.js'
 import { evaluateOtpGate, type OtpGateResult } from './pod/service.js'
 import { resolveConsigneeParty } from './consignee/repository.js'
 import { attachConsignee, attachConsignees, type WithConsignee } from './consignee/service.js'
+
+// -----------------------------------------------------------
+// The per-object VIEWER block (D-27/D-38) — what the unified frontend reads to
+// render the right view of a booking for whoever is looking at it, without a
+// mode switch. It is COMPUTED from the caller's PersonaSnapshot against THIS
+// booking, never from their role string:
+//
+//   relations       — every relation the caller holds to the booking
+//                     (shipper / carrier / driver / consignee). EMPTY means
+//                     observer — 'observer' is the ABSENCE of a relation and is
+//                     deliberately never an element (see personas.ts).
+//   sees_commercials — whether the money columns are present in THIS payload for
+//                     this caller. It mirrors the mask actually applied
+//                     (stripCommercialFields hides them from a fleet EMPLOYEE),
+//                     so the client never has to guess whether a price it cannot
+//                     find was withheld or simply not set.
+// -----------------------------------------------------------
+
+export type BookingViewer = { relations: BookingRelation[]; sees_commercials: boolean }
+export type WithViewer<T> = T & { viewer: BookingViewer }
+
+function withViewer<T extends object>(
+  payload: T,
+  relations: BookingRelation[],
+  seesCommercials: boolean,
+): WithViewer<T> {
+  return { ...payload, viewer: { relations, sees_commercials: seesCommercials } }
+}
 
 // -----------------------------------------------------------
 // createBooking — the price quote-lock saga.
@@ -68,9 +103,12 @@ export async function createBooking(
   pricing: PricingClient = defaultPricingClient(),
   log?: Logger,
 ): Promise<DbBooking> {
-  if (actor.role !== 'shipper') {
-    throw new BookingError('Only shippers can create bookings', 'FORBIDDEN', 403)
-  }
+  // NO role gate here on purpose (D-27). 'ship' is UNGATED — posting a load is
+  // the act that emerges the shipper persona (D-5/D-29), so everyone with a valid
+  // account may post, and a driver who owns a truck posting a return-leg load is
+  // exactly the case the old `actor.role !== 'shipper'` check wrongly blocked. The
+  // real gate is the quote-ownership check below: the price-lock is bound to the
+  // human who was quoted, and a booking can only be created against your OWN lock.
 
   // 1. Read the locked quote (internal call). A missing quote → NOT_FOUND (4xx).
   const quote = await pricing.getQuote(body.quote_id)
@@ -225,53 +263,69 @@ async function resolveDriverScope(actor: AuthenticatedUser): Promise<repo.Driver
 export async function getBooking(
   id: string,
   actor: AuthenticatedUser,
-): Promise<WithConsignee<PriceMasked<BookingWithProfiles>>> {
+): Promise<WithViewer<WithConsignee<PriceMasked<BookingWithProfiles>>>> {
   const booking = await repo.getBookingById(id)
   if (!booking) {
     throw new BookingError(`Booking ${id} not found`, 'NOT_FOUND', 404)
   }
-  // A shipper-role caller reads their OWN bookings — and, since D-22, the ones
-  // consigned TO them. A claimed consignee is a party to the consignment, not a
-  // stranger: they are the person the goods are for, and refusing them the trip
-  // they are waiting on was only ever an artefact of "shipper" meaning "the
-  // party who posted it". This is a comparison against a value already on the
-  // row, NOT a new filter, so on a pre-0026 database consignee_user_id is
-  // undefined, nothing matches, and the guard behaves exactly as it did.
-  //
-  // Their INBOUND LIST is a separate change and deliberately not here: listing
-  // by consignee_user_id means querying a column that a pre-0026 database does
-  // not have, and it belongs with the claim flow (§9.2) rather than with this
-  // slice.
-  const viewerIsConsignee = !!booking.consignee_user_id && booking.consignee_user_id === actor.userId
-  if (actor.role === 'shipper' && booking.shipper_id !== actor.userId && !viewerIsConsignee) {
-    throw new BookingError('Forbidden', 'FORBIDDEN', 403)
+
+  // Ops/admin hold no relation to a booking by construction — they act for the
+  // platform on both parties' behalf — so they are an EXPLICIT carve-out taken
+  // before any capability is resolved (there is no 'admin' capability). Same
+  // carve-out getPodRecord, attachConsignees and the ops overrides make: they
+  // read the full payload of any booking, with an empty relation set.
+  if (actor.role === 'admin') {
+    return withViewer(await attachConsignee(booking, actor), [], true)
   }
 
-  // Shipper/admin keep the payload they have always had — assigned_to_me is a
-  // driver-facing field and they are not drivers. The consignee block is added
-  // for whoever is a party to the consignment (attachConsignee decides; an
-  // observer's payload is unchanged).
-  if (actor.role !== 'driver') return attachConsignee(booking, actor)
+  const snapshot = await resolvePersonas(supabase, actor.userId, actor.role)
+  const relations = relationsToBooking(booking, snapshot)
 
-  // One driver lookup answers both questions below.
-  const driverRow = await repo.getDriverByUserId(actor.userId)
-  const assignedToMe = !!driverRow && booking.driver_id === driverRow.id
+  // A caller with a driver profile (the 'drive' capability == a drivers row)
+  // keeps the driver payload: the marketplace board plus their own trips, with
+  // assigned_to_me and the employed-driver money mask. This is the role-era
+  // driver branch verbatim, now keyed on the capability rather than the JWT role
+  // string — so a multi-persona human who is a shipper AND has a drivers row gets
+  // it too, instead of being forced down one costume.
+  if (snapshot.driver_id) {
+    const driverId = snapshot.driver_id
+    const assignedToMe = booking.driver_id === driverId
 
-  // Employed = affiliated AND owns no truck. An owner-driver attached to a fleet
-  // falls through to the solo path below: they keep the open load board and they
-  // keep the money, because the truck's cost sits with them.
-  if (driverRow && (await isEmployedDriver(driverRow.id))) {
-    if (!assignedToMe) {
-      throw new BookingError(`Booking ${id} not found`, 'NOT_FOUND', 404)
+    // Employed = affiliated AND owns no truck (fleet.isEmployedDriver). An
+    // employed driver is scoped to their assignments: anything else is 404 (never
+    // 403), so a fleet driver cannot probe which booking ids exist. An
+    // owner-driver attached to a fleet is NOT employed and falls through to the
+    // open path — they keep the load board AND keep the money, because the
+    // truck's cost sits with them.
+    if (await isEmployedDriver(driverId)) {
+      if (!assignedToMe) {
+        throw new BookingError(`Booking ${id} not found`, 'NOT_FOUND', 404)
+      }
+      // The money is masked, the receiver is NOT: this driver is the one standing
+      // at the drop and the consignee is who they hand the goods to. Price hiding
+      // (Q16) and the consignee gate are separate rules and neither implies the
+      // other.
+      const masked = { ...stripCommercialFields(booking), assigned_to_me: true }
+      return withViewer(await attachConsignee(masked, actor), relations, false)
     }
-    // The money is masked, the receiver is NOT: this driver is the one standing
-    // at the drop and the consignee is who they hand the goods to. Price hiding
-    // (Q16) and the consignee gate are separate rules and neither implies the
-    // other.
-    return attachConsignee({ ...stripCommercialFields(booking), assigned_to_me: true }, actor)
+
+    const open = { ...booking, assigned_to_me: assignedToMe }
+    return withViewer(await attachConsignee(open, actor), relations, true)
   }
 
-  return attachConsignee({ ...booking, assigned_to_me: assignedToMe }, actor)
+  // No driver profile. A caller who is a PARTY to this booking — they posted it
+  // (D-22 also lets the claimed CONSIGNEE read the trip they are waiting on),
+  // their fleet won it — reads it, and so does a marketplace carrier browsing the
+  // board (a truck owner 'carry', a fleet operator 'operate'; a fleet_owner was
+  // unscoped here in the role era and its assets keep it unscoped now). A
+  // ship-only poster with NO relation to this booking is forbidden — the role-era
+  // shipper gate, answered 403 (they already know their own ids, so there is
+  // nothing to protect by hiding existence). assigned_to_me is a driver-facing
+  // field and is absent here, exactly as it was for the old non-driver path.
+  if (relations.length > 0 || can(snapshot, 'carry') || can(snapshot, 'operate')) {
+    return withViewer(await attachConsignee(booking, actor), relations, true)
+  }
+  throw new BookingError('Forbidden', 'FORBIDDEN', 403)
 }
 
 // -----------------------------------------------------------
@@ -290,7 +344,7 @@ export async function getBooking(
 
 export async function listBookings(
   actor: AuthenticatedUser,
-): Promise<WithConsignee<PriceMasked<DbBooking>>[]> {
+): Promise<WithViewer<WithConsignee<PriceMasked<DbBooking>>>[]> {
   const scope = await resolveDriverScope(actor)
   const bookings = await repo.listBookings(actor, scope ?? undefined)
   const masked = scope?.employed ? bookings.map(stripCommercialFields) : bookings
@@ -298,7 +352,19 @@ export async function listBookings(
   // trips and the open 'pending' load board, so the same response legitimately
   // contains bookings they are a party to and bookings they are merely browsing.
   // A whole-response decision would be wrong for one half of it either way.
-  return attachConsignees(masked, actor)
+  const withConsignee = await attachConsignees(masked, actor)
+
+  // The per-object viewer block (D-27/D-38), added per row so each card renders
+  // its own view. `sees_commercials` follows the mask actually applied — the
+  // employed-driver list is stripped, everyone else's is not — so it is a
+  // response-level fact here, while `relations` is resolved per booking against
+  // the ONE snapshot. Ops hold no relation, matching their carve-out above.
+  if (actor.role === 'admin') {
+    return withConsignee.map((b) => withViewer(b, [], true))
+  }
+  const snapshot = await resolvePersonas(supabase, actor.userId, actor.role)
+  const seesCommercials = !scope?.employed
+  return withConsignee.map((b) => withViewer(b, relationsToBooking(b, snapshot), seesCommercials))
 }
 
 // -----------------------------------------------------------
@@ -312,9 +378,16 @@ export async function acceptBooking(
   actor: AuthenticatedUser,
   log?: Logger,
 ): Promise<DbBooking> {
-  if (actor.role !== 'driver') {
+  // A driver — a human with a drivers row, i.e. the 'drive' capability — accepts.
+  // De-roled from `actor.role !== 'driver'`: a multi-persona human with a drivers
+  // row now self-selects work regardless of their JWT role string, and a
+  // non-driver still gets a 403. can('drive') is exactly `driver_id != null`; the
+  // second clause narrows the id for the update below.
+  const snapshot = await resolvePersonas(supabase, actor.userId, actor.role)
+  if (!can(snapshot, 'drive') || !snapshot.driver_id) {
     throw new BookingError('Only drivers can accept bookings', 'FORBIDDEN', 403)
   }
+  const driverId = snapshot.driver_id
 
   const booking = await repo.getBookingById(bookingId)
   if (!booking) {
@@ -322,11 +395,6 @@ export async function acceptBooking(
   }
 
   assertValidTransition(booking.status, 'accepted')
-
-  const driverRow = await repo.getDriverByUserId(actor.userId)
-  if (!driverRow) {
-    throw new BookingError('Driver profile not found', 'NOT_FOUND', 404)
-  }
 
   // Self-accepting an open booking IS load-board self-selection, so it is
   // closed to a fleet-EMPLOYED driver for the same reason bidding is (Q14):
@@ -336,7 +404,7 @@ export async function acceptBooking(
   // so self-selecting work with it is exactly what they are entitled to do —
   // the fleet is one source of work for them, not the only one. Solo drivers
   // are unaffected either way.
-  if (await isEmployedDriver(driverRow.id)) {
+  if (await isEmployedDriver(driverId)) {
     throw new BookingError(
       'You drive for a fleet — your fleet owner takes loads and assigns them to you',
       'FORBIDDEN',
@@ -344,7 +412,7 @@ export async function acceptBooking(
     )
   }
 
-  const updated = await repo.acceptBooking(bookingId, driverRow.id)
+  const updated = await repo.acceptBooking(bookingId, driverId)
   if (!updated) {
     // Another driver accepted between our read and write
     throw new BookingError(
@@ -412,15 +480,13 @@ export async function acceptBooking(
  *
  * Fleet wins when the human is both, matching the capability ladder: 'operate'
  * describes the larger business and is where their trucks and drivers are.
+ *
+ * This is the SAME "which of my carriers acts" rule a marketplace bid resolves
+ * through, so it is one implementation shared with quote-service — see
+ * fleet.bidderFromSnapshot.
  */
 function directAttachCarrier(snapshot: PersonaSnapshot): Bidder | null {
-  if (snapshot.fleet_owner_id && can(snapshot, 'operate')) {
-    return { kind: 'fleet', fleetOwnerId: snapshot.fleet_owner_id }
-  }
-  if (snapshot.driver_id && can(snapshot, 'carry')) {
-    return { kind: 'driver', driverId: snapshot.driver_id }
-  }
-  return null
+  return bidderFromSnapshot(snapshot)
 }
 
 /**
@@ -590,8 +656,14 @@ async function transitionAssignedBooking(
   actor: AuthenticatedUser,
   to: 'in_transit',
 ): Promise<DbBooking> {
-  // Only drivers transition trips; a shipper/admin hitting these gets 403.
-  if (actor.role !== 'driver') {
+  // Only the ASSIGNED DRIVER moves a trip forward. Authorized on the 'drive'
+  // capability (a drivers row) plus the driver's identity matching this booking,
+  // never the JWT role string. Deliberately NOT the fleet owner: they hold the
+  // 'carrier' relation on their own booking but do not drive it, and the
+  // assigned-driver check below (booking.driver_id === snapshot.driver_id)
+  // excludes them by construction.
+  const snapshot = await resolvePersonas(supabase, actor.userId, actor.role)
+  if (!can(snapshot, 'drive') || !snapshot.driver_id) {
     throw new BookingError('Only the assigned driver can transition a trip', 'FORBIDDEN', 403)
   }
 
@@ -600,13 +672,8 @@ async function transitionAssignedBooking(
     throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
   }
 
-  const driverRow = await repo.getDriverByUserId(actor.userId)
-  if (!driverRow) {
-    throw new BookingError('Driver profile not found', 'NOT_FOUND', 404)
-  }
-
   // Assigned-driver-only: a driver who is not this booking's driver gets 403.
-  if (booking.driver_id !== driverRow.id) {
+  if (booking.driver_id !== snapshot.driver_id) {
     throw new BookingError('You are not assigned to this booking', 'FORBIDDEN', 403)
   }
 
@@ -620,7 +687,7 @@ async function transitionAssignedBooking(
     assertFleetAssignmentReady(await hasLiveVehicleAssignment(bookingId))
   }
 
-  const updated = await repo.transitionBookingStatus(bookingId, driverRow.id, booking.status, to)
+  const updated = await repo.transitionBookingStatus(bookingId, snapshot.driver_id, booking.status, to)
   if (!updated) {
     // Status changed between our read and write (concurrent transition).
     throw new BookingError(
@@ -669,16 +736,23 @@ export async function setReceiverEmail(
     throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
   }
 
-  if (actor.role === 'shipper') {
-    if (booking.shipper_id !== actor.userId) {
-      throw new BookingError('Forbidden', 'FORBIDDEN', 403)
+  // WHO: the owning shipper (the 'shipper' relation to THIS booking) or ops.
+  // De-roled from `actor.role === 'shipper' && shipper_id === userId`: the
+  // relation IS booking.shipper_id === snapshot.user_id, so a distributor holding
+  // a fleet_owner-role token who POSTED this load passes, while the ownership half
+  // is preserved exactly. Deliberately NOT the carrier/driver — letting them
+  // redirect where the delivery code goes would hand them both halves of the
+  // proof-of-delivery check. Ops keep their platform-wide carve-out (there is no
+  // 'admin' capability; the admin JWT is the explicit override).
+  if (actor.role !== 'admin') {
+    const snapshot = await resolvePersonas(supabase, actor.userId, actor.role)
+    if (!relationsToBooking(booking, snapshot).includes('shipper')) {
+      throw new BookingError(
+        'Only the shipper who owns this booking (or ops) can set the receiver email',
+        'FORBIDDEN',
+        403,
+      )
     }
-  } else if (actor.role !== 'admin') {
-    throw new BookingError(
-      'Only the shipper who owns this booking (or ops) can set the receiver email',
-      'FORBIDDEN',
-      403,
-    )
   }
 
   if (!RECEIVER_EMAIL_EDITABLE_STATUSES.includes(booking.status)) {
@@ -747,7 +821,12 @@ export async function getPodContext(
   actor: AuthenticatedUser,
   log?: Logger,
 ): Promise<PodContext> {
-  if (actor.role !== 'driver') {
+  // The assigned driver only — the 'drive' capability (a drivers row) plus the
+  // driver's identity matching this booking. De-roled from `actor.role !==
+  // 'driver'` + an assigned-driver check; the fleet owner is excluded because
+  // they hold no driver identity to match booking.driver_id.
+  const snapshot = await resolvePersonas(supabase, actor.userId, actor.role)
+  if (!can(snapshot, 'drive') || !snapshot.driver_id) {
     throw new BookingError('Only the assigned driver can request a POD OTP', 'FORBIDDEN', 403)
   }
 
@@ -756,12 +835,7 @@ export async function getPodContext(
     throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
   }
 
-  const driverRow = await repo.getDriverByUserId(actor.userId)
-  if (!driverRow) {
-    throw new BookingError('Driver profile not found', 'NOT_FOUND', 404)
-  }
-
-  if (booking.driver_id !== driverRow.id) {
+  if (booking.driver_id !== snapshot.driver_id) {
     throw new BookingError('You are not assigned to this booking', 'FORBIDDEN', 403)
   }
 

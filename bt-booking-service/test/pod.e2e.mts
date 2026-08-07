@@ -21,15 +21,25 @@ const S1 = '66666666-6666-4666-8666-666666666666'
 const RECEIVER = 'consignee@example.com'
 
 type Row = Record<string, any>
-// A faithful PRE-0025 database: only these two tables EXIST. Every 0025 table
-// (pod_evidence, pod_state, pod_discrepancies, pod_audit_log) — and anything else the
-// hardening might read (users, geofence_events, trip_telemetry) — is ABSENT and answers
-// PostgREST's 42P01. This is the whole point of the file now: it pins that on a database
-// without 0025 the receiver-OTP POD behaves EXACTLY as it always did — no geofence gate,
-// no strength ledger, no extra field — because the feature probe comes back "not here".
+// A faithful PRE-0025 database. Every 0025 table (pod_evidence, pod_state,
+// pod_discrepancies, pod_audit_log) — and anything else the hardening might read
+// (geofence_events, trip_telemetry) — is ABSENT and answers PostgREST's 42P01.
+// This is the whole point of the file: it pins that on a database without 0025
+// the receiver-OTP POD behaves EXACTLY as it always did — no geofence gate, no
+// strength ledger, no extra field — because the feature probe comes back "not here".
+//
+// The IDENTITY tables (drivers/fleet_owners/vehicles/fleet_drivers) DO exist —
+// they predate 0025 (migrations 0014/0016/0022) and are present on any real
+// pre-0025 database — so getPodContext's assigned-driver check, which now
+// resolves the caller's persona snapshot, has the tables it reads. They are
+// seeded EMPTY except drivers: this booking has no fleet, so the snapshot carries
+// only the drive capability, exactly as the solo-driver POD flow expects.
 const store: Record<string, Row[]> = {
   bookings: [{ id: B1, driver_id: D1, shipper_id: S1, status: 'in_transit', receiver_email: RECEIVER }],
   drivers: [{ id: D1, user_id: U1 }, { id: D2, user_id: U2 }],
+  fleet_owners: [],
+  vehicles: [],
+  fleet_drivers: [],
 }
 const MISSING_RELATION = { data: null, error: { code: '42P01', message: 'relation does not exist' } }
 class FakeQuery {

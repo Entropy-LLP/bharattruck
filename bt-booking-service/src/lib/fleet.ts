@@ -18,25 +18,10 @@
 // fleet_drivers.driver_id references drivers.id — a DIFFERENT row from users.id.
 // ============================================================
 
+import { can, resolvePersonas, type PersonaSnapshot } from '@bharattruck/shared/personas'
 import { supabase } from './supabase.js'
 import type { AuthenticatedUser, DbBooking, DbQuote } from './types.js'
 import { BookingError } from './types.js'
-import * as repo from './repository.js'
-
-// A fleet owner is a first-class role on the JWT (user_role enum, migration
-// 014). Named here rather than compared inline so the several places asking
-// "is the caller the owning party?" read the same way.
-//
-// Compared against the narrow UserRole union with NO widening cast on purpose:
-// 'fleet_owner' is already a member of @bharattruck/shared's UserRole, so a cast
-// here would only serve to keep this compiling if the label were ever dropped
-// from the shared union — i.e. it would silently turn a real contract break into
-// a comparison that can never be true. CI rebuilds this service on any
-// packages/shared change, so the mismatch surfaces as a compile error instead.
-
-export function isFleetOwnerActor(actor: AuthenticatedUser): boolean {
-  return actor.role === 'fleet_owner'
-}
 
 // -----------------------------------------------------------
 // Missing-relation tolerance. PostgREST reports an unknown table as 42P01
@@ -83,48 +68,47 @@ export async function getFleetOwnerByUserId(userId: string): Promise<{ id: strin
 }
 
 // -----------------------------------------------------------
-// resolveBidder
-// Turns the authenticated actor into the party that will own the quote row.
-// Drivers resolve to drivers.id (unchanged behaviour, unchanged errors); fleet
-// owners resolve to fleet_owners.id. Anyone else cannot bid at all.
+// bidderFromSnapshot
+// Which of the caller's own carrier identities BIDS: their fleet if they run
+// one, otherwise their own truck. This is authorization on CAPABILITY, not on
+// the JWT role string (D-27) — a 'shipper'-role human who owns a truck resolves
+// to a driver bidder, and a 'fleet_owner'-role human who owns none resolves to
+// null (nothing to bid with). null means "cannot carry", the FORBIDDEN case.
+//
+// Fleet takes precedence when the human is both, matching the capability ladder:
+// 'operate' is the larger business and is where their trucks and drivers are.
+// This is the same rule directAttachCarrier applies to a shipper attaching their
+// own load, and the two MUST agree — service.ts's directAttachCarrier delegates
+// here so there is one implementation of "which of my carriers acts".
 // -----------------------------------------------------------
 
-export async function resolveBidder(actor: AuthenticatedUser): Promise<Bidder> {
-  const bidder = await resolveBidderOrNull(actor)
-  if (!bidder) {
-    throw new BookingError(
-      isFleetOwnerActor(actor) ? 'Fleet owner profile not found' : 'Driver profile not found',
-      'NOT_FOUND',
-      404,
-    )
+export function bidderFromSnapshot(snapshot: PersonaSnapshot): Bidder | null {
+  if (snapshot.fleet_owner_id && can(snapshot, 'operate')) {
+    return { kind: 'fleet', fleetOwnerId: snapshot.fleet_owner_id }
   }
-  return bidder
+  if (snapshot.driver_id && can(snapshot, 'carry')) {
+    return { kind: 'driver', driverId: snapshot.driver_id }
+  }
+  return null
 }
 
 // -----------------------------------------------------------
 // resolveBidderOrNull
-// Same resolution, but a MISSING party row answers null instead of throwing.
-// The ownership checks (counter / withdraw / history) have always answered a
-// missing profile with a plain 403 Forbidden, and keeping that shape is what
-// makes those paths byte-identical for an existing driver.
+// The authenticated actor turned into the party that would own a quote row, or
+// null when they hold no carrier capability. Resolves the persona snapshot and
+// defers to bidderFromSnapshot, so bidding is decided by what the caller OWNS,
+// never by the role string. A MISSING carrier answers null (not a throw), which
+// is what keeps the blind-auction scoping in listQuotes and the ownership checks
+// in getQuoteHistory reading as a plain refusal.
 // -----------------------------------------------------------
 
 export async function resolveBidderOrNull(actor: AuthenticatedUser): Promise<Bidder | null> {
-  if (isFleetOwnerActor(actor)) {
-    const owner = await getFleetOwnerByUserId(actor.userId)
-    return owner ? { kind: 'fleet', fleetOwnerId: owner.id } : null
-  }
-
-  if (actor.role === 'driver') {
-    const driverRow = await repo.getDriverByUserId(actor.userId)
-    return driverRow ? { kind: 'driver', driverId: driverRow.id } : null
-  }
-
-  throw new BookingError('Only drivers or fleet owners can bid on a booking', 'FORBIDDEN', 403)
+  const snapshot = await resolvePersonas(supabase, actor.userId, actor.role)
+  return bidderFromSnapshot(snapshot)
 }
 
 // -----------------------------------------------------------
-// bidderOfQuote / quoteBelongsTo
+// bidderOfQuote / quoteBelongsTo / quoteBelongsToViewer
 // Ownership checks used to compare quote.driver_id; with fleet bids the column
 // to compare depends on which kind of bidder made the quote.
 // -----------------------------------------------------------
@@ -141,6 +125,20 @@ export function quoteBelongsTo(quote: DbQuote, bidder: Bidder): boolean {
   return bidder.kind === 'fleet'
     ? quote.fleet_owner_id === bidder.fleetOwnerId
     : quote.driver_id === bidder.driverId
+}
+
+// Does an existing quote belong to ANY of this viewer's carrier identities?
+// Unlike quoteBelongsTo (which is answered against ONE resolved bidder), this
+// asks the question relation-to-object: a human who is both an owner-driver and
+// a fleet operator owns their driver quote AND their fleet quote, and the
+// precedence bidderFromSnapshot applies for CREATING a bid must not decide who
+// may WITHDRAW an already-placed one. It also stays true when the identity that
+// bid has since stopped carrying (a truck sold), so the bidder can still settle
+// their own live quote.
+export function quoteBelongsToViewer(quote: DbQuote, snapshot: PersonaSnapshot): boolean {
+  if (quote.fleet_owner_id && quote.fleet_owner_id === snapshot.fleet_owner_id) return true
+  if (quote.driver_id && quote.driver_id === snapshot.driver_id) return true
+  return false
 }
 
 // -----------------------------------------------------------
