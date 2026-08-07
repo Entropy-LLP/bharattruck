@@ -33,26 +33,54 @@ const U2 = '55555555-5555-4555-8555-555555555555'
 const RECEIVER = 'consignee@example.com'
 
 type Row = Record<string, any>
+// A faithful PRE-0025 database backing the REAL booking-service booted in-process.
+// The IDENTITY tables (drivers/fleet_owners/vehicles/fleet_drivers) DO exist — they
+// predate 0025 (migrations 0014/0016/0022) — because the booking de-role made
+// getPodContext resolve the caller's PersonaSnapshot via resolvePersonas(), which reads
+// all four. Seeded EMPTY except drivers: this booking has no fleet, so the snapshot
+// carries only the drive capability, exactly as the solo-driver POD flow expects. Absent
+// them, resolvePersonas' 42P01 checks would throw and every POD request would 500.
+// The POD-hardening tables (pod_evidence, …) are ABSENT and answer PostgREST's 42P01, so
+// podFeatureAvailable()'s probe returns false and the trip closes with today's exact
+// pre-0025 behaviour — no geofence gate — which is what this cross-service flow asserts.
 const bstore: Record<string, Row[]> = {
   bookings: [{ id: B1, driver_id: D1, shipper_id: 'ship', status: 'in_transit', receiver_email: RECEIVER }],
   drivers: [{ id: D1, user_id: U1 }, { id: D2, user_id: U2 }],
+  fleet_owners: [],
+  vehicles: [],
+  fleet_drivers: [],
 }
+const MISSING_RELATION = { data: null, error: { code: '42P01', message: 'relation does not exist' } }
 class FakeQuery {
-  private f: Array<['eq' | 'in', string, any]> = []
-  private mode: 'select' | 'update' = 'select'
+  private f: Array<['eq' | 'in' | 'is', string, any]> = []
+  private mode: 'select' | 'update' | 'insert' | 'upsert' = 'select'
   private payload: Row | null = null
   constructor(private table: string) {}
   select() { return this }
+  insert(p: Row) { this.mode = 'insert'; this.payload = p; return this }
+  upsert(p: Row) { this.mode = 'upsert'; this.payload = p; return this }
   update(p: Row) { this.mode = 'update'; this.payload = p; return this }
   eq(c: string, v: any) { this.f.push(['eq', c, v]); return this }
   in(c: string, v: any[]) { this.f.push(['in', c, v]); return this }
-  private m(r: Row) { return this.f.every(([o, c, v]) => (o === 'eq' ? r[c] === v : v.includes(r[c]))) }
+  is(c: string, v: any) { this.f.push(['is', c, v]); return this }
+  limit() { return this }
+  order() { return this }
+  private m(r: Row) {
+    return this.f.every(([o, c, v]) =>
+      o === 'eq' ? r[c] === v : o === 'in' ? v.includes(r[c]) : (r[c] ?? null) === v)
+  }
   private run() {
-    const rows = bstore[this.table] ?? []
+    // The pre-0025 truth: a table that is not seeded is not there — answer 42P01, exactly
+    // as PostgREST would, so podFeatureAvailable's feature probe reads "0025 not applied"
+    // and completeBookingViaPod's best-effort POD writes (pod_state upsert, audit inserts)
+    // swallow the missing relation instead of 500ing after the status flip.
+    if (!(this.table in bstore)) return MISSING_RELATION
+    const rows = bstore[this.table]
+    if (this.mode === 'insert' || this.mode === 'upsert') { const row = { ...this.payload }; rows.push(row); return { data: [row], error: null } }
     if (this.mode === 'update') { const h = rows.filter(r => this.m(r)); h.forEach(r => Object.assign(r, this.payload)); return { data: h, error: null } }
     return { data: rows.filter(r => this.m(r)), error: null }
   }
-  maybeSingle() { const { data, error } = this.run(); return Promise.resolve({ data: data.length ? data[0] : null, error }) }
+  maybeSingle() { const { data, error } = this.run(); return Promise.resolve({ data: data?.length ? data[0] : null, error }) }
   single() { return this.maybeSingle() }
   then(f: (v: any) => any, r?: (e: any) => any) { return Promise.resolve(this.run()).then(f, r) }
 }

@@ -109,9 +109,17 @@ const affiliations: Row[] = [
   { fleet_owner_id: F1, driver_id: D3, status: 'active', revenue_share_pct: 33.33 },
   { fleet_owner_id: F1, driver_id: D4, status: 'active', revenue_share_pct: 100 },
 ]
+// insert/upsert/is exist because B4 is driven to 'completed' through the REAL
+// booking-service (booted in-process below), and completeBookingViaPod now stamps the
+// POD-hardening consequences of a confirmed delivery: pod_state upsert, a
+// pod_discrepancies `.is()` filter, and pod_audit_log inserts. Those are best-effort and
+// swallow a MISSING relation — but a FakeQuery with no such method throws a TypeError
+// (not a supabase error), which is NOT swallowed, 500s complete-pod, and starves the
+// trip_completed emit this block polls for. The POD tables stay unseeded, so the writes
+// are inert (pre-0025 behaviour) — these methods only keep the call from crashing.
 class FakeQuery {
-  private f: Array<['eq' | 'in', string, any]> = []
-  private mode: 'select' | 'update' = 'select'
+  private f: Array<['eq' | 'in' | 'is', string, any]> = []
+  private mode: 'select' | 'update' | 'insert' | 'upsert' = 'select'
   private payload: Row | null = null
   // .limit(n): the booking-service driver-read path (isFleetAffiliatedDriver /
   // driverOwnsAnyVehicle) caps its existence probes at one row. Only reached now
@@ -120,13 +128,20 @@ class FakeQuery {
   private lim: number | null = null
   constructor(private table: string) {}
   select() { return this }
+  insert(p: Row) { this.mode = 'insert'; this.payload = p; return this }
+  upsert(p: Row) { this.mode = 'upsert'; this.payload = p; return this }
   update(p: Row) { this.mode = 'update'; this.payload = p; return this }
   eq(c: string, v: any) { this.f.push(['eq', c, v]); return this }
   in(c: string, v: any[]) { this.f.push(['in', c, v]); return this }
   limit(n: number) { this.lim = n; return this }
-  private m(r: Row) { return this.f.every(([o, c, v]) => (o === 'eq' ? r[c] === v : v.includes(r[c]))) }
+  is(c: string, v: any) { this.f.push(['is', c, v]); return this }
+  private m(r: Row) {
+    return this.f.every(([o, c, v]) =>
+      o === 'eq' ? r[c] === v : o === 'in' ? v.includes(r[c]) : (r[c] ?? null) === v)
+  }
   private run() {
     const rows = bstore[this.table] ?? []
+    if (this.mode === 'insert' || this.mode === 'upsert') { const row = { ...this.payload }; rows.push(row); return { data: [row], error: null } }
     if (this.mode === 'update') { const h = rows.filter(r => this.m(r)); h.forEach(r => Object.assign(r, this.payload)); return { data: h, error: null } }
     const data = rows.filter(r => this.m(r))
     return { data: this.lim == null ? data : data.slice(0, this.lim), error: null }
