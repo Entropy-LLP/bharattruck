@@ -5,6 +5,7 @@
 #   /api/bookings/   -> BOOKING_SERVICE_URL
 #   /api/quotes/     -> BOOKING_SERVICE_URL
 #   /api/location/   -> BOOKING_SERVICE_URL  (driver GPS pings)
+#   /api/me/         -> BOOKING_SERVICE_URL  (unified home feed; D-38)
 #   /api/tracking/   -> TRACKING_SERVICE_URL (route/eta/track read-through; port 3006)
 #   /api/pricing/    -> PRICING_SERVICE_URL
 #   /api/payments/   -> PAYMENT_SERVICE_URL
@@ -197,6 +198,17 @@ http {
       set $location_upstream ${BOOKING_SERVICE_URL};
       rewrite ^/api/location/(.*) /location/$1 break;
       proxy_pass $location_upstream;
+    }
+
+    # Unified home feed (bt-booking-service, routes mounted at /me). GET /api/me/feed
+    # is the "what needs me right now?" aggregate (D-38); the service does its own
+    # JWT + capability resolution. Polled on each home render, so it shares the
+    # dashboard burst rather than the default api rate.
+    location /api/me/ {
+      limit_req zone=api_zone burst=30 nodelay;
+      set $me_upstream ${BOOKING_SERVICE_URL};
+      rewrite ^/api/me/(.*) /me/$1 break;
+      proxy_pass $me_upstream;
     }
 
     # Maps & Tracking read-through (bt-tracking-service, routes mounted at /tracking).
