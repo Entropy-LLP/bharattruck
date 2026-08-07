@@ -15,6 +15,9 @@ import type {
   LivePosition, FleetBooking, ModelCategory, Period,
   FleetOverview, Geofence,
   OpenAuction, FleetBid, Quote, NegotiationEntry, QuoteStatus,
+  Booking, BookingType, ConsigneeInput,
+  PriceQuote, PriceQuoteInput, PriceQuoteVehicleType,
+  TrackData, DriverLocation,
 } from './types'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
@@ -451,4 +454,143 @@ export function withdrawBid(bookingId: string, quoteId: string) {
 /** The full price thread for one bid — every offer and counter, oldest first. */
 export function getBidHistory(bookingId: string, quoteId: string) {
   return request<NegotiationEntry[]>(`/bookings/${bookingId}/quotes/${quoteId}/history`)
+}
+
+// ── Ship surfaces (Post a Load / My Loads / load detail — Phase 2) ─────────────
+//
+// The shipper flow, ported from shipper/src/lib/api.ts into this client's style:
+// every call goes through `request` (gateway origin, `/api` prefix added here,
+// snake_case JSON, {success,data} envelope, one refresh on 401). bt-app talks to
+// bt-booking-service (`/bookings`, `/quotes`), bt-pricing-service (`/pricing`) and
+// bt-tracking-service (`/tracking`, `/location`) — all through the gateway.
+
+/** The caller's bookings. A shipper gets the loads THEY posted; each row carries a
+ *  `viewer` block naming the caller's relations so My Loads can keep only its own. */
+export function listBookings() {
+  return request<Booking[]>('/bookings/')
+}
+
+export function getBooking(id: string) {
+  return request<Booking>(`/bookings/${id}`)
+}
+
+/**
+ * The booking-create payload. The shipper sends the price-lock HANDLE (`quote_id`),
+ * never a raw price — the server resolves quoted_price from the locked price_quotes
+ * row (price SHOWN == price CHARGED). D-29: a load must name a reachable consignee,
+ * so `consignee` (name + phone) is required here; `receiver_email` is the optional
+ * legacy POD inbox. The same coords + vehicle_type that were priced must be sent so
+ * the booking binds to the locked quote (the server rejects a mismatch).
+ */
+export type CreateBookingPayload = {
+  quote_id: string
+  source_address: string
+  source_lat: number
+  source_lng: number
+  destination_address: string
+  dest_lat: number
+  dest_lng: number
+  load_type: string
+  weight_kg: number
+  vehicle_type: PriceQuoteVehicleType
+  pickup_date: string
+  pickup_time_slot?: string
+  special_instructions?: string
+  consignee: ConsigneeInput
+  receiver_email?: string
+  booking_type: BookingType
+  target_driver_id?: string
+  auction_deadline?: string
+}
+
+export function createBooking(payload: CreateBookingPayload) {
+  // Strip empties so an optional field never reaches the server as '' — the
+  // consignee's own optional fields (email/gstin/…) are pruned the same way,
+  // because an empty string there fails validation rather than being ignored.
+  const consignee = Object.fromEntries(
+    Object.entries(payload.consignee).filter(([, v]) => v !== undefined && v !== null && v !== ''),
+  )
+  const clean = Object.fromEntries(
+    Object.entries({ ...payload, consignee }).filter(([, v]) => v !== undefined && v !== null && v !== ''),
+  )
+  return request<Booking>('/bookings/', { method: 'POST', body: JSON.stringify(clean) })
+}
+
+export function cancelBooking(id: string) {
+  return request<Booking>(`/bookings/${id}/cancel`, { method: 'PATCH' })
+}
+
+/**
+ * Set (or correct) the consignee inbox the delivery code is emailed to. The only
+ * field on a live booking a shipper may change mid-trip; the server rejects it once
+ * the booking is completed/paid/cancelled.
+ */
+export function setReceiverEmail(id: string, receiverEmail: string) {
+  return request<Booking>(`/bookings/${id}/receiver-email`, {
+    method: 'PATCH', body: JSON.stringify({ receiver_email: receiverEmail }),
+  })
+}
+
+// ── Quotes on a load (shipper side of the auction) ────────────────────────────
+
+export function getQuotes(bookingId: string) {
+  return request<Quote[]>(`/bookings/${bookingId}/quotes`)
+}
+
+/** Award the load to this bid. */
+export function acceptQuote(bookingId: string, quoteId: string) {
+  return request<Quote>(`/bookings/${bookingId}/quotes/${quoteId}/accept`, { method: 'PATCH' })
+}
+
+/** Counter the carrier's bid. Legal while the quote is submitted/countered. */
+export function counterQuote(bookingId: string, quoteId: string, body: { amount: number; message?: string }) {
+  return request<Quote>(`/bookings/${bookingId}/quotes/${quoteId}/counter`, {
+    method: 'PATCH', body: JSON.stringify(body),
+  })
+}
+
+export function rejectQuote(bookingId: string, quoteId: string) {
+  return request<Quote>(`/bookings/${bookingId}/quotes/${quoteId}/reject`, { method: 'PATCH' })
+}
+
+// ── Advisory pricing (bt-pricing-service, D-11) ────────────────────────────────
+//
+// The number is a REFERENCE, not a charge, on an auction. The server classifies it
+// (`quote_kind`) and authors the disclosure sentence (`basis`); these helpers show
+// the server's record and fall back to the requested booking type only against a
+// pricing service that predates D-11 (where an auction must never read as binding).
+
+export function getPriceQuote(payload: PriceQuoteInput) {
+  return request<PriceQuote>('/pricing/quote', { method: 'POST', body: JSON.stringify(payload) })
+}
+
+export function quoteKindOf(quote: PriceQuote, requestedFor?: BookingType): 'advisory' | 'binding' {
+  if (quote.quote_kind) return quote.quote_kind
+  return requestedFor === 'auction' ? 'advisory' : 'binding'
+}
+
+export function priceQuoteHeading(quote: PriceQuote, requestedFor?: BookingType): string {
+  return quoteKindOf(quote, requestedFor) === 'advisory' ? 'Estimated price' : 'Locked price'
+}
+
+export function priceQuoteBasis(quote: PriceQuote, requestedFor?: BookingType): string {
+  if (quote.basis) return quote.basis
+  return quoteKindOf(quote, requestedFor) === 'advisory'
+    ? "Reference estimate — you pay the winning carrier's bid, not this number."
+    : 'This is the price charged for this booking.'
+}
+
+// ── Live tracking (bt-tracking-service, via the gateway) ──────────────────────
+
+/**
+ * One read-through call (LOCKED D-8) for the shipper live map: current location +
+ * base route + live ETA + status + alerts. Poll every 10s while in transit (D-10).
+ */
+export function getTrack(bookingId: string) {
+  return request<TrackData>(`/tracking/track/${bookingId}`)
+}
+
+/** The latest raw driver fix for a booking; null until the driver shares location. */
+export function getBookingLocation(bookingId: string) {
+  return request<DriverLocation | null>(`/location/booking/${bookingId}`)
 }
