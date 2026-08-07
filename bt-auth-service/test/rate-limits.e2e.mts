@@ -135,14 +135,15 @@ async function main() {
 
   console.log('\n── global daily SMTP budget ──')
   // Budget is 12 and the flood above spent 5. Spend the rest across DISTINCT
-  // addresses — the exact shape the per-address counter cannot see.
-  for (let i = 0; i < 7; i++) await post('/auth/magic-link/send', { email: `spread${i}@example.com` })
-  r = await post('/auth/magic-link/send', { email: 'fresh@example.com' })
+  // addresses — the exact shape the per-address counter cannot see. Registration
+  // accepts any address and sends an OTP, so it is the route an attacker would use.
+  for (let i = 0; i < 7; i++) await reg(`spread${i}@example.com`)
+  r = await reg('fresh@example.com')
   check('budget exhausted across distinct addresses 429', r.statusCode === 429, `(got ${r.statusCode})`)
-  r = await reg('another@example.com')
-  check('budget is shared across every mail route', r.statusCode === 429, `(got ${r.statusCode})`)
 
   console.log('\n── forgot-password still absorbs silently ──')
+  // A DIFFERENT mail route draws down the SAME budget: forgot-password is now over
+  // budget too, but it must stay enumeration-safe and return generic success, never 429.
   r = await post('/auth/forgot-password', { email: 'driver@example.com' })
   check('over-budget reset returns generic success, not 429', r.statusCode === 200, `(got ${r.statusCode})`)
 

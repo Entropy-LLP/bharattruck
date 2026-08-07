@@ -104,6 +104,9 @@ const DOC_TABLES = new Set(['lorry_receipts', 'freight_invoices', 'eway_bill_rec
 
 class FakeQuery {
   private filters: Array<[string, any]> = []
+  // `.in(col, values)` — resolvePersonas (added to the documents auth path once
+  // it de-roled to relationsToBooking) filters fleet_drivers on status IN (...).
+  private ins: Array<[string, any[]]> = []
   private mode: 'select' | 'insert' | 'update' = 'select'
   private payload: Row | null = null
   constructor(private table: string, private store: Record<string, Row[]>, private missingTables: Set<string>) {}
@@ -111,8 +114,11 @@ class FakeQuery {
   insert(p: Row) { this.mode = 'insert'; this.payload = p; return this }
   update(p: Row) { this.mode = 'update'; this.payload = p; return this }
   eq(c: string, v: any) { this.filters.push([c, v]); return this }
+  in(c: string, v: any[]) { this.ins.push([c, v]); return this }
   order() { return this }
-  private match(r: Row) { return this.filters.every(([c, v]) => r[c] === v) }
+  private match(r: Row) {
+    return this.filters.every(([c, v]) => r[c] === v) && this.ins.every(([c, v]) => v.includes(r[c]))
+  }
   private run(): { data: any; error: any } {
     if (this.missingTables.has(this.table)) {
       // PostgREST's schema-cache miss — a database without migration 0024.

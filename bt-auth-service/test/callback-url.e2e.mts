@@ -1,11 +1,14 @@
 /**
- * callback_url origin allowlist — the guard on emailed sign-in / reset links.
+ * callback_url origin allowlist — the guard on the emailed password-reset link.
  *
  * The vector this closes: POST a victim's address with callback_url pointing at a host
- * the attacker owns, and the victim is mailed a real single-use token addressed to that
- * host. So the assertions are about two things — which origins the allowlist accepts,
+ * the attacker owns, and the victim is mailed a real single-use reset token addressed to
+ * that host. So the assertions are about two things — which origins the allowlist accepts,
  * and that a refusal happens BEFORE anything is looked up or sent, so the 400 cannot
- * double as an account-existence oracle on these deliberately enumeration-safe routes.
+ * double as an account-existence oracle on this deliberately enumeration-safe route.
+ *
+ * Also pins the two things this refactor changed around that guard: magic-link is GONE
+ * (its routes 404), and password reset lands on ONE origin and is single-use.
  *
  * Registers the REAL authRoutes against an in-memory Redis and Supabase.
  * Run: npx tsx test/callback-url.e2e.mts
@@ -13,10 +16,9 @@
 process.env.JWT_SECRET = 'test-jwt-secret-hs256'
 process.env.JWT_REFRESH_SECRET = 'test-jwt-refresh-secret-hs256'
 process.env.EMAIL_DEV_MODE = 'true' // never touch a real SMTP host — links land on stdout
-// The deployment the route cases run under: two persona apps on https, plus one extra
-// origin declared the way the unified app will be before it has link vars of its own.
-process.env.SHIPPER_MAGIC_LINK_URL = 'https://app.bharattruck.in/auth/callback'
-process.env.DRIVER_MAGIC_LINK_URL = 'https://driver.bharattruck.in/auth/callback'
+// The deployment the route cases run under: ONE reset destination for every persona (the
+// unified app), plus one extra origin declared the way an origin with no reset var yet is.
+process.env.PASSWORD_RESET_URL = 'https://app.bharattruck.in/auth/reset'
 process.env.ALLOWED_CALLBACK_ORIGINS = 'https://unified.bharattruck.in'
 // High enough that the per-address send throttle never fires mid-run and turns a
 // callback_url assertion into a rate-limit assertion.
@@ -34,7 +36,7 @@ const GHOST = 'ghost@example.com'
 type Row = Record<string, any>
 let users: Row[] = []
 
-// ── Fake Redis: only the commands these two routes touch. Values are strings, as in
+// ── Fake Redis: only the commands these routes touch. Values are strings, as in
 // the real client, so a bug that assumes numbers surfaces here rather than in prod.
 class FakeRedis {
   private store = new Map<string, string>()
@@ -95,11 +97,11 @@ function captureConsoleLog(): { lines: string[]; restore: () => void } {
 async function main() {
   console.log('\n── allowlist construction ──')
 
-  // Exactly what the routes build: every role's magic-link and reset base, plus the
-  // comma-separated extras. fleet_owner falls through to the shipper app, so three
-  // distinct origins is the right answer for this env, not six.
+  // Exactly what the route builds: every role's reset base, plus the comma-separated
+  // extras. With PASSWORD_RESET_URL set every role resolves to the same origin, so a set
+  // of distinct reset URLs plus the extra collapses to three origins for this env.
   const allowed = callbackOriginAllowlist(
-    ['https://app.bharattruck.in/auth/callback', 'https://app.bharattruck.in/auth/reset', 'https://driver.bharattruck.in/auth/callback'],
+    ['https://app.bharattruck.in/auth/reset', 'https://driver.bharattruck.in/auth/reset'],
     process.env,
   )
   check('configured origins are allowed', allowed.has(SHIPPER_APP) && allowed.has('https://driver.bharattruck.in'), `(got ${[...allowed]})`)
@@ -108,28 +110,28 @@ async function main() {
 
   console.log('\n── origin comparison, not prefix comparison ──')
 
-  check('exact configured origin passes', isAllowedCallbackUrl(`${SHIPPER_APP}/auth/callback`, allowed))
+  check('exact configured origin passes', isAllowedCallbackUrl(`${SHIPPER_APP}/auth/reset`, allowed))
   check('any path/query on an allowed origin passes', isAllowedCallbackUrl(`${SHIPPER_APP}/auth/reset?next=%2Fbookings`, allowed))
-  check('a foreign origin is rejected', !isAllowedCallbackUrl('https://evil.example/auth/callback', allowed))
+  check('a foreign origin is rejected', !isAllowedCallbackUrl('https://evil.example/auth/reset', allowed))
   // The two classic bypasses of a startsWith()/includes() check. Both parse to the
   // attacker's origin, which is where the browser would actually deliver the token.
   check('suffix attack rejected — allowed value in the query', !isAllowedCallbackUrl(`https://evil.example/?next=${SHIPPER_APP}`, allowed))
-  check('prefix attack rejected — allowed value as a subdomain label', !isAllowedCallbackUrl('https://app.bharattruck.in.evil.example/auth/callback', allowed))
-  check('userinfo attack rejected — allowed value before an @', !isAllowedCallbackUrl(`${SHIPPER_APP}@evil.example/auth/callback`, allowed))
-  check('a different port is a different origin', !isAllowedCallbackUrl('https://app.bharattruck.in:8443/auth/callback', allowed))
+  check('prefix attack rejected — allowed value as a subdomain label', !isAllowedCallbackUrl('https://app.bharattruck.in.evil.example/auth/reset', allowed))
+  check('userinfo attack rejected — allowed value before an @', !isAllowedCallbackUrl(`${SHIPPER_APP}@evil.example/auth/reset`, allowed))
+  check('a different port is a different origin', !isAllowedCallbackUrl('https://app.bharattruck.in:8443/auth/reset', allowed))
 
   console.log('\n── scheme rules ──')
 
-  check('http rejected for a non-localhost host', !isAllowedCallbackUrl('http://app.bharattruck.in/auth/callback', allowed))
+  check('http rejected for a non-localhost host', !isAllowedCallbackUrl('http://app.bharattruck.in/auth/reset', allowed))
   // zod's .url() accepts these; only the origin check stops them.
   check('javascript: rejected', !isAllowedCallbackUrl('javascript:alert(document.cookie)', allowed))
   check('data: rejected', !isAllowedCallbackUrl('data:text/html,<script>fetch(location)</script>', allowed))
   check('garbage rejected', !isAllowedCallbackUrl('not-a-url', allowed))
 
   // Dev deployment: the defaults are http://localhost, and those must keep working.
-  const devAllowed = callbackOriginAllowlist(['http://localhost:3000/auth/callback', 'http://localhost:3002/auth/callback'], {})
-  check('http localhost allowed when that is the configured base', isAllowedCallbackUrl('http://localhost:3000/auth/callback', devAllowed))
-  check('a plain-http env entry is dropped, not trusted', !callbackOriginAllowlist(['http://app.bharattruck.in/auth/callback'], {}).size)
+  const devAllowed = callbackOriginAllowlist(['http://localhost:3000/auth/reset', 'http://localhost:3002/auth/reset'], {})
+  check('http localhost allowed when that is the configured base', isAllowedCallbackUrl('http://localhost:3000/auth/reset', devAllowed))
+  check('a plain-http env entry is dropped, not trusted', !callbackOriginAllowlist(['http://app.bharattruck.in/auth/reset'], {}).size)
 
   console.log('\n── route wiring: refused before any lookup or send ──')
 
@@ -147,30 +149,15 @@ async function main() {
   // check() writes to console.log too, and asserting against a buffer it is still
   // appending to would count its own output as delivered mail.
   const cap = captureConsoleLog()
-  let evilMagic: any, okMagic: any, plainMagic: any, evilForgotKnown: any, evilForgotGhost: any, okForgot: any
+  let evilForgotKnown: any, evilForgotGhost: any, okForgot: any
   const links = (kind: string) => cap.lines.filter(l => l.includes(`[DEV] ${kind}`))
-  let linksAfterEvil = 0, usersAfterEvil = 0
   try {
-    evilMagic = await post('/auth/magic-link/send', { email: GHOST, callback_url: 'https://evil.example/steal' })
-    linksAfterEvil = links('Magic link').length
-    usersAfterEvil = users.length
-    okMagic = await post('/auth/magic-link/send', { email: KNOWN, callback_url: `${SHIPPER_APP}/auth/callback` })
-    plainMagic = await post('/auth/magic-link/send', { email: KNOWN })
     evilForgotKnown = await post('/auth/forgot-password', { email: KNOWN, callback_url: 'https://evil.example/steal' })
     evilForgotGhost = await post('/auth/forgot-password', { email: GHOST, callback_url: 'https://evil.example/steal' })
     okForgot = await post('/auth/forgot-password', { email: KNOWN, callback_url: `${SHIPPER_APP}/auth/reset` })
   } finally {
     cap.restore()
   }
-
-  check('magic-link/send refuses a foreign callback_url', evilMagic.statusCode === 400, `(got ${evilMagic.statusCode})`)
-  check('the refused request mailed nothing', linksAfterEvil === 0, `(got ${linksAfterEvil} links)`)
-  // The refusal must land before the upsert that would otherwise create the account —
-  // a row appearing here is proof the check ran too late to be side-effect free.
-  check('the refused request created no account', usersAfterEvil === 1, `(got ${usersAfterEvil} users)`)
-  check('an allowed callback_url still works', okMagic.statusCode === 200, `(got ${okMagic.statusCode})`)
-  check('the allowed callback_url is the link base', links('Magic link').some(l => l.includes(`${SHIPPER_APP}/auth/callback?token=`)), `(got ${JSON.stringify(links('Magic link'))})`)
-  check('no callback_url still falls back to the env base', plainMagic.statusCode === 200 && links('Magic link').some(l => l.includes(`${SHIPPER_APP}/auth/callback?token=`)), `(got ${plainMagic.statusCode})`)
 
   check('forgot-password refuses a foreign callback_url', evilForgotKnown.statusCode === 400, `(got ${evilForgotKnown.statusCode})`)
   // The point of refusing before the lookup: a known and an unknown address must be
@@ -182,6 +169,37 @@ async function main() {
   check('no reset link was mailed to a foreign origin', !links('Password reset link').some(l => l.includes('evil.example')), `(got ${JSON.stringify(links('Password reset link'))})`)
   check('an allowed reset callback_url still works', okForgot.statusCode === 200, `(got ${okForgot.statusCode})`)
   check('the allowed reset origin is the link base', links('Password reset link').some(l => l.includes(`${SHIPPER_APP}/auth/reset?token=`)), `(got ${JSON.stringify(links('Password reset link'))})`)
+
+  console.log('\n── magic-link is gone ──')
+
+  const gone1 = await post('/auth/magic-link/send', { email: KNOWN })
+  const gone2 = await app.inject({ method: 'GET', url: '/auth/magic-link/verify?token=whatever' })
+  check('POST /auth/magic-link/send is 404', gone1.statusCode === 404, `(got ${gone1.statusCode})`)
+  check('GET /auth/magic-link/verify is 404', gone2.statusCode === 404, `(got ${gone2.statusCode})`)
+
+  console.log('\n── password reset: single origin, single use ──')
+
+  // No callback_url this time, so the destination is the account-independent single
+  // PASSWORD_RESET_URL — proving reset lands on ONE origin regardless of role.
+  const cap2 = captureConsoleLog()
+  let sent: any
+  try {
+    sent = await post('/auth/forgot-password', { email: KNOWN })
+  } finally {
+    cap2.restore()
+  }
+  check('reset send returns generic success', sent.statusCode === 200, `(got ${sent.statusCode})`)
+  const line = cap2.lines.find(l => l.includes('[DEV] Password reset link'))
+  check('reset link lands on the single PASSWORD_RESET_URL origin', !!line && line.includes(`${SHIPPER_APP}/auth/reset?token=`), `(got ${line})`)
+  const token = line?.match(/token=([^\s]+)/)?.[1] ?? ''
+  check('a reset token was issued', token.length > 0, `(got "${token}")`)
+
+  // First use sets the password; the token is burned on the way out.
+  const first = await post('/auth/reset-password', { token, password: 'brand-new-password' })
+  check('first reset with the token succeeds', first.statusCode === 200, `(got ${first.statusCode})`)
+  // Replaying the SAME token must fail — the Redis key was deleted, so it is single-use.
+  const replay = await post('/auth/reset-password', { token, password: 'another-password' })
+  check('replaying the same token is refused (single-use)', replay.statusCode === 400, `(got ${replay.statusCode})`)
 
   await app.close()
   console.log(`\n${failures.length ? 'RESULT: FAIL' : 'RESULT: PASS'} — ${passed} checks passed, ${failures.length} failed`)

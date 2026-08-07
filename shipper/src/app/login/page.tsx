@@ -14,7 +14,6 @@ import {
   emailVerify,
   emailLogin,
   emailResendOtp,
-  sendMagicLink,
   registerProfile,
   setToken,
   ApiError,
@@ -31,14 +30,13 @@ const POST_LOGIN_PATH = '/dashboard'
 // Control styles live in lib/auth-ui so the password-reset screens render the
 // same card as this one instead of drifting from a copy.
 
-type Tab = 'phone' | 'google' | 'email' | 'magic-link'
+type Tab = 'phone' | 'google' | 'email'
 type LoginHandler = (at: string, rt: string, u?: AuthUser) => void
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'phone', label: 'Phone' },
   { id: 'google', label: 'Google' },
   { id: 'email', label: 'Email' },
-  { id: 'magic-link', label: 'Magic Link' },
 ]
 
 export default function LoginPage() {
@@ -76,7 +74,7 @@ export default function LoginPage() {
         <div className="rounded-2xl border border-border bg-card p-6 shadow-2xl shadow-black/40">
           {/* Segmented method picker — bigger tap targets, and the selected
               method stays obvious at a glance. */}
-          <div className="mb-6 grid grid-cols-4 gap-1 rounded-xl bg-secondary p-1">
+          <div className="mb-6 grid grid-cols-3 gap-1 rounded-xl bg-secondary p-1">
             {TABS.map(t => (
               <button
                 key={t.id}
@@ -95,7 +93,6 @@ export default function LoginPage() {
           {tab === 'phone' && <PhoneOtpForm onLogin={handleLogin} />}
           {tab === 'google' && <GoogleSignInForm onLogin={handleLogin} />}
           {tab === 'email' && <EmailAuthForm onLogin={handleLogin} />}
-          {tab === 'magic-link' && <MagicLinkForm />}
 
           <details className="group mt-6 border-t border-border pt-5">
             <summary className="cursor-pointer list-none select-none text-xs text-muted-foreground/80 transition hover:text-foreground/75">
@@ -522,66 +519,6 @@ function EmailAuthForm({ onLogin }: { onLogin: LoginHandler }) {
       </button>
       <button type="button" onClick={() => setMode('register')} className={BTN_QUIET}>
         New here? Create an account
-      </button>
-    </form>
-  )
-}
-
-// ─── Magic Link ─────────────────────────────────────────────────
-
-function MagicLinkForm() {
-  const [email, setEmail] = useState('')
-  const [sent, setSent] = useState(false)
-  const [loading, setLoading] = useState(false)
-
-  async function handleSend(e: React.FormEvent) {
-    e.preventDefault()
-    setLoading(true)
-    try {
-      await sendMagicLink(email, APP_ROLE)
-      setSent(true)
-      toast.success('Magic link sent!')
-    } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : 'Failed to send')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  if (sent) {
-    return (
-      <div className="space-y-4 py-2 text-center">
-        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-blue-600/15 text-xl text-blue-600">
-          &#9993;
-        </div>
-        <p className="text-sm text-foreground/85">
-          Sign-in link sent to <span className="font-medium text-foreground">{email}</span>
-        </p>
-        <p className="text-xs text-muted-foreground/80">Check your email (or server console in dev mode)</p>
-        <button onClick={() => { setSent(false); setEmail('') }} className={BTN_LINK}>
-          Try a different email
-        </button>
-      </div>
-    )
-  }
-
-  return (
-    <form onSubmit={handleSend} className="space-y-5">
-      <p className={HINT}>We&apos;ll email you a sign-in link — no password needed.</p>
-      <div>
-        <label className={LABEL}>Email</label>
-        <input
-          type="email"
-          value={email}
-          onChange={e => setEmail(e.target.value)}
-          required
-          className={FIELD}
-          placeholder="you@example.com"
-          autoFocus
-        />
-      </div>
-      <button type="submit" disabled={loading || !email} className={BTN_PRIMARY}>
-        {loading ? 'Sending…' : 'Send magic link'}
       </button>
     </form>
   )

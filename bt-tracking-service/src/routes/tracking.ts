@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
-import { canFleetAccessBooking, resolveFleetOwnerByUserId } from '@bharattruck/shared/fleet'
+import { canFleetAccessBooking } from '@bharattruck/shared/fleet'
+import { resolvePersonas, relationsToBooking } from '@bharattruck/shared/personas'
 import { supabase } from '../lib/supabase.js'
 import {
   redis,
@@ -19,7 +20,7 @@ import { computeRoute, computeEta, searchPetrolPumps, type ComputedRoute } from 
 import {
   getBookingForTracking,
   getBookingFleetColumns,
-  getDriverByUserId,
+  getBookingConsignee,
   upsertTripRoute,
   getAlerts,
   getLocationHistory,
@@ -37,6 +38,7 @@ import {
   NEAR_DROP_METERS,
   SPEEDING_KMH,
 } from '../lib/evaluator.js'
+import { relationGrantsTracking } from '../lib/access.js'
 import {
   TrackingError,
   type AuthenticatedUser,
@@ -82,37 +84,50 @@ async function loadBookingOrThrow(bookingId: string): Promise<TrackingBooking> {
   return booking
 }
 
-// Authz: caller must be the booking's shipper, its assigned driver, or the fleet that owns
-// the truck/driver running it (admin allowed). Closed by default — an unknown role falls
-// through to 403 rather than being handled.
+// Authz: who may read a booking's tracking is decided by the caller's RELATION to that booking
+// plus their capabilities (D-27), never by the JWT `role` string — the role gates are being
+// removed platform-wide (docs/ARCHITECTURE_UNIFIED_IDENTITY.md §10.3). resolvePersonas answers
+// "who is this human and what do they own" once; relationsToBooking answers "what are they to
+// THIS trip". A single-persona user resolves to exactly the relation their old role granted, so
+// every existing allow/deny is preserved; a multi-capability human (a distributor who ships AND
+// carries with their own fleet, an owner-driver) additionally gets the relations the role string
+// used to hide. Closed by default — no relation and no fleet reach is a 403.
+//
+// The fleet reach is deliberately NOT folded into relationsToBooking: it is broader than a direct
+// fleet_owner_id match (an owned truck, an assignment in history, an affiliated driver on an
+// unowned trip) and is the one tenant-isolation rule, so it stays in @bharattruck/shared/fleet
+// where booking/payment/fleet cannot drift from it.
 async function assertCanAccess(booking: TrackingBooking, user: AuthenticatedUser): Promise<void> {
+  // Admin keeps its platform-wide bypass — an ops user is not a tenant of any one booking, so no
+  // persona resolution applies to them.
   if (user.role === 'admin') return
-  if (user.role === 'shipper') {
-    if (booking.shipper_id !== user.userId) throw new TrackingError('Forbidden', 'FORBIDDEN', 403)
-    return
-  }
-  if (user.role === 'driver') {
-    const driver = await getDriverByUserId(user.userId)
-    if (!driver || booking.driver_id !== driver.id) {
-      throw new TrackingError('Forbidden', 'FORBIDDEN', 403)
-    }
-    return
-  }
-  if (user.role === 'fleet_owner') {
-    // The reach test is deliberately NOT inlined here: it is the one tenant-isolation rule
-    // and lives in @bharattruck/shared/fleet so booking/payment/fleet services cannot drift
-    // from it. A fleet_owner token with no profile row resolves to null and is refused.
-    const fleet = await resolveFleetOwnerByUserId(supabase, user.userId)
-    if (!fleet) throw new TrackingError('Forbidden', 'FORBIDDEN', 403)
-    // fleet_owner_id / vehicle_id are read HERE, not in the shared booking select,
-    // so that a pre-0016 database cannot break the shipper and driver paths. See
-    // getBookingFleetColumns.
+
+  // The JWT role is passed only as resolvePersonas' `primaryPersona` (the caller's default
+  // surface, users.primary_persona under an honest name) — it is NOT an authorization axis here.
+  // consignee_user_id is read alongside, off the hot-path select, for the same pre-migration
+  // reason as the fleet columns (see getBookingConsignee).
+  const [snapshot, consigneeUserId] = await Promise.all([
+    resolvePersonas(supabase, user.userId, user.role),
+    getBookingConsignee(booking.id),
+  ])
+
+  const relations = relationsToBooking(
+    { shipper_id: booking.shipper_id, driver_id: booking.driver_id, consignee_user_id: consigneeUserId },
+    snapshot,
+  )
+  if (relationGrantsTracking(relations, booking.status)) return
+
+  // Only a caller with a real fleet_owners row (the 'operate' tenant identity) can reach a
+  // booking indirectly through its truck or driver. A caller without one has no fleet to check.
+  if (snapshot.fleet_owner_id) {
+    // fleet_owner_id / vehicle_id are read HERE, not in the shared booking select, so a pre-0016
+    // database cannot break the shipper and driver paths. See getBookingFleetColumns.
     const fleetCols = await getBookingFleetColumns(booking.id)
-    if (!(await canFleetAccessBooking(supabase, fleet.id, { ...booking, ...fleetCols }))) {
-      throw new TrackingError('Forbidden', 'FORBIDDEN', 403)
+    if (await canFleetAccessBooking(supabase, snapshot.fleet_owner_id, { ...booking, ...fleetCols })) {
+      return
     }
-    return
   }
+
   throw new TrackingError('Forbidden', 'FORBIDDEN', 403)
 }
 

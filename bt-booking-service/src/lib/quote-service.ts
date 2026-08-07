@@ -7,7 +7,7 @@
 // resolution). Every public function enforces role checks,
 // ownership, and state-machine guards before touching the DB.
 //
-// A bid comes from a solo DRIVER or a FLEET OWNER (fleet.ts resolveBidder).
+// A bid comes from a solo DRIVER or a FLEET OWNER (fleet.ts bidderFromSnapshot).
 // Everything downstream of that resolution is shared: the state machine, the
 // deadline rules and the shipper-side accept/reject path are identical for
 // both kinds of bidder.
@@ -27,12 +27,13 @@ import { assertValidQuoteTransition } from './state.js'
 import * as repo from './repository.js'
 import * as quoteRepo from './quote-repository.js'
 import * as notify from './notifications/emit.js'
+import { supabase } from './supabase.js'
+import { relationsToBooking, resolvePersonas } from '@bharattruck/shared/personas'
 import {
+  bidderFromSnapshot,
   bidderOfQuote,
-  isFleetAffiliatedDriver,
-  isFleetOwnerActor,
   quoteBelongsTo,
-  resolveBidder,
+  quoteBelongsToViewer,
   resolveBidderOrNull,
   type Bidder,
 } from './fleet.js'
@@ -98,8 +99,12 @@ export function negotiationCapReached(negotiationRows: number): boolean {
 // booking. For auction bookings the deadline is enforced server-side.
 // For direct bookings the target_driver_id (if set) must match.
 //
-// A FLEET-AFFILIATED driver cannot bid at all (founder Q14): they do not
-// self-select work, their owner bids and then assigns them the trip.
+// Bidding is a CARRIER act, gated on what the caller OWNS, never the role string
+// (D-27): a truck owner bids as themselves ('carry'), a fleet bids as their fleet
+// ('operate'). That single gate SUBSUMES the old fleet-employed-driver block — an
+// employed driver owns no truck, so they hold neither capability and are refused,
+// while an owner-driver attached to a fleet keeps the marketplace their truck
+// earns them (founder Q14, the attached-vehicle model).
 // -----------------------------------------------------------
 
 export async function submitQuote(
@@ -108,8 +113,10 @@ export async function submitQuote(
   actor: AuthenticatedUser,
   log?: Logger,
 ): Promise<DbQuote> {
-  if (actor.role !== 'driver' && !isFleetOwnerActor(actor)) {
-    throw new BookingError('Only drivers or fleet owners can submit quotes', 'FORBIDDEN', 403)
+  const snapshot = await resolvePersonas(supabase, actor.userId, actor.role)
+  const bidder = bidderFromSnapshot(snapshot)
+  if (!bidder) {
+    throw new BookingError('Only a carrier — a truck owner or a fleet — can submit a quote', 'FORBIDDEN', 403)
   }
 
   const booking = await repo.getBookingById(bookingId)
@@ -125,16 +132,6 @@ export async function submitQuote(
     if (new Date(booking.auction_deadline) < new Date()) {
       throw new BookingError('Auction deadline has passed', 'AUCTION_CLOSED', 409)
     }
-  }
-
-  const bidder = await resolveBidder(actor)
-
-  if (bidder.kind === 'driver' && await isFleetAffiliatedDriver(bidder.driverId)) {
-    throw new BookingError(
-      'You drive for a fleet — your fleet owner bids on loads and assigns them to you',
-      'FORBIDDEN',
-      403,
-    )
   }
 
   // A direct booking aimed at one specific driver is not open to anyone else,
@@ -182,11 +179,6 @@ export async function counterQuote(
   actor: AuthenticatedUser,
   log?: Logger,
 ): Promise<DbQuote> {
-  const actorIsFleetOwner = isFleetOwnerActor(actor)
-  if (actor.role !== 'shipper' && actor.role !== 'driver' && !actorIsFleetOwner) {
-    throw new BookingError('Only shippers, drivers or fleet owners can counter quotes', 'FORBIDDEN', 403)
-  }
-
   const quote = await quoteRepo.getQuoteById(quoteId)
   if (!quote || quote.booking_id !== bookingId) {
     throw new BookingError(`Quote ${quoteId} not found`, 'QUOTE_NOT_FOUND', 404)
@@ -197,17 +189,17 @@ export async function counterQuote(
     throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
   }
 
-  if (actor.role === 'shipper' && booking.shipper_id !== actor.userId) {
+  // Either party to the negotiation may counter, decided by RELATION-to-object,
+  // never the role string (D-27): the SHIPPER who posted the load (the 'shipper'
+  // relation, i.e. booking.shipper_id === them), or the BIDDER who owns the quote
+  // (any of the caller's carrier identities — see quoteBelongsToViewer, which
+  // compares both the driver and fleet columns). isShipper takes precedence for
+  // the audit role below, matching the old role-string ordering.
+  const snapshot = await resolvePersonas(supabase, actor.userId, actor.role)
+  const isShipper = relationsToBooking(booking, snapshot).includes('shipper')
+  const ownsQuote = quoteBelongsToViewer(quote, snapshot)
+  if (!isShipper && !ownsQuote) {
     throw new BookingError('Forbidden', 'FORBIDDEN', 403)
-  }
-
-  // Bidder side: the column the quote is owned through depends on WHO bid, so
-  // compare against the resolved bidder rather than quote.driver_id directly.
-  if (actor.role !== 'shipper') {
-    const bidder = await resolveBidderOrNull(actor)
-    if (!bidder || !quoteBelongsTo(quote, bidder)) {
-      throw new BookingError('Forbidden', 'FORBIDDEN', 403)
-    }
   }
 
   // An expired auction must not keep accepting counters. submitQuote already
@@ -241,11 +233,15 @@ export async function counterQuote(
     throw new BookingError('Quote could not be updated — it may have changed', 'INVALID_TRANSITION', 409)
   }
 
+  // The audit role is the SIDE the caller acted from: the shipper if they hold
+  // that relation, otherwise the carrier kind that owns the quote (fleet vs solo
+  // driver, read off the quote's populated column — the same discriminator
+  // bidderOfQuote uses).
   await recordNegotiation({
     quote_id:   quoteId,
     booking_id: bookingId,
     actor_id:   actor.userId,
-    actor_role: actorIsFleetOwner ? 'fleet_owner' : (actor.role as 'shipper' | 'driver'),
+    actor_role: isShipper ? 'shipper' : (quote.fleet_owner_id ? 'fleet_owner' : 'driver'),
     amount:     body.amount,
     message:    body.message ?? null,
   }, log)
@@ -256,7 +252,7 @@ export async function counterQuote(
   await notify.emitQuoteCountered(
     booking,
     updated,
-    actor.role === 'shipper' ? 'shipper' : 'carrier',
+    isShipper ? 'shipper' : 'carrier',
     log,
   )
 
@@ -277,17 +273,19 @@ export async function acceptQuote(
   actor: AuthenticatedUser,
   log?: Logger,
 ): Promise<DbBooking> {
-  if (actor.role !== 'shipper') {
-    throw new BookingError('Only shippers can accept quotes', 'FORBIDDEN', 403)
-  }
-
   const booking = await repo.getBookingById(bookingId)
   if (!booking) {
     throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
   }
 
-  if (booking.shipper_id !== actor.userId) {
-    throw new BookingError('Forbidden', 'FORBIDDEN', 403)
+  // Awarding is the SHIPPER's act, gated on the 'shipper' relation to THIS
+  // booking (booking.shipper_id === them), never the JWT role string (D-27) — so
+  // a distributor holding a fleet_owner-role token who posted the load can award
+  // it, while the ownership guarantee is unchanged. The old two-step (role check
+  // then shipper_id check) collapses into this one relation check; both were 403.
+  const snapshot = await resolvePersonas(supabase, actor.userId, actor.role)
+  if (!relationsToBooking(booking, snapshot).includes('shipper')) {
+    throw new BookingError('Only the shipper on this booking can accept quotes', 'FORBIDDEN', 403)
   }
 
   const quote = await quoteRepo.getQuoteById(quoteId)
@@ -345,17 +343,17 @@ export async function rejectQuote(
   actor: AuthenticatedUser,
   log?: Logger,
 ): Promise<DbQuote> {
-  if (actor.role !== 'shipper') {
-    throw new BookingError('Only shippers can reject quotes', 'FORBIDDEN', 403)
-  }
-
   const booking = await repo.getBookingById(bookingId)
   if (!booking) {
     throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
   }
 
-  if (booking.shipper_id !== actor.userId) {
-    throw new BookingError('Forbidden', 'FORBIDDEN', 403)
+  // Rejecting a bid is the shipper's act — the 'shipper' relation to this booking,
+  // not the role string (D-27). Same collapse of role+ownership into one relation
+  // check as acceptQuote.
+  const snapshot = await resolvePersonas(supabase, actor.userId, actor.role)
+  if (!relationsToBooking(booking, snapshot).includes('shipper')) {
+    throw new BookingError('Only the shipper on this booking can reject quotes', 'FORBIDDEN', 403)
   }
 
   const quote = await quoteRepo.getQuoteById(quoteId)
@@ -387,17 +385,17 @@ export async function withdrawQuote(
   actor: AuthenticatedUser,
   log?: Logger,
 ): Promise<DbQuote> {
-  if (actor.role !== 'driver' && !isFleetOwnerActor(actor)) {
-    throw new BookingError('Only drivers or fleet owners can withdraw quotes', 'FORBIDDEN', 403)
-  }
-
   const quote = await quoteRepo.getQuoteById(quoteId)
   if (!quote || quote.booking_id !== bookingId) {
     throw new BookingError(`Quote ${quoteId} not found`, 'QUOTE_NOT_FOUND', 404)
   }
 
-  const bidder = await resolveBidderOrNull(actor)
-  if (!bidder || !quoteBelongsTo(quote, bidder)) {
+  // Only the quote's OWNER withdraws it — decided by relation-to-object, not the
+  // role string (D-27): quoteBelongsToViewer matches the quote against any of the
+  // caller's carrier identities, so a solo driver settles their driver quote and a
+  // fleet its fleet quote, and a human who is both settles either.
+  const snapshot = await resolvePersonas(supabase, actor.userId, actor.role)
+  if (!quoteBelongsToViewer(quote, snapshot)) {
     throw new BookingError('Forbidden', 'FORBIDDEN', 403)
   }
 
