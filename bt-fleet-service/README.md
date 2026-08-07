@@ -2,7 +2,8 @@
 
 The fleet-owner persona. Port **3007**; gateway rewrite `/api/fleet/(.*)` → `/fleet/$1`.
 
-Contract: `docs/tasks/feat-fleet-owner.md`. Schema: migrations `0014`–`0018`.
+Contract: `docs/ARCHITECTURE_UNIFIED_IDENTITY.md` (the fleet-owner persona is locked there).
+Schema: migrations `0014`–`0018`.
 Where this README and the live database disagree, **the database wins**.
 
 ## What it owns

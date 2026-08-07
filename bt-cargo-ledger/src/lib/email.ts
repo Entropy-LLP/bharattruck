@@ -7,7 +7,7 @@
 // already sends every login OTP / verification / magic link through it, and this
 // service reuses the SAME `SMTP_*` env contract so there is one mail config to
 // operate rather than two. An earlier revision of this file used Resend and
-// described it as a settled decision; it was not — `docs/CTO_AUDIT_FINDINGS.md`
+// described it as a settled decision; it was not — `docs/BIBLE.md` Appendix A
 // T-CTO-1 ("pick the email provider") is still open, and no Resend key was ever
 // provisioned, so POD mail silently degraded to console logging in production.
 // -----------------------------------------------------------

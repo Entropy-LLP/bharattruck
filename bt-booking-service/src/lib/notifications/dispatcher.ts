@@ -242,7 +242,7 @@ export type DispatchResult = {
  * every row would be claimed, "sent" successfully to stdout, and marked `sent` —
  * silently consuming the queue and destroying notifications that were never
  * delivered. That is precisely the failure mode that shipped once already with
- * the POD OTP (docs/tasks/feat-pod-email-smtp.md): the code path ran, nothing
+ * the POD OTP (docs/BIBLE.md §5.4 item 10): the code path ran, nothing
  * errored, and no mail arrived.
  *
  * Leaving the rows PENDING is strictly better: the outbox accumulates, the

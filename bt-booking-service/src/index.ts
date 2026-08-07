@@ -26,7 +26,7 @@ async function bootstrap() {
   // Health check — no auth required.
   // Reports whether SMTP is live, because "email silently degraded to console logging"
   // is the exact failure this service has already shipped once (see
-  // docs/tasks/feat-pod-email-smtp.md) and it is invisible without something like this.
+  // docs/BIBLE.md §5.4 item 10) and it is invisible without something like this.
   app.get('/health', () => ({
     status: 'ok',
     service: 'bt-booking-service',

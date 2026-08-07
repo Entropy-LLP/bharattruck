@@ -92,28 +92,33 @@ gap but nothing ever fixed the source file). Two different docs gave two differe
 which one a reader opened. All of that folded into this file so there is exactly one place to keep
 current, and exactly one place to check before assuming you know the state of the project.
 
-The originals aren't deleted — each has a short "superseded, see here" stub so git history and any
-external links still resolve. `docs/MAPS_TRACKING_PLAN.md` is the one file that stayed a real,
-separate file (linked from §3.3) rather than folding in — it's a 1200+ line engineering narrative
-meant to be read as deep reference during a build phase, not top-to-bottom, and inlining it here would
-bury everything else.
+The originals were kept for a while as "superseded, see here" stubs. **They were deleted on
+2026-08-07** — a stub still shows up in a grep, still gets opened, and a week of code audits kept
+finding engineers reading files whose only true sentence was the banner. Git history holds them if
+anyone needs the original wording. Every filename named in this section is therefore **historical
+only**: nothing below asks you to go read one, and if a doc or comment ever points you at one, fix
+the pointer rather than restoring the file. `docs/MAPS_TRACKING_PLAN.md` is the one file that stayed a
+real, separate file (linked from §3.3) rather than folding in — it's a 1200+ line engineering
+narrative meant to be read as deep reference during a build phase, not top-to-bottom, and inlining it
+here would bury everything else.
 
 ### 0.4 Task MDs — how branch-level work is tracked (new convention, 2026-07-20)
 
 Going forward, an active `feat/*` branch gets its own file at **`docs/tasks/<branch-name>.md`**
-(slashes in the branch name become dashes, e.g. `feat/pod-email-smtp` → `docs/tasks/feat-pod-email-smtp.md`).
+(slashes in the branch name become dashes, e.g. `feat/some-slice` → `docs/tasks/feat-some-slice.md`).
 This replaces the old habit of tracking active branches in ad-hoc tables buried in a handoff doc (e.g.
 the old `CTO_HANDOFF_LIVE.md §4` "Wave-2 branches" table).
 
 - **Create it** when the branch starts. Contents: what the task is, acceptance criteria, a link to the
   relevant section of this file, a PMO `ref` if one exists (see §0.1's PMO note at the top), progress
   notes, and real verification evidence as it lands (build output, curl transcripts — the same
-  evidence bar `docs/CTO_ENGINEERING_STANDARDS.md` §2 has always required in a `report`).
-  See `docs/tasks/feat-pod-email-smtp.md` for a worked example.
+  evidence bar §4.2 has always required in a `report`).
 - **Delete it on merge.** Git history plus Appendix B's append-only scorecard log already preserve the
   permanent record — a task MD is a working document for the life of the branch, not a permanent
   archive. (If you'd rather archive them under `docs/tasks/archive/` instead of deleting, that's a
   one-line change to this rule — just make it explicitly, don't let both patterns coexist silently.)
+  **This half of the rule was not being followed:** on 2026-08-07 all 8 files in `docs/tasks/` belonged
+  to already-merged branches and were swept. Delete yours in the same PR that merges the branch.
 - This is a lighter-weight parallel to §4's IPC `task`/`report` messages, not a replacement for them —
   the IPC message is the *notification*; the task MD is the *durable record* a human or another session
   can read without replaying the IPC log.
@@ -122,7 +127,7 @@ the old `CTO_HANDOFF_LIVE.md §4` "Wave-2 branches" table).
 
 ## §1 — Product spec
 
-_Source: `docs/BHARATTRUCK_MVP_PRD.md` v1.0, created 2026-06-30. Condensed here — the original's Part 3
+_Folded in from the former `docs/BHARATTRUCK_MVP_PRD.md` v1.0, created 2026-06-30 (deleted 2026-08-07). Condensed here — the original's Part 3
 (build-state) and Part 10 (release timeline) are dropped in favor of §5 (current-state, kept fresh) and
 §2 (the authoritative execution plan) respectively, so this file doesn't hold two competing versions of
 either. Everything else is close to the source._
@@ -265,7 +270,8 @@ a dispatcher with retry/backoff, dead-lettering and a delivery audit trail. Othe
 **Login/POD OTPs are deliberately NOT in the outbox** — a human is blocked on those, so they stay
 synchronous inline sends. 15 events wired (marketplace, trip lifecycle, payments, fleet invites,
 password-changed); per-category opt-out + RFC 8058 one-click unsubscribe; transactional mail cannot be
-muted. Not yet wired: digests/reports. See `docs/tasks/feat-email-notifications.md`.
+muted. Not yet wired: digests/reports. The event catalogue itself is
+`packages/shared/src/notifications.ts` — read it rather than a doc.
 
 > **Operational gate:** the dispatcher only runs when something invokes it. On Cloud Run that means a
 > **Cloud Scheduler job** hitting `/internal/notifications/dispatch` — see §7.1. Without it, mail queues
@@ -381,7 +387,7 @@ client JWT access+refresh (migrating toward httpOnly cookies).
 
 ## §2 — Execution plan & committed scope
 
-_Source: `docs/EXECUTION_ROADMAP.md`, decisions locked 2026-07-04. **This section wins on how-we-build
+_Folded in from the former `docs/EXECUTION_ROADMAP.md` (deleted 2026-08-07), decisions locked 2026-07-04. **This section wins on how-we-build
 and what-we-cut**, except the frozen Maps CONTRACT (§3.1) wins on maps/tracking specifics._
 
 **The bar (definition of done for the whole MVP):** one shipper → one driver → one **tracked, proven,
@@ -399,8 +405,9 @@ PAID** interstate trip, completed end-to-end by a real external user who is not 
 
 > ### ⚠️ SCOPE REVERSAL — NOT YET RECONCILED (flagged 2026-07-19, still open 2026-07-20)
 > The founder reversed decision #4 above on **2026-07-12**: **escrow and RL pricing are back IN
-> scope**, overriding the cut-order below. This reversal was noted in `SESSION_HANDOFF_2026-07-19.md
-> §6` as "from memory" but **the cut-order table in §2.1 below was never actually rewritten to match**
+> scope**, overriding the cut-order below. This reversal was recorded "from memory" in the 2026-07-19
+> session handoff (that file is gone; this banner is now the record) but **the cut-order table in §2.1
+> below was never actually rewritten to match**
 > — it's carried forward here exactly as the source doc had it, with this banner, rather than silently
 > editing it, because the reversal itself has not been re-confirmed against a primary founder decision
 > record. **Before planning escrow or RL work: get the founder to explicitly re-confirm current scope**,
@@ -502,7 +509,7 @@ merged to `main`, CI green, reachable + demoable through the UI, no stub left be
 
 ### 3.1 — The CONTRACT (FROZEN)
 
-_Source: `docs/MAPS_TRACKING_CONTRACT.md`. **Status: FROZEN.** This is the single source of truth for
+_Folded in from the former `docs/MAPS_TRACKING_CONTRACT.md` (deleted 2026-08-07). **Status: FROZEN.** This is the single source of truth for
 the Maps & Tracking build. On ANY conflict between this and §3.3 (or anything else), **this wins.**
 Decisions confirmed 2026-06-18. Changing anything here requires a new `D-xxx` decision (§3.2). Anything
 not locked on 2026-06-18 is tagged inline **(INFERRED — confirm)** and must not be treated as frozen
@@ -728,7 +735,7 @@ pinned down during build, updating this section when they are.
 
 ### 3.2 — DECISIONS log (append-only, D-001..D-013)
 
-_Source: `docs/MAPS_TRACKING_DECISIONS.md`. **This log is APPEND-ONLY.** Never edit, reorder, or
+_Folded in from the former `docs/MAPS_TRACKING_DECISIONS.md` (deleted 2026-08-07). **This log is APPEND-ONLY.** Never edit, reorder, or
 delete an existing `D-xxx` entry — a decision that turns out wrong is *superseded* by a NEW
 higher-numbered entry that references it, not rewritten in place. A real fork of any locked decision
 in §3.1 requires **asking the founder** before it is recorded here. On any conflict between this log
@@ -931,7 +938,7 @@ the D-series is a single global sequence across both logs, never two independent
 
 ### 3.3 — SESSIONS: build playbook (phases 0-6)
 
-_Source: `docs/MAPS_TRACKING_SESSIONS.md`. A per-phase, copy-paste session playbook for building the
+_Folded in from the former `docs/MAPS_TRACKING_SESSIONS.md` (deleted 2026-08-07). A per-phase, copy-paste session playbook for building the
 Maps & Tracking feature **ONE phase per working session**, phases **0 → 6, strictly sequential**. §3.1
 (CONTRACT) is FROZEN and wins on any conflict with this playbook — this section is operational (how to
 run each session), §3.1 is normative (what is locked)._
@@ -947,8 +954,8 @@ record the pin as a `D-xxx` in §3.2 and update §3.1.
 START RITUAL — Maps & Tracking build session.
 1. Read BIBLE.md §3.1 IN FULL. It is FROZEN and wins on any conflict.
 2. Read BIBLE.md §3.3 "Phase status board" and "Decisions log" below.
-3. Read the target service/app roadmap for the phase (bt-tracking-service/ROADMAP.md, or the
-   shipper/driver app + its ROADMAP for those phases).
+3. Read the code the phase touches (bt-tracking-service/src, or the shipper/driver app for those
+   phases) — the per-service ROADMAP.md files were deleted 2026-08-07; the code is the state.
 4. Confirm OUT LOUD, in one line each: which phase am I doing (exactly ONE of 0-6)? Is the PREVIOUS
    phase's DoD fully checked (if not, STOP — finish it first)? Which LOCKED items does this phase
    touch? Which (INFERRED — confirm) values will I pin this session?
@@ -965,7 +972,7 @@ END RITUAL:
 3. Update the "Phase status board" below (⛔→🟡→✅) with a one-line note + date.
 4. For every (INFERRED — confirm) value pinned: append a D-xxx row to §3.3's decisions log AND update
    the matching line in §3.1 (§3.1 is the source of truth; this log is the change history).
-5. Update the relevant ROADMAP.md (bt-tracking-service / shipper / driver) checkboxes.
+5. Update §5.2 with what actually shipped this phase.
 6. Commit on a feature branch (never straight to main); do NOT push unless asked.
 7. State the NEXT phase and its one-line entry condition. Do not start it.
 ```
@@ -1267,7 +1274,8 @@ any conflict with it.
 
 ## §4 — Team operating model
 
-_Sources: `docs/CTO_ENGINEERING_STANDARDS.md`, `docs/TEAM_GIT_WORKFLOW.md`, `docs/IPC_TEAM_PROTOCOL.md`.
+_Folded in from the former `docs/CTO_ENGINEERING_STANDARDS.md`, `docs/TEAM_GIT_WORKFLOW.md` and
+`docs/IPC_TEAM_PROTOCOL.md` (all deleted 2026-08-07).
 Standing process — valid until explicitly changed here, not a dated snapshot. On any conflict about
 *how we build*, §2 wins; the frozen §3.1 wins on maps/tracking._
 
@@ -2359,15 +2367,15 @@ enum value no code uses. Revisit only alongside the `jobs.ts` auction-expiry imp
 
 ## Appendix A — Audit trail & rulings
 
-_Source: `docs/CTO_AUDIT_FINDINGS.md`, the original 2026-07-04 production-readiness audit. Most of the
+_Folded in from the former `docs/CTO_AUDIT_FINDINGS.md` (deleted 2026-08-07), the original 2026-07-04 production-readiness audit. Most of the
 original P0 backlog (items 1-7: lifecycle dead-end, missing breadcrumb write, unversioned DB schema, no
 CI/CD, both apps failing to build, gateway not routing tracking) is now **resolved** per §5.2 — kept
 here only as a historical record of what the audit originally found, not a live task list._
 
 ### A.1 Rulings that resolved doc contradictions (2026-07-04/07-05 — still binding)
 
-1. **Single authoritative plan = §2 (`EXECUTION_ROADMAP.md`).** The old `ROADMAP.md` was
-   banner-marked superseded; PRD Part 10's original escrow/blockchain/RL sequencing is historical only.
+1. **Single authoritative plan = §2.** The old root `ROADMAP.md` was banner-marked superseded and has
+   since been deleted; PRD Part 10's original escrow/blockchain/RL sequencing is historical only.
    On any conflict about what we build/cut, §2 wins; the frozen §3.1 wins on tracking/maps specifics.
 2. **Retired-repo links fixed** — nobody pushes to the retired standalones/mirrors (Appendix C).
 3. **Blockchain/on-chain anchor = OUT** of the first Completed Paid Trip (deferred). Receiver-OTP POD =
@@ -2410,7 +2418,7 @@ audit.
 
 ## Appendix B — Engineer scorecard
 
-_Source: `docs/CTO_SCORECARD.md`. Maintained by the `cto` node, reviewed by the founder — append-only,
+_Folded in from the former `docs/CTO_SCORECARD.md` (deleted 2026-08-07). Maintained by the `cto` node, reviewed by the founder — append-only,
 one row per node, updated on every review. Rubric in §4.3. Marks are evidence-backed, not vibes._
 
 ### Standing (as of the last update)
@@ -2452,7 +2460,7 @@ entries with a date; don't rewrite old ones._
 
 ## Appendix C — Monorepo provenance
 
-_Source: `docs/MONOREPO_PROVENANCE.md`. Small, factual, doesn't go stale — kept whole._
+_Folded in from the former `docs/MONOREPO_PROVENANCE.md` (deleted 2026-08-07). Small, factual, doesn't go stale — kept whole._
 
 Snapshot-consolidated **2026-07-04** from the canonical `Entropy-LLP/*` standalone repos at these
 commits. The standalone repos are retained as the historical archive; this monorepo is the go-forward
@@ -2476,7 +2484,7 @@ source of truth.
 
 ## Appendix D — Pricing & payments status (for the other coder)
 
-_Source: `docs/PRICING_PAYMENTS_STATUS.md`. Purpose: the coder who owns `bt-pricing-service` +
+_Folded in from the former `docs/PRICING_PAYMENTS_STATUS.md` (deleted 2026-08-07). Purpose: the coder who owns `bt-pricing-service` +
 `bt-payment-service` work outside this team (kartik / `kinbox-ctrl`, a GitHub collaborator) must know
 everything happening on those two services — keep this current and flag any change to him directly._
 

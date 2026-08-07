@@ -3,7 +3,7 @@
 /**
  * LiveTrackMap — the shipper's live-tracking map.
  *
- * FROZEN Maps & Tracking contract (docs/MAPS_TRACKING_CONTRACT.md):
+ * FROZEN Maps & Tracking contract (docs/BIBLE.md §3.1):
  *  - Browser layer uses `@vis.gl/react-google-maps` + the Maps JavaScript API
  *    only (no legacy Directions/Places). The road polyline is computed
  *    server-side by bt-tracking-service (Routes API) and passed in already

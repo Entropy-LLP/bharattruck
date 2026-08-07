@@ -1,62 +1,13 @@
 # bt-gateway
 
-Nginx reverse proxy and API gateway for **BharatTruck** — routes all client traffic to the correct backend microservice.
+Nginx edge for BharatTruck. Every app reaches the backend only through here
+(`NEXT_PUBLIC_API_URL`); each `/api/<area>/` prefix is rewritten and proxied to one service.
 
-## Routing
+**`nginx.conf` is the routing table.** It is one file, it is read top-to-bottom, and it is the thing
+that actually runs — read it instead of a copy. The previous version of this README duplicated the
+route list and drifted (it never gained `/api/tracking/`, and still said the service deployed to
+Render). Upstreams are `$*_upstream` variables resolved from `*_SERVICE_URL` env at request time, so
+the env var names are in that file too.
 
-| Path | Backend | Description |
-|------|---------|-------------|
-| `/api/auth/` | bt-auth-service:3001 | OTP, JWT, Google OAuth |
-| `/api/kyc/` | bt-auth-service:3001 | KYC verification |
-| `/api/onboarding/` | bt-auth-service:3001 | Driver onboarding |
-| `/api/bookings/` | bt-booking-service:3002 | Booking CRUD, lifecycle |
-| `/api/quotes/` | bt-booking-service:3002 | Quote negotiation |
-| `/api/location/` | bt-booking-service:3002 | Driver GPS pings |
-| `/api/pricing/` | bt-pricing-service:3003 | Fare calculation |
-| `/api/payments/` | bt-payment-service:3004 | Razorpay escrow |
-| `/api/cargo/` | bt-cargo-ledger:3005 | Chain of custody |
-| `/api/fleet/` | bt-fleet-service:3007 | Fleet owners, trucks, driver roster, assignment, P&L |
-| `/ws/` | bt-booking-service:3002 | WebSocket (live tracking) |
-| `/health` | Gateway itself | Health check |
-
-## Features
-
-- **Rate limiting** — 5 req/min for OTP endpoints, 60 req/min for general API
-- **CORS** — Single authority for CORS headers, configurable via `CORS_ALLOWED_ORIGINS`
-- **Security headers** — X-Frame-Options, X-XSS-Protection, Content-Type-Options, Referrer-Policy
-- **Request tracing** — X-Request-Id propagation (generates one if not provided)
-- **Gzip compression** — JSON, plaintext, JavaScript
-- **WebSocket proxying** — Upgrades connections for `/ws/` path
-- **JSON error pages** — Structured 502/503/504 responses
-
-## Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DNS_RESOLVER` | `127.0.0.11` | DNS resolver (Docker default; use `8.8.8.8` on Render) |
-| `AUTH_SERVICE_URL` | `http://bt-auth-service:3001` | Auth service URL |
-| `BOOKING_SERVICE_URL` | `http://bt-booking-service:3002` | Booking service URL |
-| `PRICING_SERVICE_URL` | `http://bt-pricing-service:3003` | Pricing service URL |
-| `PAYMENT_SERVICE_URL` | `http://bt-payment-service:3004` | Payment service URL |
-| `CARGO_SERVICE_URL` | `http://bt-cargo-ledger:3005` | Cargo ledger URL |
-| `FLEET_SERVICE_URL` | `http://bt-fleet-service:3007` | Fleet service URL |
-| `CORS_ALLOWED_ORIGINS` | `*` | Allowed CORS origins |
-
-## Running Locally
-
-Via Docker:
-
-```bash
-docker build -t bt-gateway .
-docker run -p 8080:80 bt-gateway
-```
-
-Or as part of the full stack via the [LogisticOS](https://github.com/deltaos1997/LogisticOS) workspace:
-
-```bash
-docker compose up bt-gateway
-```
-
-## Deployment
-
-Deployed on **Render** as a Docker web service. See `render.yaml` for configuration.
+Deploy: GCP Cloud Run, `asia-south1`, via `.github/workflows/deploy.yml` — see `.github/workflows/README.md`.
+Local: `docker compose up bt-gateway` from the repo root.
