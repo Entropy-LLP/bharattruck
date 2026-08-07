@@ -10,6 +10,8 @@ import {
 } from './fleet.js'
 import { defaultPricingClient, type PricingClient } from './pricing-client.js'
 import * as notify from './notifications/emit.js'
+import { resolveConsigneeParty } from './consignee/repository.js'
+import { attachConsignee, attachConsignees, type WithConsignee } from './consignee/service.js'
 
 // -----------------------------------------------------------
 // createBooking — the price quote-lock saga.
@@ -112,8 +114,25 @@ export async function createBooking(
     )
   }
 
+  // 3b. Resolve the CONSIGNEE — the party the goods are for (D-22) — before the
+  //     booking row exists, because the booking references it.
+  //
+  //     Linked to an existing users row when the phone already belongs to one,
+  //     otherwise a fresh credential-less party record is created. That linking
+  //     path NEVER writes to the row it matched: see the block comment at the top
+  //     of consignee/repository.ts — a caller who could update the row they name
+  //     could rewrite any account on the platform by typing its phone number.
+  //
+  //     Runs BEFORE the insert and before the quote is consumed, so a bad
+  //     consignee (or a pre-0026 database) fails with nothing to compensate. A
+  //     party record left behind by a create that fails later is harmless and
+  //     deliberately not rolled back: it is a customer the shipper genuinely has,
+  //     it holds no credential, and the next booking naming that phone links
+  //     straight to it.
+  const consigneeUserId = body.consignee ? await resolveConsigneeParty(body.consignee) : null
+
   // 4. Insert the booking with the SERVER-SIDE locked price (client price is gone).
-  const booking = await repo.createBooking(body, actor, quote.quoted_price)
+  const booking = await repo.createBooking(body, actor, quote.quoted_price, consigneeUserId)
 
   // 5. Atomically consume the quote (DB-enforced replay/expiry guard). On any
   //    failure — including a concurrent double-submit that loses the race and
@@ -200,18 +219,33 @@ async function resolveDriverScope(actor: AuthenticatedUser): Promise<repo.Driver
 export async function getBooking(
   id: string,
   actor: AuthenticatedUser,
-): Promise<PriceMasked<BookingWithProfiles>> {
+): Promise<WithConsignee<PriceMasked<BookingWithProfiles>>> {
   const booking = await repo.getBookingById(id)
   if (!booking) {
     throw new BookingError(`Booking ${id} not found`, 'NOT_FOUND', 404)
   }
-  if (actor.role === 'shipper' && booking.shipper_id !== actor.userId) {
+  // A shipper-role caller reads their OWN bookings — and, since D-22, the ones
+  // consigned TO them. A claimed consignee is a party to the consignment, not a
+  // stranger: they are the person the goods are for, and refusing them the trip
+  // they are waiting on was only ever an artefact of "shipper" meaning "the
+  // party who posted it". This is a comparison against a value already on the
+  // row, NOT a new filter, so on a pre-0026 database consignee_user_id is
+  // undefined, nothing matches, and the guard behaves exactly as it did.
+  //
+  // Their INBOUND LIST is a separate change and deliberately not here: listing
+  // by consignee_user_id means querying a column that a pre-0026 database does
+  // not have, and it belongs with the claim flow (§9.2) rather than with this
+  // slice.
+  const viewerIsConsignee = !!booking.consignee_user_id && booking.consignee_user_id === actor.userId
+  if (actor.role === 'shipper' && booking.shipper_id !== actor.userId && !viewerIsConsignee) {
     throw new BookingError('Forbidden', 'FORBIDDEN', 403)
   }
 
   // Shipper/admin keep the payload they have always had — assigned_to_me is a
-  // driver-facing field and they are not drivers.
-  if (actor.role !== 'driver') return booking
+  // driver-facing field and they are not drivers. The consignee block is added
+  // for whoever is a party to the consignment (attachConsignee decides; an
+  // observer's payload is unchanged).
+  if (actor.role !== 'driver') return attachConsignee(booking, actor)
 
   // One driver lookup answers both questions below.
   const driverRow = await repo.getDriverByUserId(actor.userId)
@@ -224,10 +258,14 @@ export async function getBooking(
     if (!assignedToMe) {
       throw new BookingError(`Booking ${id} not found`, 'NOT_FOUND', 404)
     }
-    return { ...stripCommercialFields(booking), assigned_to_me: true }
+    // The money is masked, the receiver is NOT: this driver is the one standing
+    // at the drop and the consignee is who they hand the goods to. Price hiding
+    // (Q16) and the consignee gate are separate rules and neither implies the
+    // other.
+    return attachConsignee({ ...stripCommercialFields(booking), assigned_to_me: true }, actor)
   }
 
-  return { ...booking, assigned_to_me: assignedToMe }
+  return attachConsignee({ ...booking, assigned_to_me: assignedToMe }, actor)
 }
 
 // -----------------------------------------------------------
@@ -244,10 +282,17 @@ export async function getBooking(
 // own accepted/in_transit trip at all (BIBLE §5.4 item 3).
 // -----------------------------------------------------------
 
-export async function listBookings(actor: AuthenticatedUser): Promise<PriceMasked<DbBooking>[]> {
+export async function listBookings(
+  actor: AuthenticatedUser,
+): Promise<WithConsignee<PriceMasked<DbBooking>>[]> {
   const scope = await resolveDriverScope(actor)
   const bookings = await repo.listBookings(actor, scope ?? undefined)
-  return scope?.employed ? bookings.map(stripCommercialFields) : bookings
+  const masked = scope?.employed ? bookings.map(stripCommercialFields) : bookings
+  // Attached LAST, and per-row: a solo driver's list is a UNION of their own
+  // trips and the open 'pending' load board, so the same response legitimately
+  // contains bookings they are a party to and bookings they are merely browsing.
+  // A whole-response decision would be wrong for one half of it either way.
+  return attachConsignees(masked, actor)
 }
 
 // -----------------------------------------------------------
