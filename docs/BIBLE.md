@@ -1608,6 +1608,14 @@ three env shapes and asserts nginx syntax.
   exist yet gets CREATED by CD with an EMPTY environment and crash-loops.** Seed it first.
 - `--allow-unauthenticated` on both lanes — a brand-new Cloud Run service defaults to requiring IAM
   auth and will serve **403 to everyone** (exactly how `bt-fleet-console` first shipped).
+- **Every deploy is now proof-of-life-checked.** Each lane probes what it just shipped (services:
+  `/health` must return 200; apps: the root path must return <400, since Next apps have no `/health`),
+  using the URL `gcloud run services describe` reports, with a bounded ~60s retry. It **fails the
+  job** — a green deploy step alone only meant the revision was created, so both failure shapes above
+  (empty-env crash loop, 403-to-everyone) used to ship silently.
+- **CI fails if the `packages/shared/**` path filters drift** from the real `file:` dependents
+  (`shared-consumer list matches reality` in `ci.yml`, derived from the package.json files). That
+  hand-maintained list going stale is how a shared fix merges green and never reaches the service.
 - **Concurrency:** `max-parallel: 3` within a run **and** a workflow-level `concurrency: deploy-main`
   group. Both are needed — Cloud Build allows only **60 operation-GET requests/min per project**, and
   `gcloud builds submit` polls while waiting. Two runs overlapping (two PRs merged a minute apart)
