@@ -261,6 +261,13 @@ export async function listBookings(
 // Atomically sets driver_id + transitions to 'accepted'.
 // The WHERE status='pending' guard is optimistic concurrency:
 // only one driver wins when two race to accept the same booking.
+//
+// award_path='instant' is written in THIS statement, not a follow-up UPDATE.
+// The column defaults to 'auction' (migration 0022), so a self-accepted load
+// used to be recorded as though it had been through an auction that never ran —
+// and a second statement can fail on its own and leave the row claiming a
+// history it does not have. One statement means the carrier and the story of how
+// they got the trip commit together or not at all.
 // -----------------------------------------------------------
 
 export async function acceptBooking(
@@ -272,6 +279,7 @@ export async function acceptBooking(
     .update({
       driver_id:  driverId,
       status:     'accepted',
+      award_path: 'instant',
       updated_at: new Date().toISOString(),
     })
     .eq('id', bookingId)

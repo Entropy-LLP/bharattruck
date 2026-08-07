@@ -15,6 +15,21 @@ export type BookingStatus = 'pending' | 'accepted' | 'in_transit' | 'completed' 
 export type BookingType = 'direct' | 'auction'
 
 // -----------------------------------------------------------
+// BookingAwardPath — HOW the carrier on this trip was chosen. Mirrors the DB
+// enum booking_award_path (migration 0022) exactly.
+//
+// Orthogonal to BookingType, which says how the load was OFFERED. A 'direct'
+// booking taken off the load board is award_path 'instant'; the same booking
+// moved by the shipper's own fleet is 'direct_attach' (D-10). The column is
+// RECORDED rather than inferred: "the shipper and the carrier are the same
+// human" is true at award time and can stop being true later (a fleet is sold, a
+// driver leaves), and an audit trail that changes its mind about how a trip was
+// won is not an audit trail.
+// -----------------------------------------------------------
+
+export type BookingAwardPath = 'auction' | 'instant' | 'direct_attach'
+
+// -----------------------------------------------------------
 // QuoteStatus — lifecycle of a driver's quote on a booking
 // -----------------------------------------------------------
 
@@ -55,7 +70,11 @@ export type DbBooking = {
   target_driver_id: string | null
   auction_deadline: string | null
   min_acceptable: number | null
+  // NULL on a direct-attached trip as well as on an unawarded one: direct-attach
+  // skips the auction, so there is no winning quote to point at. `award_path` —
+  // not this column — is what says whether a booking has a carrier.
   awarded_quote_id: string | null
+  award_path: BookingAwardPath
   dimensions_json: Record<string, unknown> | null
   // Fleet persona (migration 016). Both NULL on every solo-driver booking, which
   // is what keeps the solo flow on its original code paths: fleet_owner_id is set

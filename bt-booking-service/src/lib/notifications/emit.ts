@@ -220,6 +220,45 @@ export async function emitQuoteWithdrawn(
   })
 }
 
+/**
+ * The shipper attached the load to their own fleet (D-10) → tell everyone who had
+ * bid on it that the market is closed.
+ *
+ * There is no winner to congratulate and no shipper to inform: the same human is
+ * both parties and they just performed the action. The losing side is the entire
+ * audience, and it is the half that matters — a carrier who bid and never hears
+ * back holds capacity for a load they are not getting, exactly as on the auction
+ * path.
+ *
+ * The quotes are passed IN rather than looked up here, and that is load-bearing:
+ * by the time this runs the caller has already expired them, so a lookup keyed on
+ * the live statuses would find nothing and this function could never mail anyone.
+ * The caller snapshots the losing set before closing the market.
+ *
+ * Reuses the `quote_lost` event and the `quote_lost:<quoteId>` key shape the award
+ * and reject paths already use, so a bid that was rejected earlier and then swept
+ * up by this is still only mailed about once.
+ */
+export async function emitDirectAttached(
+  booking: DbBooking,
+  losingQuotes: DbQuote[],
+  log?: Logger,
+): Promise<void> {
+  await safely(log, 'quote_lost', async () => {
+    for (const loser of losingQuotes) {
+      const recipient = await carrierRecipient(loser)
+      if (!recipient) continue
+      await enqueueNotification({
+        event: 'quote_lost',
+        to: recipient.email,
+        userId: recipient.userId,
+        payload: bookingPayload(booking),
+        dedupeKey: `quote_lost:${loser.id}`,
+      }, log)
+    }
+  })
+}
+
 // -----------------------------------------------------------
 // Trip lifecycle
 // -----------------------------------------------------------

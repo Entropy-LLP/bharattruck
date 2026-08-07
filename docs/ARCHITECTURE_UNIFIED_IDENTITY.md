@@ -14,6 +14,9 @@
 > imported by nobody, `/auth/me` still returns only `users.role`, and `bookings.award_path` (D-10)
 > is a dead column with no code path. §9.4 is the honest built-vs-designed ledger. Trust the code
 > over any claim in §1–§8.
+>
+> Since that audit, items 1–3, 6 and 8 of §9.5 have landed — including `award_path` and the
+> direct-attach endpoint, so the D-10 note above is no longer true.
 
 ---
 
@@ -404,7 +407,7 @@ constant, and the advisory/binding split (D-11) has landed.
 | 🔴 **High** | Location reads **fail open**: `/location/driver/:id` and `/location/booking/:id` branch only on `driver`/`shipper`, so any `fleet_owner` JWT reads any driver's live GPS by uuid. |
 | 🔴 **High** | `POST /location/update` treats `booking_id` as optional and skips every trip check when it is absent, storing off-duty positions that then surface on the fleet map. Violates D-25. |
 | 🟠 Medium | Sub-contracted driver silently paid ₹0 (D-24). |
-| 🟠 Medium | `bookings.award_path` is a **dead column** — no code reads or writes it, so every direct booking is recorded as `'auction'` and D-10 direct-attach has no execution path. |
+| ~~🟠 Medium~~ **FIXED** | `bookings.award_path` was a **dead column** — no code read or wrote it, so every direct booking was recorded as `'auction'` and D-10 direct-attach had no execution path. The three award paths now stamp it in the same statement that binds the carrier, and `PATCH /bookings/:id/direct-attach` exists. |
 
 **Written but not wired:** `resolvePersonas()` is complete and tested and imported by nobody;
 `/auth/me` returns only `users.role`; `bt-auth-service` is not on `@bharattruck/shared` at all, so
@@ -435,6 +438,6 @@ Each row is one PR, green CI, merged, deployed.
 | 5 | Twilio provider + seam hoisted to shared (D-26) | Unblocks phone-primary POD. |
 | 6 | Consignee party — migration 0026 + booking wiring (D-22, D-29) | The largest change; needs 3 and 5. |
 | 7 | Viewer block on booking reads; de-role-ify authorization (D-27) | Needs 3 and 4. |
-| 8 | `award_path` + direct-attach endpoint (D-10) | Makes the distributor path real. |
+| 8 | ✅ `award_path` + direct-attach endpoint (D-10) | Makes the distributor path real. |
 | 9 | Sub-contract predicate + payee fix (D-24) | Closes the ₹0 payout hole. |
 | 10 | Land `feat/pod-rebuild`; apply 0024 and 0026 | Sequenced last so the DB moves once, deliberately. |
