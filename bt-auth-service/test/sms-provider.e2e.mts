@@ -21,7 +21,7 @@ delete process.env.OTP_DEV_MODE
 delete process.env.NODE_ENV
 
 import Fastify from 'fastify'
-import { resolveSmsProvider, Msg91SmsProvider, SmsSendError } from '../src/lib/sms.js'
+import { resolveSmsProvider, Msg91SmsProvider, TwilioSmsProvider, SmsSendError } from '../src/lib/sms.js'
 
 const PHONE = '9876543210'
 
@@ -71,13 +71,32 @@ async function main() {
   const blank = resolveSmsProvider({ SMS_PROVIDER: 'msg91', MSG91_AUTH_KEY: 'k', MSG91_SENDER_ID: '  ', MSG91_TEMPLATE_ID: '' })
   check('empty-string credentials count as missing', blank.provider.name === 'console', `(got ${blank.provider.name})`)
 
-  const unknown = resolveSmsProvider({ SMS_PROVIDER: 'twilio' })
+  const unknown = resolveSmsProvider({ SMS_PROVIDER: 'gupshup' })
   check('unknown provider name → console, no throw', unknown.provider.name === 'console', `(got ${unknown.provider.name})`)
 
   const full = { SMS_PROVIDER: 'msg91', MSG91_AUTH_KEY: 'test-key', MSG91_SENDER_ID: 'BHTRUK', MSG91_TEMPLATE_ID: 'tmpl-1' }
   const wired = resolveSmsProvider(full)
   check('fully configured msg91 → msg91', wired.provider.name === 'msg91', `(got ${wired.provider.name})`)
   check('wired config reports nothing unwired', wired.unwiredReason === null, `(got ${wired.unwiredReason})`)
+
+  const twilioFull = { SMS_PROVIDER: 'twilio', TWILIO_ACCOUNT_SID: 'AC-test', TWILIO_AUTH_TOKEN: 'tok', TWILIO_FROM: '+15551234567' }
+  const twilioWired = resolveSmsProvider(twilioFull)
+  check('fully configured twilio → twilio', twilioWired.provider.name === 'twilio', `(got ${twilioWired.provider.name})`)
+  check('wired twilio reports nothing unwired', twilioWired.unwiredReason === null, `(got ${twilioWired.unwiredReason})`)
+
+  // Credentials present but no sender at all: Twilio rejects every such request, so
+  // it is a config error, not a per-send failure — it must not reach the network.
+  const twilioNoSender = resolveSmsProvider({ SMS_PROVIDER: 'twilio', TWILIO_ACCOUNT_SID: 'AC-test', TWILIO_AUTH_TOKEN: 'tok' })
+  check('twilio with no sender → console, no throw', twilioNoSender.provider.name === 'console', `(got ${twilioNoSender.provider.name})`)
+  check('missing sender is named in the reason', /TWILIO_MESSAGING_SERVICE_SID or TWILIO_FROM/.test(twilioNoSender.unwiredReason ?? ''), `(got ${twilioNoSender.unwiredReason})`)
+
+  const twilioNoToken = resolveSmsProvider({ SMS_PROVIDER: 'twilio', TWILIO_ACCOUNT_SID: 'AC-test', TWILIO_FROM: '+15551234567' })
+  check('twilio missing the auth token → console', twilioNoToken.provider.name === 'console', `(got ${twilioNoToken.provider.name})`)
+  check('missing token is named in the reason', /TWILIO_AUTH_TOKEN/.test(twilioNoToken.unwiredReason ?? ''), `(got ${twilioNoToken.unwiredReason})`)
+
+  // Same present-but-empty trap Cloud Run sets for MSG91.
+  const twilioBlank = resolveSmsProvider({ SMS_PROVIDER: 'twilio', TWILIO_ACCOUNT_SID: 'AC-test', TWILIO_AUTH_TOKEN: '  ', TWILIO_FROM: '+15551234567' })
+  check('empty-string twilio credentials count as missing', twilioBlank.provider.name === 'console', `(got ${twilioBlank.provider.name})`)
 
   console.log('\n── msg91 send shape (stubbed fetch — no real SMS) ──')
 
@@ -122,6 +141,51 @@ async function main() {
     try { await provider.sendOtp(PHONE, '123456') } catch (e) { httpErr = e }
     check('HTTP failure throws', httpErr instanceof SmsSendError, `(got ${httpErr})`)
     check('the thrown message never carries the OTP', !String(httpErr?.message).includes('123456'), `(got ${httpErr?.message})`)
+
+    console.log('\n── twilio send shape (stubbed fetch — no real SMS) ──')
+
+    stubFetch('{"sid":"SM1","status":"queued"}', 201)
+    const twilio = resolveSmsProvider({ ...twilioFull, TWILIO_BASE_URL: 'https://twilio.invalid' }).provider
+    check('resolved provider is the twilio one', twilio instanceof TwilioSmsProvider, `(got ${twilio.name})`)
+    await twilio.sendOtp(PHONE, '123456')
+    check('posts to the account Messages resource', lastUrl === 'https://twilio.invalid/2010-04-01/Accounts/AC-test/Messages.json', `(got ${lastUrl})`)
+    check('authenticates with HTTP Basic sid:token', lastInit.headers.authorization === `Basic ${Buffer.from('AC-test:tok').toString('base64')}`, `(got ${lastInit.headers.authorization})`)
+
+    // The single most common way this integration is got wrong: Twilio's REST API is
+    // form-encoded, and a JSON body comes back as a missing-parameter error that
+    // reads like a credential problem.
+    check('body is form-encoded, not JSON', lastInit.headers['content-type'] === 'application/x-www-form-urlencoded' && !String(lastInit.body).startsWith('{'), `(got ${lastInit.headers['content-type']})`)
+    const form = new URLSearchParams(String(lastInit.body))
+    // The route validates a BARE 10-digit number; Twilio needs E.164, and that gap
+    // is closed at the provider boundary rather than by widening the route's schema.
+    check('To is E.164 with the India prefix', form.get('To') === `+91${PHONE}`, `(got ${form.get('To')})`)
+    check('body carries our code', String(form.get('Body')).includes('123456'), `(got ${form.get('Body')})`)
+    check('From is sent when no messaging service is set', form.get('From') === '+15551234567' && form.get('MessagingServiceSid') === null, `(got ${form.get('From')}/${form.get('MessagingServiceSid')})`)
+
+    // Both set: the Messaging Service carries the sender pool and compliance config,
+    // and Twilio rejects a request that carries both — so From must not be sent.
+    const bothSenders = resolveSmsProvider({
+      ...twilioFull, TWILIO_BASE_URL: 'https://twilio.invalid', TWILIO_MESSAGING_SERVICE_SID: 'MG-test',
+    }).provider
+    await bothSenders.sendOtp(PHONE, '123456')
+    const bothForm = new URLSearchParams(String(lastInit.body))
+    check('messaging service wins over From', bothForm.get('MessagingServiceSid') === 'MG-test' && bothForm.get('From') === null, `(got ${bothForm.get('MessagingServiceSid')}/${bothForm.get('From')})`)
+
+    // Twilio signals a rejection with a non-2xx AND {code,message} — unlike MSG91 it
+    // never hides one behind a 200. The code is what an operator acts on (21608 is a
+    // trial-account unverified number; a DLT-unregistered sender fails the same way),
+    // so it has to survive into the thrown error.
+    stubFetch('{"code":21608,"message":"The number is unverified","status":400}', 400)
+    let twilioErr: any = null
+    try { await twilio.sendOtp(PHONE, '123456') } catch (e) { twilioErr = e }
+    check('twilio error response throws', twilioErr instanceof SmsSendError, `(got ${twilioErr})`)
+    check('twilio error code and message are surfaced', /21608/.test(String(twilioErr?.message)) && /unverified/.test(String(twilioErr?.message)), `(got ${twilioErr?.message})`)
+
+    // A body we cannot parse must still fail loudly rather than read as a delivery.
+    stubFetch('<html>502 Bad Gateway</html>', 502)
+    let twilioHtml: any = null
+    try { await twilio.sendOtp(PHONE, '123456') } catch (e) { twilioHtml = e }
+    check('unparseable twilio failure still throws with the status', twilioHtml instanceof SmsSendError && /502/.test(String(twilioHtml.message)), `(got ${twilioHtml?.message})`)
   } finally {
     globalThis.fetch = realFetch
   }
