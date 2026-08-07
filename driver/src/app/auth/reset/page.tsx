@@ -8,15 +8,14 @@ import { AuthShell, LABEL, FIELD, BTN_PRIMARY, BTN_LINK, HINT } from '@/lib/auth
 
 /**
  * Step 2 of password reset. Mounted at `/auth/reset` because that is the path
- * bt-auth-service builds its emailed link against (DRIVER_RESET_PASSWORD_URL,
- * falling back to `<origin>/auth/reset`) — moving this route breaks every link
- * already in someone's inbox.
+ * bt-auth-service builds its emailed link against (PASSWORD_RESET_URL, falling
+ * back to the per-role reset URL or `<origin>/auth/reset`) — moving this route
+ * breaks every link already in someone's inbox.
  *
  * Token is read from `window.location.search` in an effect rather than via
- * `useSearchParams`, matching `auth/callback` — it keeps the route statically
- * renderable and out of a Suspense boundary. It is also deliberately never put
- * into React state that renders: a reset token in the DOM is a token in a
- * screenshot.
+ * `useSearchParams` — that keeps the route statically renderable and out of a
+ * Suspense boundary. It is also deliberately never put into React state that
+ * renders: a reset token in the DOM is a token in a screenshot.
  */
 
 const MIN_PASSWORD = 8

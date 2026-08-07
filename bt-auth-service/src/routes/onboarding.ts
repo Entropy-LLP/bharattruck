@@ -1,5 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
+import { resolvePersonas, can, type UserRole } from '@bharattruck/shared'
+import type { JwtPayload } from '../lib/authenticate.js'
 import { authenticate } from '../lib/authenticate.js'
 import { encrypt } from '../lib/encryption.js'
 
@@ -69,13 +71,22 @@ const FINISHED_BOOKING_STATUSES = '(completed,paid,cancelled)'
 // finished" until a real terminal status says otherwise.
 const UNFINISHED_BOOKING_FILTER = `status.is.null,status.not.in.${FINISHED_BOOKING_STATUSES}`
 
-// Whitelist, never a blacklist: every route below reads/writes `drivers`-keyed rows, and a
-// fleet_owner has no drivers row at all (fleet trucks and licences are bt-fleet-service's).
-// Letting one through would 500 on the missing row rather than 403 honestly.
-// `role` is optional on the token now (see lib/authenticate.ts), and a token without one is
-// refused here exactly as a shipper's is — absent is not driver.
-function driverOnly(role: string | undefined): string | null {
-  return role === 'driver' ? null : 'Only drivers can access onboarding'
+// Every route below reads/writes `drivers`-keyed rows, so the gate is the 'drive'
+// CAPABILITY — the caller HAS a `drivers` row — not the JWT `role` string (D-27, the role
+// string is being removed as an authorization axis). The two agreed for every seeded user,
+// whose one role matches their assets; they DIVERGE for the multi-persona case this fixes:
+// a distributor whose account role is 'shipper' but who drives their own truck has a drivers
+// row, so they may finish driver onboarding (insurance/bank) — the old `role === 'driver'`
+// check wrongly refused them. A user with no drivers row (a pure shipper, or a fleet_owner
+// whose trucks and licences live in bt-fleet-service) is refused exactly as before.
+//
+// Capability is COMPUTED per request from owned assets (resolvePersonas), never read off the
+// token — six small indexed lookups, fine at pilot scale. The `primary_persona` arg only
+// labels the snapshot; it does not feed the capability, so a token without a `role` (optional
+// now, see lib/authenticate.ts) resolves the same way.
+async function requireDrive(app: FastifyInstance, user: JwtPayload): Promise<string | null> {
+  const snapshot = await resolvePersonas(app.supabase, user.userId, (user.role ?? 'shipper') as UserRole)
+  return can(snapshot, 'drive') ? null : 'Only drivers can access onboarding'
 }
 
 type VerificationBadge = 'pending' | 'verified' | 'premium'
@@ -110,7 +121,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
 
   // PUT /onboarding/profile
   app.put('/profile', { preHandler: authenticate }, async (req, reply) => {
-    const err = driverOnly(req.user.role)
+    const err = await requireDrive(app, req.user)
     if (err) return reply.status(403).send({ success: false, error: err })
 
     const body = UpdateProfileBody.safeParse(req.body)
@@ -138,7 +149,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
 
   // GET /onboarding/profile
   app.get('/profile', { preHandler: authenticate }, async (req, reply) => {
-    const err = driverOnly(req.user.role)
+    const err = await requireDrive(app, req.user)
     if (err) return reply.status(403).send({ success: false, error: err })
 
     const { data: user } = await app.supabase
@@ -179,7 +190,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
 
   // POST /onboarding/vehicle
   app.post('/vehicle', { preHandler: authenticate }, async (req, reply) => {
-    const err = driverOnly(req.user.role)
+    const err = await requireDrive(app, req.user)
     if (err) return reply.status(403).send({ success: false, error: err })
 
     const body = CreateVehicleBody.safeParse(req.body)
@@ -240,7 +251,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
 
   // PUT /onboarding/vehicle/:id
   app.put<{ Params: { id: string } }>('/vehicle/:id', { preHandler: authenticate }, async (req, reply) => {
-    const err = driverOnly(req.user.role)
+    const err = await requireDrive(app, req.user)
     if (err) return reply.status(403).send({ success: false, error: err })
 
     const params = UuidParam.safeParse(req.params)
@@ -316,7 +327,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
 
   // GET /onboarding/vehicles
   app.get('/vehicles', { preHandler: authenticate }, async (req, reply) => {
-    const err = driverOnly(req.user.role)
+    const err = await requireDrive(app, req.user)
     if (err) return reply.status(403).send({ success: false, error: err })
 
     const { data: driver } = await app.supabase
@@ -343,7 +354,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
   // Retiring a truck means "stop offering it", not "it never existed", so the row
   // stays and only is_active flips.
   app.delete<{ Params: { id: string } }>('/vehicle/:id', { preHandler: authenticate }, async (req, reply) => {
-    const err = driverOnly(req.user.role)
+    const err = await requireDrive(app, req.user)
     if (err) return reply.status(403).send({ success: false, error: err })
 
     const params = UuidParam.safeParse(req.params)
@@ -440,7 +451,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
 
   // POST /onboarding/license
   app.post('/license', { preHandler: authenticate }, async (req, reply) => {
-    const err = driverOnly(req.user.role)
+    const err = await requireDrive(app, req.user)
     if (err) return reply.status(403).send({ success: false, error: err })
 
     const body = SubmitLicenseBody.safeParse(req.body)
@@ -467,7 +478,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
 
   // PUT /onboarding/license
   app.put('/license', { preHandler: authenticate }, async (req, reply) => {
-    const err = driverOnly(req.user.role)
+    const err = await requireDrive(app, req.user)
     if (err) return reply.status(403).send({ success: false, error: err })
 
     const body = UpdateLicenseBody.safeParse(req.body)
@@ -493,7 +504,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
 
   // POST /onboarding/vehicle/:id/insurance
   app.post<{ Params: { id: string } }>('/vehicle/:id/insurance', { preHandler: authenticate }, async (req, reply) => {
-    const err = driverOnly(req.user.role)
+    const err = await requireDrive(app, req.user)
     if (err) return reply.status(403).send({ success: false, error: err })
 
     const params = UuidParam.safeParse(req.params)
@@ -604,7 +615,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
 
   // GET /onboarding/status
   app.get('/status', { preHandler: authenticate }, async (req, reply) => {
-    const err = driverOnly(req.user.role)
+    const err = await requireDrive(app, req.user)
     if (err) return reply.status(403).send({ success: false, error: err })
 
     const { data: user } = await app.supabase

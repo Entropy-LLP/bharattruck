@@ -519,17 +519,6 @@ export function emailResendOtp(email: string) {
   })
 }
 
-export function sendMagicLink(email: string, role: string) {
-  return authRequest<{ message: string; expires_in: number }>('/auth/magic-link/send', {
-    method: 'POST',
-    body: JSON.stringify({ email, role }),
-  })
-}
-
-export function verifyMagicLink(linkToken: string) {
-  return authRequest<AuthResponse>(`/auth/magic-link/verify?token=${encodeURIComponent(linkToken)}`)
-}
-
 export function refreshAccessToken(refreshToken: string) {
   return authRequest<{ access_token: string }>('/auth/refresh', {
     method: 'POST',
