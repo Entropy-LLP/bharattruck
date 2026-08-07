@@ -117,6 +117,36 @@ export async function getBookingById(id: string): Promise<BookingWithProfiles | 
 }
 
 // -----------------------------------------------------------
+// ACTIVE_TRIP_STATUSES / getActiveBookingsForDriver
+//
+// The trips a driver is CURRENTLY executing. This is the server-side answer to
+// "which trip does this GPS fix belong to?" and to "is this driver on a trip at
+// all right now?" — the two questions that make a live position a property of a
+// TRIP rather than of a person.
+//
+// Normally 0 or 1 row. Two is legitimate and reachable (one booking accepted
+// while another is already in_transit), so the caller — not this query — decides
+// what an ambiguous pair means. Ordered most-recently-touched first.
+//
+// driverId is drivers.id, NOT the JWT's users.id (see the identity gotcha in
+// CLAUDE.md); bookings.driver_id references drivers(id).
+// -----------------------------------------------------------
+
+export const ACTIVE_TRIP_STATUSES: BookingStatus[] = ['accepted', 'in_transit']
+
+export async function getActiveBookingsForDriver(driverId: string): Promise<DbBooking[]> {
+  const { data, error } = await supabase
+    .from('bookings')
+    .select('*')
+    .eq('driver_id', driverId)
+    .in('status', ACTIVE_TRIP_STATUSES)
+    .order('updated_at', { ascending: false })
+
+  if (error) throw new Error(`DB active-trip lookup failed: ${error.message}`)
+  return (data ?? []) as DbBooking[]
+}
+
+// -----------------------------------------------------------
 // listBookings
 // Role-scoped: shipper→own rows, driver→see below, admin→all.
 //
