@@ -43,7 +43,7 @@ jobs:
             bt-auth-service: ['bt-auth-service/**', 'packages/shared/**', '.github/workflows/ci.yml']
             bt-booking-service: ['bt-booking-service/**', 'packages/shared/**', '.github/workflows/ci.yml']
             bt-pricing-service: ['bt-pricing-service/**', '.github/workflows/ci.yml']
-            bt-payment-service: ['bt-payment-service/**', '.github/workflows/ci.yml']
+            bt-payment-service: ['bt-payment-service/**', 'packages/shared/**', '.github/workflows/ci.yml']
             bt-cargo-ledger: ['bt-cargo-ledger/**', '.github/workflows/ci.yml']
             bt-tracking-service: ['bt-tracking-service/**', 'packages/shared/**', '.github/workflows/ci.yml']
             bt-fleet-service: ['bt-fleet-service/**', '.github/workflows/ci.yml']

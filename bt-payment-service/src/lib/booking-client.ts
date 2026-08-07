@@ -17,6 +17,11 @@ export type BookingView = {
   // pre-fleet booking and on older booking-service builds, hence optional —
   // a missing field must read as "solo driver", never as an error.
   fleet_owner_id?: string | null
+  // The D-22 receiving party (users.id), when the booking names one and that
+  // party has claimed an account. Optional because a pre-0026 booking read omits
+  // it — in which case no consignee relation resolves and the consignee-pays
+  // settlement path never opens, which is the safe degradation.
+  consignee_user_id?: string | null
   quoted_price: number
   final_price: number | null
 }

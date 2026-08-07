@@ -1,8 +1,10 @@
-import type { BookingClient } from './booking-client.js'
+import type { BookingClient, BookingView } from './booking-client.js'
 import type { DriverShare, PaymentStore, PaymentMode, PayoutPayee, PayoutRecord, PayoutKey } from './payment-store.js'
 import { PaymentError } from './errors.js'
 import { emitTripEconomics } from './fleet-emit.js'
 import type { AuthenticatedUser } from '../plugins/auth.js'
+import { relationsToBooking, type PersonaSnapshot, type ViewerBooking } from '@bharattruck/shared/personas'
+import type { UserRole } from '@bharattruck/shared/auth'
 
 // -----------------------------------------------------------
 // PaymentService — cash-recorded settlement (NO escrow, NO Razorpay).
@@ -17,6 +19,11 @@ import type { AuthenticatedUser } from '../plugins/auth.js'
 export type PaymentDeps = {
   booking: BookingClient
   store: PaymentStore
+  // Resolve the caller's emergent-persona snapshot (@bharattruck/shared) so
+  // settlement authorizes on RELATION-TO-BOOKING, never the JWT role string
+  // (D-27). Injected for verification; the routes bind it to the service-role
+  // client. The saga path (onTripCompleted) never calls it, but shares this type.
+  resolvePersonas: (userId: string, primaryPersona: UserRole) => Promise<PersonaSnapshot>
   logger?: { warn(obj: unknown, msg: string): void }
 }
 
@@ -235,15 +242,66 @@ export function planPayoutWrites(bookingId: string, existing: PayoutRecord[], de
   }
 }
 
-export async function settle(args: SettleArgs, actor: AuthenticatedUser, bearer: string, deps: PaymentDeps) {
-  // Only ops/admin or the paying shipper may record a settlement; never a driver.
-  if (actor.role !== 'admin' && actor.role !== 'shipper') {
-    throw new PaymentError('Only an authorized actor (ops/admin or the shipper) can record a settlement', 'FORBIDDEN', 403)
+// toViewerBooking — the booking as @bharattruck/shared's relation resolver reads
+// it. Only the freight-PARTY columns matter to relationsToBooking; the price and
+// status the settlement flow uses live elsewhere on BookingView. consignee_user_id
+// is the D-22 receiving party and is absent on a pre-0026 booking read, in which
+// case no consignee relation resolves and the consignee-pays path never opens.
+function toViewerBooking(booking: BookingView): ViewerBooking {
+  return {
+    shipper_id: booking.shipper_id,
+    fleet_owner_id: booking.fleet_owner_id ?? null,
+    driver_id: booking.driver_id,
+    consignee_user_id: booking.consignee_user_id ?? null,
   }
+}
 
-  // Read the booking with the actor's JWT — booking-service also enforces
-  // shipper-ownership here (a shipper reading someone else's booking → 403).
+// assertSettlementParty — WHO may record or read a booking's settlement.
+//
+// Relation-to-object, never the JWT role string (D-27). booking-service has
+// already enforced READ access on the getBooking that produced `booking` (a
+// shipper reading someone else's booking → 403, a stranger → 404); this is the
+// money-party decision layered on top:
+//   • ops/admin — an internal operator, NOT one of the emergent personas, so it
+//     keeps its own gate, the same ops-actor exception bt-booking-service draws.
+//   • the SHIPPER — the party who posted the load is the payer.
+//   • a claimed CONSIGNEE — but ONLY on the consignee-pays case: a booking whose
+//     lorry receipt carries freight_term 'TO_PAY' (migration 0024). On any other
+//     term the receiver owes nothing on this consignment and must not be able to
+//     close it out. freight_term rides on the LR, not the booking, so it is read
+//     only when a consignee is actually asking — the shipper/ops paths never pay
+//     for the lookup, and a booking with no LR yet reads as "not to-pay" (deny).
+//
+// A driver — solo or fleet — holds the carrier/driver relation, neither of which
+// is settled here, so they are refused exactly as the old role gate refused them.
+export async function assertSettlementParty(
+  booking: BookingView,
+  actor: AuthenticatedUser,
+  deps: PaymentDeps,
+): Promise<void> {
+  if (actor.role === 'admin') return
+
+  const snapshot = await deps.resolvePersonas(actor.userId, actor.role)
+  const relations = relationsToBooking(toViewerBooking(booking), snapshot)
+
+  if (relations.includes('shipper')) return
+  if (relations.includes('consignee') && (await deps.store.getFreightTerm(booking.id)) === 'TO_PAY') return
+
+  throw new PaymentError(
+    'Only the paying shipper, a to-pay consignee, or ops can record a settlement',
+    'FORBIDDEN',
+    403,
+  )
+}
+
+export async function settle(args: SettleArgs, actor: AuthenticatedUser, bearer: string, deps: PaymentDeps) {
+  // Read the booking with the actor's JWT FIRST — booking-service enforces READ
+  // access (a shipper reading someone else's booking → 403, a stranger → 404),
+  // which is the first half of authorization. WHO MAY SETTLE is then a
+  // relation-to-object decision on the booking we just read (D-27), never the JWT
+  // role string: the paying shipper, a to-pay consignee, or ops.
   const booking = await deps.booking.getBooking(args.bookingId, bearer)
+  await assertSettlementParty(booking, actor, deps)
   const existing = await deps.store.getPayment(args.bookingId)
 
   // Anomalies belong to the settlement that RESOLVED the payees, which is the one
