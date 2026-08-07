@@ -22,7 +22,7 @@
  * app-wide (a shipper opening bt-app never gets a wake lock or a GPS watch).
  */
 
-import { use, useCallback, useEffect, useMemo, useState } from 'react'
+import { use, useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
 import Link from 'next/link'
 import { toast } from 'sonner'
 import { ArrowLeft, Navigation, Phone } from 'lucide-react'
@@ -39,6 +39,7 @@ import {
   getRoute,
   pushLocation,
   requestPodOtp,
+  verifyPodOtp,
   startTrip,
 } from '@/lib/api'
 import { buildNavDeepLink } from '@/lib/maps'
@@ -480,6 +481,11 @@ function ActiveTripSection({ booking, onRefresh }: { booking: Booking; onRefresh
   const [podContext, setPodContext] = useState<PodContext | null>(null)
   const [loadingContext, setLoadingContext] = useState(false)
   const [sending, setSending] = useState(false)
+  // The code the driver types in — the receiver reads it out at the drop. Verifying it is
+  // what actually closes the trip (the old flow only polled and had NOWHERE to enter it).
+  const [otpInput, setOtpInput] = useState('')
+  const [verifying, setVerifying] = useState(false)
+  const [verifyError, setVerifyError] = useState<string | null>(null)
   const [gpsActive, setGpsActive] = useState(false)
   const [gpsError, setGpsError] = useState<string | null>(null)
   const [elapsed, setElapsed] = useState('')
@@ -632,6 +638,7 @@ function ActiveTripSection({ booking, onRefresh }: { booking: Booking; onRefresh
 
   async function handleResend() {
     setSending(true)
+    setVerifyError(null)
     try {
       await requestPodOtp(booking.id)
       writeAwaiting(booking.id, { receiver_email: podContext?.receiver_email ?? null, sent_at: Date.now() })
@@ -643,9 +650,37 @@ function ActiveTripSection({ booking, onRefresh }: { booking: Booking; onRefresh
     }
   }
 
+  // The driver enters the code the receiver gives them; verifying it closes the trip.
+  // This is the completion path the grafted flow was missing — it only polled, so the
+  // code the receiver read out had nowhere to go.
+  async function handleVerify(e: FormEvent) {
+    e.preventDefault()
+    const code = otpInput.trim()
+    if (!/^\d{6}$/.test(code)) {
+      setVerifyError('Enter the 6-digit code the receiver gives you.')
+      return
+    }
+    setVerifying(true)
+    setVerifyError(null)
+    try {
+      await verifyPodOtp(booking.id, code)
+      clearAwaiting(booking.id)
+      toast.success('Delivery confirmed')
+      onRefresh() // trip is now completed — this section unmounts, the completed card renders
+    } catch (err) {
+      // Wrong / expired / too-many-attempts all surface here. Keep the box so the driver
+      // can re-read the code (or resend); never blank, never a silent failure.
+      setVerifyError(err instanceof ApiError ? err.message : 'That code did not work. Ask the receiver to read it again, or resend.')
+    } finally {
+      setVerifying(false)
+    }
+  }
+
   function handleCancelAwaiting() {
     clearAwaiting(booking.id)
     setDeliverPhase('idle')
+    setOtpInput('')
+    setVerifyError(null)
   }
 
   const receiverEmail = podContext?.receiver_email ?? null
@@ -695,8 +730,11 @@ function ActiveTripSection({ booking, onRefresh }: { booking: Booking; onRefresh
             <p className="font-medium text-gray-900">{booking.destination_address}</p>
           </div>
 
-          {/* Proof-of-delivery: receiver-OTP gate. The trip completes only when the
-              receiver verifies the emailed code — never from this button. */}
+          {/* Proof-of-delivery, three steps: (idle) Mark as delivered → send a code to the
+              receiver → (sent) the driver enters the code the receiver reads out and CONFIRMS,
+              which verifies it and closes the trip. A background poll also closes it if the
+              receiver instead enters the code on their own device. The trip is never closed
+              without a verified code. */}
           {deliverPhase === 'idle' && (
             <button
               onClick={handleFetchContext}
@@ -741,34 +779,55 @@ function ActiveTripSection({ booking, onRefresh }: { booking: Booking; onRefresh
           )}
 
           {deliverPhase === 'sent' && (
-            <div className="rounded-xl bg-blue-50 border border-blue-100 p-4 space-y-3">
-              <div className="flex items-center justify-center gap-2">
-                <span className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
-                <p className="text-sm font-semibold text-blue-800">Awaiting receiver confirmation</p>
-              </div>
-              <p className="text-sm text-gray-600 text-center">
-                Delivery code sent to{' '}
+            <form onSubmit={handleVerify} className="rounded-xl bg-blue-50 border border-blue-100 p-4 space-y-3">
+              <p className="text-sm font-semibold text-blue-900">Enter the delivery code</p>
+              <p className="text-sm text-gray-600">
+                A code was sent to{' '}
                 <span className="font-medium text-gray-900 break-all">{receiverEmail ?? 'the receiver'}</span>.
-                The trip is marked delivered once they enter the code.
+                Ask them to read it out and enter it here to close the trip.
               </p>
-              <div className="flex gap-2">
+              <input
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                maxLength={6}
+                value={otpInput}
+                onChange={(e) => { setOtpInput(e.target.value.replace(/\D/g, '').slice(0, 6)); setVerifyError(null) }}
+                placeholder="6-digit code"
+                aria-label="Delivery code"
+                className="w-full h-12 rounded-xl border border-gray-300 bg-white px-4 text-center text-lg font-semibold tracking-[0.4em] text-gray-900 placeholder:tracking-normal placeholder:font-normal placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              {verifyError && <p className="text-sm text-red-600">{verifyError}</p>}
+              <button
+                type="submit"
+                disabled={verifying || otpInput.length !== 6}
+                className="w-full h-12 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-base disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {verifying && <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />}
+                {verifying ? 'Confirming…' : 'Confirm delivery'}
+              </button>
+              <p className="text-xs text-gray-400 text-center">
+                If the receiver enters the code on their own phone, the trip closes automatically.
+              </p>
+              <div className="flex gap-2 pt-1">
                 <button
+                  type="button"
                   onClick={handleCancelAwaiting}
-                  disabled={sending}
-                  className="flex-1 h-11 rounded-xl border border-gray-200 text-gray-600 hover:bg-gray-50 font-medium text-sm disabled:opacity-50"
+                  disabled={sending || verifying}
+                  className="flex-1 h-10 rounded-xl border border-gray-200 text-gray-600 hover:bg-gray-50 font-medium text-sm disabled:opacity-50"
                 >
                   Cancel
                 </button>
                 <button
+                  type="button"
                   onClick={handleResend}
-                  disabled={sending}
-                  className="flex-1 h-11 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm disabled:opacity-50 flex items-center justify-center gap-2"
+                  disabled={sending || verifying}
+                  className="flex-1 h-10 rounded-xl border border-gray-200 text-gray-700 hover:bg-gray-50 font-medium text-sm disabled:opacity-50 flex items-center justify-center gap-2"
                 >
-                  {sending && <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />}
-                  {sending ? 'Sending…' : 'Resend delivery code'}
+                  {sending && <span className="w-4 h-4 border-2 border-gray-500 border-t-transparent rounded-full animate-spin" />}
+                  {sending ? 'Sending…' : 'Resend code'}
                 </button>
               </div>
-            </div>
+            </form>
           )}
         </div>
       </Card>

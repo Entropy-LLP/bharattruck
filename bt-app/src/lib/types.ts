@@ -855,6 +855,13 @@ export type RequestOtpResult = {
   expires_in_seconds: number
 }
 
+/** Result of submitting the delivery code (POST /cargo/pod/verify-otp). On success the
+ *  backend has already moved the trip to 'completed' — status reflects that. */
+export type VerifyOtpResult = {
+  booking_id: string
+  status: string
+}
+
 /** Cached base polyline for the lane (GET /tracking/route/:id). One call per trip. */
 export type RouteData = {
   polyline: string
