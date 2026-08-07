@@ -1,12 +1,11 @@
 // -----------------------------------------------------------
 // callback_url origin allowlist.
 //
-// /auth/magic-link/send and /auth/forgot-password let the caller name the page the
-// emailed link lands on, because each persona app knows its own origin. Unvalidated,
-// that parameter is an unauthenticated account takeover: anyone can POST a victim's
-// address with a callback_url pointing at a host they control, and the victim is
-// mailed a REAL single-use sign-in (or password-reset) token addressed to the
-// attacker's origin. One click and the token is theirs.
+// /auth/forgot-password lets the caller name the page the emailed reset link lands on,
+// because the front-end knows its own origin. Unvalidated, that parameter is an
+// unauthenticated account takeover: anyone can POST a victim's address with a callback_url
+// pointing at a host they control, and the victim is mailed a REAL single-use password-reset
+// token addressed to the attacker's origin. One click and the token is theirs.
 //
 // zod's .url() does not help — it accepts any absolute URL, including every host on
 // the internet and non-http schemes. What decides where the browser actually delivers
@@ -54,12 +53,12 @@ function deliverableOrigin(raw: string): string | null {
 /**
  * The set of origins an emailed link may point at.
  *
- * `bases` are the link URLs this service would pick on its own (the per-role
- * *_MAGIC_LINK_URL / *_RESET_PASSWORD_URL values and their defaults) — deriving the
- * allowlist from them means it cannot drift from the deployment: an origin we are
- * already willing to email unprompted is an origin a caller may ask for by name.
+ * `bases` are the reset URLs this service would pick on its own (PASSWORD_RESET_URL, or
+ * the per-role *_RESET_PASSWORD_URL fallback and its default) — deriving the allowlist
+ * from them means it cannot drift from the deployment: an origin we are already willing to
+ * email unprompted is an origin a caller may ask for by name.
  *
- * ALLOWED_CALLBACK_ORIGINS adds origins that have no link env var of their own yet —
+ * ALLOWED_CALLBACK_ORIGINS adds origins that have no reset env var of their own yet —
  * the unified app serves all three personas from a single origin.
  *
  * Entries that fail the http(s)/https rule are dropped rather than throwing: a

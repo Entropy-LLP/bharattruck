@@ -53,8 +53,8 @@ export default function ForgotPasswordPage() {
             link to set a new password. The link expires shortly and can only be used once.
           </p>
           <p className="text-xs leading-relaxed text-muted-foreground/80">
-            Nothing arrived? Check your spam folder. Accounts that sign in with a phone OTP, Google
-            or a magic link have no password to reset — use that method instead.
+            Nothing arrived? Check your spam folder. Accounts that sign in with a phone OTP or
+            Google have no password to reset — use that method instead.
           </p>
           <button
             type="button"

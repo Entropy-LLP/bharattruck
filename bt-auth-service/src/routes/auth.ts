@@ -17,7 +17,6 @@ import { callbackOriginAllowlist, isAllowedCallbackUrl } from '../lib/callback-u
 const ACCESS_TTL_S  = 15 * 60         // 15 minutes
 const REFRESH_TTL_S = 7 * 24 * 3600   // 7 days
 const OTP_TTL_S     = 600             // 10 minutes
-const MAGIC_TTL_S   = 900             // 15 minutes
 const PWRESET_TTL_S = 30 * 60         // 30 minutes — password-reset link validity
 
 // ── Throttles ─────────────────────────────────────────────────────────────────
@@ -176,21 +175,6 @@ async function sendOtpEmail(email: string, otp: string) {
   })
 }
 
-async function sendMagicLinkEmail(email: string, link: string) {
-  if (process.env.EMAIL_DEV_MODE === 'true' || !process.env.SMTP_USER) {
-    console.log(`[DEV] Magic link for ${email}: ${link}`)
-    return
-  }
-  const mailer = getMailer()
-  await mailer.sendMail({
-    from: process.env.SMTP_FROM ?? process.env.SMTP_USER,
-    to: email,
-    subject: 'BharatTruck — Sign in link',
-    text: `Sign in to BharatTruck: ${link}\n\nExpires in 15 minutes.`,
-    html: `<p>Click to sign in to BharatTruck: <a href="${link}">${link}</a></p><p>Expires in 15 minutes.</p>`,
-  })
-}
-
 async function sendPasswordResetEmail(email: string, link: string) {
   if (process.env.EMAIL_DEV_MODE === 'true' || !process.env.SMTP_USER) {
     console.log(`[DEV] Password reset link for ${email}: ${link}`)
@@ -208,79 +192,52 @@ async function sendPasswordResetEmail(email: string, link: string) {
   })
 }
 
-// ── Per-role front-end links ──────────────────────────────────────────────────
+// ── Password-reset front-end link ─────────────────────────────────────────────
 //
-// Each persona is a separate Next app on its own origin, so an emailed link has to be
-// built from the *account's* role, not from whichever app happened to take the request:
-// a driver who types their address into the shipper app still belongs on the driver app.
+// The unified app serves every persona from ONE origin, so a reset link has ONE
+// destination — there is no longer a per-role app to route the mail to.
 
 const RESET_PATH = '/auth/reset'
 
-function magicLinkBase(role: string | undefined): string {
-  if (role === 'driver') {
-    return process.env.DRIVER_MAGIC_LINK_URL ?? 'http://localhost:3002/auth/callback'
-  }
-  if (role === 'fleet_owner') {
-    // The fleet console has no /auth pages yet, so fleet owners fall through to the
-    // shipper app. Its callback and reset pages are role-agnostic — they only exchange
-    // a token — so the flow completes correctly; only the branding is off. Setting
-    // FLEET_MAGIC_LINK_URL takes over the moment those pages exist.
-    return process.env.FLEET_MAGIC_LINK_URL
-      ?? process.env.SHIPPER_MAGIC_LINK_URL
-      ?? 'http://localhost:3000/auth/callback'
-  }
-  return process.env.SHIPPER_MAGIC_LINK_URL ?? 'http://localhost:3000/auth/callback'
-}
-
 /**
- * Where a password-reset link should land for this role.
+ * Where a password-reset link should land.
  *
- * An explicit *_RESET_PASSWORD_URL always wins. Without one we DERIVE the reset page
- * from the role's magic-link URL by swapping the path — we no longer fall back to the
- * magic-link URL *verbatim*, which is what shipped before.
+ * PASSWORD_RESET_URL is the single production destination: one app, one reset page,
+ * so every reset link goes to the same origin regardless of the account's role.
  *
- * That old fallback is why reset was dead in production: every reset email pointed at
- * /auth/callback, and that page hands its token straight to /auth/magic-link/verify,
- * where a 'pwreset' token fails the `type !== 'magic'` check. The mail arrived and the
- * link opened — it just could never complete a reset. Deriving the path keeps the two
- * flows from sharing a landing page again, even if only one of the vars is ever set.
+ * When it is unset we keep the per-role behaviour that shipped before, so an
+ * environment that has not set the new var yet is not broken by this change — an
+ * explicit *_RESET_PASSWORD_URL for the account's role still wins, and otherwise a
+ * visibly-broken dev localhost link (rather than a silently-wrong prod one) is used.
  */
 function resetLinkBase(role: string | undefined): string {
+  if (process.env.PASSWORD_RESET_URL) return process.env.PASSWORD_RESET_URL
+
   const explicit = role === 'driver'      ? process.env.DRIVER_RESET_PASSWORD_URL
                  : role === 'fleet_owner' ? process.env.FLEET_RESET_PASSWORD_URL
                  :                          process.env.SHIPPER_RESET_PASSWORD_URL
-  if (explicit) return explicit
-
-  try {
-    const url = new URL(magicLinkBase(role))
-    url.pathname = RESET_PATH
-    url.search = ''
-    url.hash = ''
-    return url.toString()
-  } catch {
-    // magicLinkBase only returns a non-URL if someone set a malformed env var; a
-    // localhost link is a visibly-broken dev link rather than a silently-wrong prod one.
-    return `http://localhost:3000${RESET_PATH}`
-  }
+  return explicit ?? `http://localhost:3000${RESET_PATH}`
 }
 
-/** Every role whose emailed-link base is configurable. Order does not matter — this feeds a set. */
+/** Every role whose reset destination is configurable in the pre-config fallback. Feeds a set. */
 const LINK_ROLES = ['shipper', 'driver', 'fleet_owner'] as const
 
 /**
  * Origins a caller-supplied `callback_url` may point at.
  *
- * Built from the bases this service would pick on its own for every role, so the
- * allowlist tracks the deployment automatically: point a *_MAGIC_LINK_URL at a new
+ * Built from the reset destinations this service would pick on its own, so the
+ * allowlist tracks the deployment automatically: point the reset URL at a new
  * front-end and that front-end may immediately name itself, with no second list to
- * remember. ALLOWED_CALLBACK_ORIGINS covers origins that have no link var yet.
+ * remember. With PASSWORD_RESET_URL set every role resolves to the same origin, so
+ * the allowlist collapses to that one origin. ALLOWED_CALLBACK_ORIGINS covers origins
+ * that have no reset var of their own yet.
  *
  * Recomputed per request rather than frozen at import: the env vars are read lazily
- * everywhere else in this file too, and six URL parses are nothing next to the DB
- * round-trip and the SMTP send that follow.
+ * everywhere else in this file too, and a handful of URL parses are nothing next to
+ * the DB round-trip and the SMTP send that follow.
  */
 function allowedCallbackOrigins(): ReadonlySet<string> {
-  return callbackOriginAllowlist(LINK_ROLES.flatMap((role) => [magicLinkBase(role), resetLinkBase(role)]))
+  return callbackOriginAllowlist(LINK_ROLES.map((role) => resetLinkBase(role)))
 }
 
 // fleet_owners.company_name is NOT NULL, so fall through the identity fields we actually
@@ -408,19 +365,11 @@ const EmailRegisterBody  = z.object({
 const EmailVerifyBody    = z.object({ email: z.string().email(), otp: z.string().length(6) })
 const EmailLoginBody     = z.object({ email: z.string().email(), password: z.string() })
 const ResendOtpBody      = z.object({ email: z.string().email() })
-// `role` here CREATES the account when the email is unknown, so it must be constrained to
-// the live user_role enum — an unconstrained string reaches the insert and 500s on a bad value.
-//
+const GoogleSignInBody   = z.object({ id_token: z.string(), role: z.enum(['shipper', 'driver', 'fleet_owner']).default('shipper') })
+const RefreshBody        = z.object({ refresh_token: z.string() })
 // `.url()` on callback_url is shape-checking only — it accepts every host on the internet
 // and non-http schemes besides. The check that matters is the origin allowlist applied in
 // the handler; see lib/callback-url.ts for why this parameter is dangerous unvalidated.
-const MagicLinkSendBody  = z.object({
-  email:        z.string().email(),
-  role:         z.enum(['shipper', 'driver', 'fleet_owner']).optional(),
-  callback_url: z.string().url().optional(),
-})
-const GoogleSignInBody   = z.object({ id_token: z.string(), role: z.enum(['shipper', 'driver', 'fleet_owner']).default('shipper') })
-const RefreshBody        = z.object({ refresh_token: z.string() })
 const ForgotPasswordBody = z.object({ email: z.string().email(), callback_url: z.string().url().optional() })
 const ResetPasswordBody  = z.object({ token: z.string().min(1), password: z.string().min(8, 'Password must be at least 8 characters') })
 const RegisterProfileBody = z.object({
@@ -677,14 +626,15 @@ export async function authRoutes(app: FastifyInstance) {
     //
     // Accepted trade-off: an attacker who knows an address can lock its owner
     // out of PASSWORD login for the window. That is the standard cost of a
-    // lockout, and it is bounded here — magic-link and forgot-password still
-    // work, so the account is never actually unreachable.
+    // lockout, and it is bounded here — forgot-password and the other sign-in
+    // methods (phone OTP, Google) still work, so the account is never actually
+    // unreachable.
     const failKey = `login_fail:${email}`
     const gate = await isLockedOut(app.redis, failKey, LOGIN_FAIL_LIMIT)
     if (!gate.allowed) {
       return reply.status(429).send({
         success: false,
-        error: 'Too many failed sign-in attempts. Try again later, or sign in with a magic link.',
+        error: 'Too many failed sign-in attempts. Try again later, or reset your password.',
         code: 'TOO_MANY_ATTEMPTS',
         retry_after_s: gate.retryAfterS,
       })
@@ -784,122 +734,6 @@ export async function authRoutes(app: FastifyInstance) {
     return reply.send({ success: true, data: { message: 'Verification code sent', expires_in: OTP_TTL_S } })
   })
 
-  // ── POST /auth/magic-link/send ───────────────────────────────────────────────
-
-  app.post('/magic-link/send', async (req, reply) => {
-    const body = MagicLinkSendBody.safeParse(req.body)
-    if (!body.success) {
-      return reply.status(400).send({ success: false, error: body.error.errors[0].message })
-    }
-    const { email, role, callback_url } = body.data
-
-    // Refused BEFORE the throttle, the upsert and the send — order is the whole point.
-    // The generic responses on the enumeration-safe routes exist so a caller cannot
-    // learn whether an address has an account; a 400 raised here is decided purely by
-    // the callback_url, is identical for every address, and touches no account state,
-    // so it cannot become that oracle. Answering after the lookup would.
-    if (callback_url && !isAllowedCallbackUrl(callback_url, allowedCallbackOrigins())) {
-      return reply.status(400).send({ success: false, error: 'callback_url is not an allowed origin' })
-    }
-
-    // Gated before the upsert: this route creates an account for any address it
-    // is handed, so without a throttle one loop both fills `users` with junk
-    // rows and drains the SMTP quota.
-    const gate = await guardEmailSend(app, email)
-    if (!gate.allowed) {
-      return reply.status(429).send({ success: false, error: 'Too many sign-in links requested. Try again later.', retry_after_s: gate.retryAfterS })
-    }
-
-    // Upsert: create account if doesn't exist
-    let { data: user } = await app.supabase
-      .from('users')
-      .select('id, role')
-      .eq('email', email)
-      .maybeSingle()
-
-    if (!user) {
-      const { data: newUser, error } = await app.supabase
-        .from('users')
-        .insert({ email, role: role ?? 'shipper', email_verified: false })
-        .select('id, role')
-        .single()
-      if (error || !newUser) {
-        return reply.status(500).send({ success: false, error: 'Failed to create account' })
-      }
-      user = newUser
-    }
-
-    const linkToken = jwt.sign(
-      { userId: user.id, role: user.role, type: 'magic' },
-      process.env.JWT_SECRET!,
-      { expiresIn: MAGIC_TTL_S },
-    )
-    await app.redis.set(`magic:${user.id}`, linkToken, 'EX', MAGIC_TTL_S)
-
-    // Prefer the callback URL provided by the frontend (it knows its own origin) — it has
-    // already been checked against the origin allowlist above, so it can only be one of
-    // ours. Fall back to per-role env vars so production deployments can override without
-    // a code change.
-    const redirectBase = callback_url ?? magicLinkBase(user.role ?? role)
-    const link = `${redirectBase}?token=${encodeURIComponent(linkToken)}`
-    await sendMagicLinkEmail(email, link)
-
-    return reply.send({ success: true, data: { message: 'Sign-in link sent', expires_in: MAGIC_TTL_S } })
-  })
-
-  // ── GET /auth/magic-link/verify ──────────────────────────────────────────────
-
-  app.get('/magic-link/verify', async (req, reply) => {
-    const { token } = (req.query as Record<string, string>)
-    if (!token) {
-      return reply.status(400).send({ success: false, error: 'Missing token' })
-    }
-
-    let payload: JwtPayload & { type?: string }
-    try {
-      payload = jwt.verify(token, process.env.JWT_SECRET!) as JwtPayload & { type?: string }
-    } catch {
-      return reply.status(401).send({ success: false, error: 'Invalid or expired magic link' })
-    }
-
-    if (payload.type !== 'magic') {
-      return reply.status(401).send({ success: false, error: 'Invalid token type' })
-    }
-
-    const stored = await app.redis.get(`magic:${payload.userId}`)
-    if (!stored || stored !== token) {
-      return reply.status(401).send({ success: false, error: 'Magic link already used or expired' })
-    }
-    await app.redis.del(`magic:${payload.userId}`)
-
-    const { data: user, error } = await app.supabase
-      .from('users')
-      .update({ email_verified: true })
-      .eq('id', payload.userId)
-      .select('*')
-      .single()
-    if (error || !user) {
-      return reply.status(404).send({ success: false, error: 'User not found' })
-    }
-
-    // /magic-link/send creates the account, so this can be a user's very first sign-in —
-    // the same point in the flow where /email/verify creates the role's profile row.
-    await ensureRoleProfile(app, user)
-
-    const { access_token, refresh_token } = issueTokens(user.id, user.role)
-    await app.redis.set(`refresh:${user.id}`, refresh_token, 'EX', REFRESH_TTL_S)
-
-    return reply.send({
-      success: true,
-      data: {
-        access_token,
-        refresh_token,
-        is_new_user: false,
-        user: userProfile(user),
-      },
-    })
-  })
-
   // ── POST /auth/forgot-password ───────────────────────────────────────────────
   // Emails a single-use reset LINK (never a password). Enumeration-safe: the same
   // generic success is returned whether or not the email exists. Rate-limited per
@@ -912,9 +746,10 @@ export async function authRoutes(app: FastifyInstance) {
     const { email, callback_url } = body.data
     const generic = { success: true, data: { message: 'If an account exists for that email, a reset link has been sent.' } }
 
-    // Same placement as /magic-link/send, for the same reason: refused before the
-    // throttle and before the user lookup, so this 400 says something about the request
-    // and nothing about the account. Everything past this line stays enumeration-safe.
+    // Refused before the throttle and before the user lookup, so this 400 says something
+    // about the request and nothing about the account. A 400 decided purely by the
+    // callback_url is identical for every address and touches no account state, so it
+    // cannot become an existence oracle. Everything past this line stays enumeration-safe.
     if (callback_url && !isAllowedCallbackUrl(callback_url, allowedCallbackOrigins())) {
       return reply.status(400).send({ success: false, error: 'callback_url is not an allowed origin' })
     }
@@ -933,7 +768,7 @@ export async function authRoutes(app: FastifyInstance) {
       .maybeSingle()
 
     // Only email a real link to an account that can actually log in with a password.
-    // Passwordless-only accounts (magic-link/OTP) have no password to reset.
+    // Passwordless-only accounts (phone OTP / Google) have no password to reset.
     if (user && user.password_hash) {
       const resetToken = jwt.sign(
         { userId: user.id, type: 'pwreset' },
