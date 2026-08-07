@@ -21,6 +21,7 @@
 // ============================================================
 
 import { z } from 'zod'
+import { relationsToBooking, resolvePersonas } from '@bharattruck/shared/personas'
 import { BookingError, type AuthenticatedUser, type BookingStatus } from '../types.js'
 import * as repo from '../repository.js'
 import { getFleetOwnerByUserId } from '../fleet.js'
@@ -342,26 +343,26 @@ function standingEwayBill(records: docs.DbEwayBillRecord[]): docs.DbEwayBillReco
 
 /**
  * Read access to a booking's documents: the shipper, the assigned driver, the
- * fleet that won it, and ops. Same shape as every other per-booking read in this
- * service — the consignee is NOT here, because their access is the emailed
- * document itself (§5.6: the receiver path assumes zero app installation).
+ * fleet that won it, and ops. Decided by RELATION-to-object, not the JWT role
+ * string (D-27) — a distributor who both posts and carries their own load reads
+ * the documents on either side of it, instead of being forced down one costume.
+ *
+ * The consignee is deliberately NOT here, because their access is the emailed
+ * document itself (§5.6: the receiver path assumes zero app installation) — so
+ * the 'consignee' relation and observers (empty set) are refused.
  */
 async function assertCanReadDocuments(
   booking: { shipper_id: string; driver_id: string | null; fleet_owner_id: string | null },
   actor: AuthenticatedUser,
 ): Promise<void> {
+  // Ops carve-out (no 'admin' capability; the admin JWT is the explicit override).
   if (actor.role === 'admin') return
-  if (actor.role === 'shipper' && booking.shipper_id === actor.userId) return
 
-  if (actor.role === 'driver' && booking.driver_id) {
-    const driverRow = await repo.getDriverByUserId(actor.userId)
-    if (driverRow && driverRow.id === booking.driver_id) return
-  }
-
-  if (actor.role === 'fleet_owner' && booking.fleet_owner_id) {
-    const owner = await getFleetOwnerByUserId(actor.userId)
-    if (owner && owner.id === booking.fleet_owner_id) return
-  }
+  const snapshot = await resolvePersonas(supabase, actor.userId, actor.role)
+  const relations = relationsToBooking(booking, snapshot)
+  // shipper (posted it), carrier (the winning fleet or a solo owner-driver) or
+  // driver (the assigned employee on a fleet booking) may read.
+  if (relations.includes('shipper') || relations.includes('carrier') || relations.includes('driver')) return
 
   throw new BookingError('You cannot view documents for this booking', 'FORBIDDEN', 403)
 }
@@ -486,7 +487,13 @@ export async function issueFreightInvoice(
 ) {
   const booking = await loadBookingOr404(bookingId)
 
-  if (actor.role !== 'shipper' || booking.shipper_id !== actor.userId) {
+  // The invoice is the SHIPPER's document. Authorized on the 'shipper' relation
+  // to THIS booking (booking.shipper_id === them), never the role string (D-27):
+  // a distributor holding a fleet_owner-role token who posted the load issues it,
+  // while a carrier — even on this same booking — cannot. The old `role !==
+  // 'shipper' || shipper_id !== userId` collapses into this one relation check.
+  const snapshot = await resolvePersonas(supabase, actor.userId, actor.role)
+  if (!relationsToBooking(booking, snapshot).includes('shipper')) {
     throw new BookingError('Only the shipper on this booking can issue its invoice', 'FORBIDDEN', 403)
   }
 
