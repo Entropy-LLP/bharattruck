@@ -20,11 +20,11 @@ export type NavItem = {
   gate: NavGate
   /**
    * True while the destination is a "coming soon" placeholder rather than a built
-   * surface. bt-app is Phase 1: the operate+carry surfaces (forked from the fleet
-   * console) are real; the ship and drive surfaces are grafted in Phases 2–3, so
-   * until then their nav item routes to a placeholder that points at the focused
-   * shipper/driver app. We show the item (the capability is real) but never pretend
-   * the feature is here — and we never HALF-build it.
+   * surface. The operate+carry surfaces (forked from the fleet console) and the
+   * ship surfaces (Post a Load, My Loads, load detail — grafted in Phase 2) are
+   * real; only the drive surface (/my-trips) is still a placeholder, landing in
+   * Phase 3. We show the item (the capability is real) but never pretend the
+   * feature is here — and we never HALF-build it.
    */
   placeholder?: boolean
   /** Section break above this item in the rail. */
@@ -38,16 +38,16 @@ export type NavItem = {
  * (ship · carry · operate, no drive) sees exactly those surfaces working, which is
  * the Phase-1 acceptance bar.
  *
- * `drive` and `ship` items are placeholders in Phase 1 (see NavItem.placeholder).
- * They appear only for a human who actually holds the capability, so a pure fleet
- * owner never sees the drive surface at all, and a pure shipper sees only the ship
- * surfaces plus Home and Settings.
+ * The `ship` items are live (Phase 2); the `drive` item (/my-trips) is still a
+ * placeholder (see NavItem.placeholder). They appear only for a human who actually
+ * holds the capability, so a pure fleet owner never sees the drive surface at all,
+ * and a pure shipper sees the working ship surfaces plus Home and Settings.
  */
 export const NAV: NavItem[] = [
   { href: '/home', label: 'Home', icon: Home, gate: 'always' },
 
-  { href: '/loads', label: 'My Loads',    icon: Package,     gate: 'ship', placeholder: true, startsGroup: true },
-  { href: '/post',  label: 'Post a Load', icon: PackagePlus, gate: 'ship', placeholder: true },
+  { href: '/loads', label: 'My Loads',    icon: Package,     gate: 'ship', startsGroup: true },
+  { href: '/post',  label: 'Post a Load', icon: PackagePlus, gate: 'ship' },
 
   { href: '/my-trips', label: 'My Trips', icon: Navigation, gate: 'drive', placeholder: true, startsGroup: true },
 

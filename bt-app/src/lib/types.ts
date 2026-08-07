@@ -513,6 +513,32 @@ export type Quote = {
   submitted_at: string
   expires_at: string | null
   updated_at: string
+  /**
+   * The party behind the bid, resolved server-side for display (D-27). Present on
+   * a booking's quote list (GET /bookings/:id/quotes, bt-booking-service) so the
+   * shipper can tell a solo driver from a fleet; ABSENT on the tenant-scoped fleet
+   * bid reads (/fleet/auctions, /fleet/bids), which never carry it. Optional for
+   * exactly that reason — read `carrier` when it is there, fall back to the id
+   * columns when it is not (see the load-detail page's carrierKind()).
+   */
+  carrier?: QuoteCarrier | null
+}
+
+/**
+ * Who is behind a bid, resolved server-side (mirrors bt-booking-service's
+ * QuoteCarrier). A quote row names its bidder only by id, and which id — a
+ * `drivers.id` XOR a `fleet_owners.id` — is not resolvable by this app, so the
+ * server projects the party down to what a shipper may see and render.
+ */
+export type QuoteCarrier = {
+  kind: 'driver' | 'fleet'
+  id: string
+  /** Null when the party has no name on file — render a fallback, never assume. */
+  name: string | null
+  /** Driver-only; a fleet names its truck at assignment, not at bid time. */
+  truck_number: string | null
+  average_rating: number | null
+  total_trips: number | null
 }
 
 /** The load behind a bid or an open auction. */
@@ -571,4 +597,220 @@ export type NegotiationEntry = {
   amount: number
   message: string | null
   created_at: string
+}
+
+// ── Ship surfaces (Post a Load / My Loads / load detail — Phase 2) ─────────────
+//
+// The shapes bt-booking-service, bt-pricing-service and bt-tracking-service speak
+// for the shipper flow. Ported from shipper/src/lib (types.ts + api.ts) and kept
+// snake_case verbatim — a field rename in a service is a compile error here rather
+// than a silent `undefined`. bt-app is a standalone Next project with no
+// @bharattruck/shared dep (same as fleet/ and shipper/), so the wire shapes are
+// restated rather than imported.
+
+/** A load is taken to the marketplace (`auction`) or handed to one driver (`direct`). */
+export type BookingType = 'direct' | 'auction'
+
+/**
+ * The caller's relations to a booking, resolved server-side (D-27). Every booking
+ * read carries a `viewer` block naming these — it is how "loads I posted" is told
+ * from "loads I could bid on" in one list, without the client re-deriving persona
+ * logic. Mirrors @bharattruck/shared BookingRelation.
+ */
+export type BookingRelation = 'shipper' | 'carrier' | 'driver' | 'consignee' | 'observer'
+
+export type BookingViewer = {
+  relations: BookingRelation[]
+  sees_commercials: boolean
+}
+
+/**
+ * The receiving party, projected down to what a booking read may disclose (D-22).
+ * Name/phone/city only — email, GSTIN and street address are deliberately withheld
+ * from a general booking read (they appear on the LR/invoice instead). Attached by
+ * the server; ABSENT (not null) for a viewer with no relation, or on a pre-0026
+ * database, which is why every read of it is guarded.
+ */
+export type ConsigneeParty = {
+  name: string | null
+  phone: string | null
+  city: string | null
+}
+
+/** The receiving party named at posting time (D-22/D-29). Name + phone required. */
+export type ConsigneeInput = {
+  name: string
+  /** A 10-digit Indian mobile; the server normalises and dedups on it. */
+  phone: string
+  email?: string
+  gstin?: string
+  address?: string
+  city?: string
+  state?: string
+  pincode?: string
+}
+
+export type Booking = {
+  id: string
+  shipper_id: string
+  driver_id: string | null
+  shipper_name: string
+  shipper_contact: string
+  source_address: string
+  source_lat: number
+  source_lng: number
+  destination_address: string
+  dest_lat: number
+  dest_lng: number
+  load_type: string
+  weight_kg: number
+  quoted_price: number
+  final_price: number | null
+  pickup_date: string
+  pickup_time_slot: string | null
+  status: BookingStatus
+  special_instructions: string | null
+  /** Consignee inbox the one-time delivery code is emailed to. Nullable. */
+  receiver_email: string | null
+  /** The consignee as a first-class (possibly unclaimed) party (D-22). */
+  consignee_user_id: string | null
+  booking_type: BookingType
+  /**
+   * Set when a FLEET won the auction rather than a solo driver. `driver_id` then
+   * stays NULL until the owner pairs a truck+driver in bt-fleet-service — so an
+   * `accepted` fleet booking means "carrier locked in", NOT "driver assigned".
+   */
+  fleet_owner_id: string | null
+  vehicle_id: string | null
+  target_driver_id: string | null
+  auction_deadline: string | null
+  awarded_quote_id: string | null
+  in_transit_at: string | null
+  completed_at: string | null
+  created_at: string
+  updated_at: string
+  /** The receiving party (server-attached; absent for a viewer with no relation). */
+  consignee?: ConsigneeParty | null
+  /** The caller's relations to this booking + whether they may see money. */
+  viewer?: BookingViewer
+}
+
+// ── Advisory pricing (bt-pricing-service, D-11) ────────────────────────────────
+
+export type PriceQuoteVehicleType = 'mini_truck' | 'lcv' | 'hcv' | 'trailer'
+export type PriceQuoteLoadType =
+  | 'general' | 'fragile' | 'perishable' | 'hazardous' | 'heavy_machinery'
+
+export type PriceQuoteInput = {
+  source_lat: number
+  source_lng: number
+  dest_lat: number
+  dest_lng: number
+  vehicle_type: PriceQuoteVehicleType
+  load_type: PriceQuoteLoadType
+  weight_kg: number
+  /**
+   * What the quote is for. On an auction the platform sets no price, so the quote
+   * is `advisory`; sending this is what makes the server persist it that way. The
+   * omitted wire default is `binding` — the wrong answer for an auction — so the
+   * form always sends it.
+   */
+  booking_type?: BookingType
+}
+
+export type PriceQuoteBreakdown = {
+  vehicle_class: string
+  distance_km: number
+  mileage_kmpl: number
+  diesel_price_inr: number
+  fuel_cost: number
+  driver_wage: number
+  per_km_operating_cost: number
+  handling: number
+  operating_cost_total: number
+}
+
+export type PriceQuote = {
+  quote_id: string
+  quoted_price: number
+  currency: string
+  expires_at: string
+  breakdown: PriceQuoteBreakdown
+  base_price: number
+  weight_surcharge: number
+  handling_fee: number
+  rate_per_km: number
+  total_price: number
+  platform_fee: number
+  shipper_pays: number
+  driver_receives: number
+  version: string
+  /** Whether `quoted_price` is the charge (`binding`) or a benchmark (`advisory`). */
+  quote_kind?: 'advisory' | 'binding'
+  /** Server-authored sentence explaining where the number came from. */
+  basis?: string
+}
+
+// ── Live tracking (bt-tracking-service read-through aggregate, LOCKED D-8) ──────
+
+export type RouteBounds = {
+  ne_lat: number
+  ne_lng: number
+  sw_lat: number
+  sw_lng: number
+}
+
+export type TrackLocation = {
+  lat: number
+  lng: number
+  heading: number | null
+  speed_kmh: number | null
+  updated_at: string
+}
+
+export type TrackEta = {
+  eta_s: number
+  eta_text: string
+  remaining_m: number
+  traffic: string
+  computed_at: string
+  stale: boolean
+}
+
+export type TrackAlert = {
+  id: string
+  type: string
+  message: string | null
+  lat: number | null
+  lng: number | null
+  acknowledged: boolean
+  created_at: string
+}
+
+export type TrackData = {
+  booking_id: string
+  status: string
+  /** Latest live fix; null until the driver starts sharing location. */
+  location: TrackLocation | null
+  route: {
+    polyline: string
+    distance_m: number
+    bounds: RouteBounds
+  }
+  /** Live traffic ETA; null when there's no location and nothing cached. */
+  eta: TrackEta | null
+  destination: { lat: number; lng: number }
+  alerts: TrackAlert[]
+}
+
+/** A single driver fix (GET /location/booking/:id). Trip-scoped (D-25). */
+export type DriverLocation = {
+  driver_id: string
+  lat: number
+  lng: number
+  heading: number | null
+  speed_kmh: number | null
+  accuracy_m: number | null
+  booking_id: string | null
+  updated_at: string
 }
