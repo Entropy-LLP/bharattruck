@@ -136,6 +136,11 @@ export async function getQuoteById(quoteId: string): Promise<DbQuote | null> {
 // winningQuoteId is NULL on the direct-attach path (D-10): the shipper moved the
 // load with their own truck, so nobody's bid won and EVERY live bid is a losing
 // one. Excluding nothing is the correct answer there, not a degenerate case.
+//
+// CALL THIS BEFORE THE QUOTES ARE CLOSED — awardBooking's step 3 on the auction
+// path, expireOpenQuotes on the direct-attach one. Both flip the live bids to
+// 'expired', and the status filter below then matches nothing: call it afterwards
+// and you get an empty list, not the losers.
 // -----------------------------------------------------------
 
 export async function listLosingQuotes(
