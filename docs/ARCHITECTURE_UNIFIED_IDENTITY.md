@@ -1,11 +1,19 @@
 # Unified Identity & Emergent Personas — locked architecture
 
 > **Status:** LOCKED 2026-08-03 by founder decision. Supersedes the one-role-per-account model.
+> **Extended 2026-08-07** with D-21..D-30 (§9) after a full code audit — the consignee party model,
+> the live-location rule, the sub-contracting seam, and the removal of brokers from scope.
 > Changing anything here needs an explicit dated reversal note in this file, the way `BIBLE.md §2`
 > handles scope reversals — do not silently overwrite.
 >
 > **Companion:** `docs/INDIA_FREIGHT_COMPLIANCE.md` — several decisions below exist because of a
 > legal constraint documented there, and are cross-referenced.
+>
+> ⚠️ **D-1..D-20 below describe the intended model, not uniformly the shipped one.** The 2026-08-07
+> audit found the identity model *written but not wired*: `resolvePersonas()` is complete and
+> imported by nobody, `/auth/me` still returns only `users.role`, and `bookings.award_path` (D-10)
+> is a dead column with no code path. §9.4 is the honest built-vs-designed ledger. Trust the code
+> over any claim in §1–§8.
 
 ---
 
@@ -307,3 +315,126 @@ Ordering, each behind its own PR:
 7. Pricing repositioned to advisory
 
 Steps 1–2 are strictly additive: nothing reads the new columns until step 3.
+
+---
+
+# 9. Extension — locked 2026-08-07
+
+> Founder session of 2026-08-07. Ten further decisions, taken after a code audit of all eight
+> backend domains. Where one of these corrects an earlier decision it says so explicitly; nothing
+> above has been silently edited.
+
+## 9.1 Decisions D-21..D-30
+
+| # | Decision | Consequence |
+|---|---|---|
+| **D-21** | **Config is a PREFERENCE layer, never an authorization layer.** A settings toggle may *suppress* a surface the user does not want; it may never *grant* a capability their assets do not support. | Resolves the tension between D-3 (emergent, no toggles) and the founder's ask for a config map. A fleet owner who only moves own goods flips "private carrier" and loses Find Work / My Bids from their UI — but still holds `carry`+`operate`, because the trucks are real. Defaults are always correct the moment a fact becomes true, so emergence is untouched. |
+| **D-22** | **The consignee is a shipper-KIND party, in one of two states: unclaimed or claimed.** Unclaimed = a record (name, **phone primary**, email, GSTIN, address) with no login. Claimed = a full account. There is ONE entity kind, not two. | Replaces `bookings.receiver_email`. Documents always have complete consignee data; POD OTP authenticates *possession of the party's phone*, not an account; the receiver never installs anything. `ship` becomes **bidirectional** — outbound (posted) and inbound (consigned). Supersedes the receiver-email design in §6.3. |
+| **D-23** | **Brokers / commission agents are PERMANENTLY out of product scope.** | Founder: *"brokers exist because we don't exist."* Disintermediation is the thesis; modelling a broker would compete with it. Note the payout layer stays a generic payee list for D-24's sake, so nothing structurally blocks a reversal — but the product does not model a broker. |
+| **D-24** | **Sub-contracting: the SEAM stays open even though the flow is post-MVP.** The **commercial counterparty** (the winning carrier) is recorded separately from the **executing truck + driver**, and no code may assume they coincide. | Corrects a live hardcoding: `assignDriverAndVehicle` requires the truck *and* the driver's affiliation to belong to the winning fleet, and `resolvePayees` pays an unaffiliated (sub-contracted) driver **₹0** silently, because the D-7 share lookup returns 0 when no affiliation row exists. Both become one named predicate, not scattered guards. |
+| **D-25** | **Live location is a property of an ACTIVE TRIP, never of a person or a truck.** No GPS is stored outside a trip; every read is authorized by the viewer's relation to that trip. | Driver → own active trip only. Fleet → their executing trips (an idle truck shows "idle since X", no pin). Shipper/consignee → the truck carrying *their* in-transit load only. This is server-side authorization, never a frontend filter. Closes two live leaks (§9.4). |
+| **D-26** | **Twilio implements the D-14 SMS seam. SMS-first, email fallback.** The seam is **hoisted to `@bharattruck/shared`** so every service can send. | The seam currently lives private to `bt-auth-service` and knows only `console`/`msg91`, so `bt-cargo-ledger` — the service that sends the POD OTP, the one OTP that most needs a phone — cannot reach it. DLT template registration still applies per provider (`BLOCKERS.md` B-2); the email fallback keeps every flow alive until it lands, and no code changes when it does. |
+| **D-27** | **No hardcoded persona flows anywhere.** Authorization is `capabilities` + relation-to-object. Booking reads return a viewer block with an **array** of relations. | A direct-attach distributor is `['shipper','carrier']` — not forced to pick. The current single-value `relationToBooking` silently drops the second relation, and ~30 sites across five services still branch on the JWT `role` string. |
+| **D-28** | **A trip completed without ever being `in_transit` must be MARKED as such.** | Ops force-complete allows `accepted → completed`, bypassing the state machine. Under D-25 a trip with no movement record has no location history, so a forced completion must never be silently indistinguishable from a proven one. Same principle as `pod_strength` (§6.3). |
+| **D-29** | **`ship` is ungated but WRITE-gated by contact completeness:** posting a load requires a consignee with at least one reachable channel (phone required). | This is what actually kills the receiver-email trap (§9.4, issue #3) — not a nullable column plus a nudge email. A trip can no longer become un-closeable for want of a contact. |
+| **D-30** | **Truck owner ≠ operator (the non-driving investor) stays DEFERRED.** | `vehicles_single_owner` (migration 0022) enforces one owner per truck, which cannot express investor-owns / fleet-operates / third-party-drives. The owner-**driver** attached case works today via `fleet_drivers` affiliation and covers the pilot. Revisit post-MVP with a `vehicle_operator` relation; do not widen the constraint casually — it is what makes "who gets paid for this truck" answerable. |
+
+## 9.2 The consignee, in full (D-22)
+
+The question this answers: *"the receiver needs to be a shipper for GST and e-way bill purposes, but
+must not need an account — how are those the same thing?"*
+
+They are the same thing because **documents need a RECORD; actions need a LOGIN.** Those are
+different requirements, and only the second one needs authentication.
+
+| Concern | What it needs | Consequence |
+|---|---|---|
+| **E-way bill / LR** | consignee name, GSTIN-or-URP, address | A *record* satisfies this completely. The law does not care whether the consignee ever logged in. |
+| **POD** | proof the goods reached the right party | OTP to the party's **phone** (D-26), gated on geofence entry. Zero install, works on a feature phone. |
+| **Paying a `TO_PAY` freight** | an authenticated actor | **This is the claim trigger** — and the only one. |
+| **Seeing your inbound shipments** | an account | Available once claimed; until then, the OTP is the entire access path. |
+
+**Claiming.** Phone OTP → set password → the unclaimed record becomes a full account *with its
+shipment history already attached*. Because a consignee record is shipper-kind, the human who
+claims it can immediately post their own loads. **Every delivery seeds a shipper who is one OTP
+away from their first booking** — the backhaul growth loop, for free.
+
+**Matching.** At posting time, a consignee whose phone matches an existing party links to it rather
+than creating a duplicate; the load then appears under that party's **Incoming**. This is what makes
+the distributor case ordinary: they post, name the consignee (their customer), direct-attach to
+their own fleet (D-10), and the documents read consignor = distributor, consignee = the party.
+
+**Why not a separate `freight_parties` table.** It was considered and rejected: the moment a
+consignee also ships outbound, a separate table gives the same human two identities — precisely the
+problem the unified model exists to kill — and claiming would need a merge migration. The consignee
+is a `users` row that happens to have no password, which the schema already supports (accounts are
+created today with phone-only, email-only, and Google-only shapes, and password-reset already
+handles `password_hash IS NULL`).
+
+> **Anti-goal:** an unclaimed consignee record is **not** a user account with a weak password. It
+> has no credential at all. It cannot be logged into, only claimed. Never mint a password for one.
+
+## 9.3 Live location scoping (D-25)
+
+| Viewer | May read |
+|---|---|
+| Driver | Their own active trip. Nothing else, ever. |
+| Fleet owner (`operate`) | Trips their fleet is executing **now**. Idle trucks report status, not position. |
+| Shipper | The truck carrying their load, while `in_transit`. |
+| Consignee (claimed) | Same as shipper, for their inbound load. |
+| Ops/admin | Explicit, logged bypass. |
+
+**Ingestion follows the same rule:** a location fix must belong to an active trip or be rejected.
+A driver's phone must not be a tracking device outside working hours — that is a product promise,
+not just an authorization detail.
+
+## 9.4 Built vs. designed — the honest ledger (audit, 2026-08-07)
+
+**Fixed and verified in code** (four of five issues from the founder's 2026-08-02 security note):
+settle() now reconciles against `final_price ?? quoted_price` (422 on mismatch, admin override
+logged); login lockout 10/15min charged before bcrypt and enumeration-safe, plus a global
+`SMTP_DAILY_BUDGET`; the HCV rate card is derived (~₹36.7/km cost × 1.63) instead of the ₹22
+constant, and the advisory/binding split (D-11) has landed.
+
+**Found by the audit, not previously known:**
+
+| Severity | Finding |
+|---|---|
+| 🔴 **Critical** | `callback_url` in the request body **overrides** the magic-link and password-reset link base with no allowlist. An unauthenticated attacker has a victim's single-use sign-in / reset token emailed to the attacker's own origin. Account takeover in one POST. |
+| 🔴 **High** | Location reads **fail open**: `/location/driver/:id` and `/location/booking/:id` branch only on `driver`/`shipper`, so any `fleet_owner` JWT reads any driver's live GPS by uuid. |
+| 🔴 **High** | `POST /location/update` treats `booking_id` as optional and skips every trip check when it is absent, storing off-duty positions that then surface on the fleet map. Violates D-25. |
+| 🟠 Medium | Sub-contracted driver silently paid ₹0 (D-24). |
+| 🟠 Medium | `bookings.award_path` is a **dead column** — no code reads or writes it, so every direct booking is recorded as `'auction'` and D-10 direct-attach has no execution path. |
+
+**Written but not wired:** `resolvePersonas()` is complete and tested and imported by nobody;
+`/auth/me` returns only `users.role`; `bt-auth-service` is not on `@bharattruck/shared` at all, so
+wiring it is a build change (Dockerfile, CI path filter) before it is a code change.
+
+**Written but not merged:** branch `feat/pod-rebuild` carries migration `0025_pod_evidence` and
+~2.3k lines implementing camera-only evidence with on-device hashing, geofence-gated OTP,
+server-held expected-vs-actual quantities, an append-only audit log, and the
+`delivery_asserted` / `pod_strength` weaker-proof tier (§6.3). It is real work sitting unreviewed —
+land it rather than rebuilding it.
+
+**Written but not applied:** migration `0024_freight_documents` is in the repo and **not applied to
+the live database**; the document endpoints 503 in production until it is.
+
+> **Migration numbering.** `0025` is claimed by `feat/pod-rebuild`. The consignee party model takes
+> **`0026`**. Numbers are assigned centrally — ask before taking one.
+
+## 9.5 Sequencing
+
+Each row is one PR, green CI, merged, deployed.
+
+| Order | Change | Why here |
+|---|---|---|
+| 1 | `callback_url` origin allowlist | Live account-takeover vector. Nothing waits on this. |
+| 2 | Location authz + trip-scoped ingestion (D-25) | Live privacy leak; also the first D-25 enforcement. |
+| 3 | `relationsToBooking()` + `consignee` relation (D-27) | Pure `packages/shared`, additive, unblocks everything below. |
+| 4 | `bt-auth-service` onto shared + `/auth/me` capabilities | The gate for every capability-gated client. Build change first. |
+| 5 | Twilio provider + seam hoisted to shared (D-26) | Unblocks phone-primary POD. |
+| 6 | Consignee party — migration 0026 + booking wiring (D-22, D-29) | The largest change; needs 3 and 5. |
+| 7 | Viewer block on booking reads; de-role-ify authorization (D-27) | Needs 3 and 4. |
+| 8 | `award_path` + direct-attach endpoint (D-10) | Makes the distributor path real. |
+| 9 | Sub-contract predicate + payee fix (D-24) | Closes the ₹0 payout hole. |
+| 10 | Land `feat/pod-rebuild`; apply 0024 and 0026 | Sequenced last so the DB moves once, deliberately. |
