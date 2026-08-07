@@ -58,11 +58,17 @@ type VehicleStatus =
 
 type HealthLevel = 'ok' | 'degraded' | 'missing'
 
+// Authorization here is by ASSET, not by the JWT `role` string (D-27): completing fleet
+// registration creates the `fleet_owners` row, and that row IS the 'operate' tenant identity —
+// whatever the account's primary persona. A distributor who runs their own trucks reaches this
+// surface exactly as a dedicated fleet owner does, and neither one is gated on a role enum.
+//
+// The admin case is unchanged and still carries the known quirk: an ops admin with no fleet
+// profile of their own resolves to null and gets a 404, because this surface has no "all fleets"
+// view and no way to name a target fleet. Fixing it would mean threading an explicit fleet id
+// through /overview and the geofence routes — a cross-tenant ops board is a separate endpoint,
+// not a widening of this one — so it stays a documented quirk rather than a cheap fix.
 async function requireFleetOwner(user: AuthenticatedUser) {
-  if (user.role !== 'fleet_owner' && user.role !== 'admin') {
-    throw new TrackingError('Fleet owner access required', 'FORBIDDEN', 403)
-  }
-  // An admin acting on a fleet must name it; there is no "all fleets" view here.
   const fleet = await resolveFleetOwnerByUserId(supabase, user.userId)
   if (!fleet) {
     throw new TrackingError(

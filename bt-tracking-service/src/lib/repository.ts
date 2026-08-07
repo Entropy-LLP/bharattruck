@@ -41,15 +41,22 @@ export async function getBookingFleetColumns(
   }
 }
 
-// JWT carries users.id; authz for drivers needs drivers.id.
-export async function getDriverByUserId(userId: string): Promise<{ id: string } | null> {
+// getBookingConsignee — consignee_user_id, fetched SEPARATELY from the hot-path select for
+// the same reason getBookingFleetColumns is: this column arrives in migration 0026, and
+// naming it in getBookingForTracking's select would 42703-fail every tracking endpoint for
+// shipper and driver on any database that predates it. A claimed consignee (users.id) reads
+// their inbound trip through this; an unclaimed one is null and simply never matches.
+//
+// A missing column (pre-0026) is indistinguishable from "this booking has no consignee" — so
+// we return null and let the caller deny, which fails CLOSED, rather than 500.
+export async function getBookingConsignee(id: string): Promise<string | null> {
   const { data, error } = await supabase
-    .from('drivers')
-    .select('id')
-    .eq('user_id', userId)
+    .from('bookings')
+    .select('consignee_user_id')
+    .eq('id', id)
     .maybeSingle()
-  if (error) throw new Error(`Driver lookup failed: ${error.message}`)
-  return data
+  if (error) return null
+  return (data?.consignee_user_id as string | null) ?? null
 }
 
 // ── trip_routes (owned here) — durable backup of the cached route ────────────
