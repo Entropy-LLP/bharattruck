@@ -158,7 +158,13 @@ export async function getBookingById(id: string): Promise<BookingWithProfiles | 
 // CLAUDE.md); bookings.driver_id references drivers(id).
 // -----------------------------------------------------------
 
-export const ACTIVE_TRIP_STATUSES: BookingStatus[] = ['accepted', 'in_transit']
+// 'delivery_asserted' (migration 0025) is ACTIVE. The driver has claimed a delivery
+// the receiver could not confirm, and ops — not the driver — closes it; until they do,
+// the truck is still at the drop and the trip still has a position. Ending the trip at
+// the assertion would let a driver drop off the map by pressing a button, precisely on
+// the branch that carries the WEAKEST proof and therefore needs the trail most. Inert
+// on a pre-0025 database, where no booking can hold this status.
+export const ACTIVE_TRIP_STATUSES: BookingStatus[] = ['accepted', 'in_transit', 'delivery_asserted']
 
 export async function getActiveBookingsForDriver(driverId: string): Promise<DbBooking[]> {
   const { data, error } = await supabase

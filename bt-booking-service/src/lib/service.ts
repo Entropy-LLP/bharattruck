@@ -14,6 +14,8 @@ import {
 } from './fleet.js'
 import { defaultPricingClient, type PricingClient } from './pricing-client.js'
 import * as notify from './notifications/emit.js'
+import * as podRepo from './pod/repository.js'
+import { evaluateOtpGate, type OtpGateResult } from './pod/service.js'
 import { resolveConsigneeParty } from './consignee/repository.js'
 import { attachConsignee, attachConsignees, type WithConsignee } from './consignee/service.js'
 
@@ -715,10 +717,29 @@ export async function setReceiverEmail(
 // solo driver's POD flow. Keep it that way if this payload ever grows.
 // -----------------------------------------------------------
 
+export type PodGeofence = {
+  // true when the truck's position corroborates it is at the drop; false when we had
+  // no trustworthy signal and issued anyway (the documented weaker path).
+  gated: boolean
+  verdict: 'inside' | 'outside' | 'unknown'
+  distance_m: number | null
+  source: 'telemetry' | 'geofence_event' | 'none'
+  // Whether a 'block' verdict would actually have refused issuance (POD_GEOFENCE_GATE).
+  // Surfaced rather than hidden so the driver app can say "we could not confirm you are
+  // at the drop" without implying a refusal that is not happening — and so a QA pass can
+  // tell an observing gate from an enforcing one without reading the deployment env.
+  enforced: boolean
+}
+
 export type PodContext = {
   booking_id: string
   status: BookingStatus
   receiver_email: string | null
+  // Present ONLY when migration 0025 is live and the geofence gate ran. Absent on a
+  // pre-0025 database, so the payload is byte-identical to today there. bt-cargo-ledger
+  // reads only receiver_email, so this is additive for it; the driver app uses it to
+  // show whether the code will be a corroborated (strong) or degraded (weak) proof.
+  geofence?: PodGeofence
 }
 
 export async function getPodContext(
@@ -762,7 +783,55 @@ export async function getPodContext(
     await notify.emitReceiverEmailMissing(booking, log)
   }
 
-  return { booking_id: booking.id, status: booking.status, receiver_email: booking.receiver_email }
+  // GEOFENCE-GATED OTP (§5.5, D-14). This runs ONLY when migration 0025 is live —
+  // otherwise the existing email-OTP POD must behave EXACTLY as today, so we return
+  // the same three-field context and never gate. The gate is what closes the "driver
+  // phones ahead and gets the code 40 km out" hole: a live fix clearly away from the
+  // drop BLOCKS issuance (a 409 that bt-cargo-ledger surfaces before it emails a code),
+  // while no-signal DEGRADES to the documented weaker path rather than hard-blocking a
+  // legitimate delivery where tracking was not running.
+  const base: PodContext = { booking_id: booking.id, status: booking.status, receiver_email: booking.receiver_email }
+  if (!(await podRepo.podFeatureAvailable(log))) {
+    return base
+  }
+
+  const gate: OtpGateResult = await evaluateOtpGate(booking, log)
+
+  // The audit line is written for EVERY decision, before the refusal and regardless of
+  // whether the gate is enforced (POD_GEOFENCE_GATE, default off — see pod/service.ts).
+  // That ordering is the point of the kill switch: with the switch off, production keeps
+  // answering "how often would this have blocked a real driver, and how far out were
+  // they" from otp_gate_block lines carrying enforced=false, so the switch is eventually
+  // flipped on evidence instead of on hope.
+  await podRepo.appendAudit(
+    { booking_id: booking.id,
+      action: gate.decision === 'block' ? 'otp_gate_block'
+        : gate.decision === 'degrade' ? 'otp_gate_degraded'
+        : 'otp_gate_pass',
+      actor_user_id: actor.userId, actor_role: actor.role,
+      detail: { verdict: gate.verdict, distance_m: gate.distance_m, source: gate.source, enforced: gate.enforced } },
+    log,
+  )
+
+  if (gate.decision === 'block' && gate.enforced) {
+    const km = gate.distance_m !== null ? ` (~${(gate.distance_m / 1000).toFixed(1)} km away)` : ''
+    throw new BookingError(
+      `You are not at the delivery location yet${km} — the delivery code is issued only from the drop point`,
+      'INVALID_TRANSITION',
+      409,
+    )
+  }
+
+  return {
+    ...base,
+    geofence: {
+      gated: gate.decision === 'pass',
+      verdict: gate.verdict,
+      distance_m: gate.distance_m,
+      source: gate.source,
+      enforced: gate.enforced,
+    },
+  }
 }
 
 // -----------------------------------------------------------
@@ -794,6 +863,29 @@ export async function completeBookingViaPod(bookingId: string, log?: Logger): Pr
       409,
     )
   }
+
+  // POD hardening consequences of a CONFIRMED delivery (migration 0025). All three are
+  // BEST-EFFORT and swallow a missing relation: the trip is already 'completed' upstream,
+  // so on a pre-0025 database this path is byte-identical to what shipped before —
+  // pod_state/consignee-ack/audit simply do not exist to write to.
+  //   * pod_strength='confirmed' — the receiver held the secret, the strongest tier.
+  //   * consignee_ack — the second half of a dual-ack discrepancy, landed by the OTP the
+  //     consignee just entered (the driver was already on record at submission). It
+  //     carries bookings.consignee_user_id (0026) so the ack NAMES the acknowledging
+  //     party when they hold an account; NULL is the honest answer when they do not.
+  //   * an append-only audit line, so the confirmation is on the trail like everything else.
+  await podRepo.setConfirmedBestEffort(bookingId, 'receiver_otp', log)
+  await podRepo.stampConsigneeAckBestEffort(bookingId, 'receiver_otp', booking.consignee_user_id ?? null, log)
+  await podRepo.appendAudit(
+    { booking_id: bookingId, action: 'pod_confirmed', detail: { via: 'receiver_otp' } },
+    log,
+  )
+  await podRepo.appendAudit(
+    { booking_id: bookingId, action: 'consignee_ack',
+      actor_user_id: booking.consignee_user_id ?? null,
+      detail: { via: 'receiver_otp', claimed_account: Boolean(booking.consignee_user_id) } },
+    log,
+  )
 
   // The one notification the trip cannot be considered closed without: both sides
   // learn the receiver's OTP landed. Idempotent on the booking, so the payout saga
@@ -875,7 +967,12 @@ export async function markBookingPaid(
 // in_transit→completed case is the same target the normal machine allows.
 // -----------------------------------------------------------
 
-const OPS_FORCE_COMPLETE_SOURCES: BookingStatus[] = ['accepted', 'in_transit']
+// 'delivery_asserted' is the ops-close source for the no-confirmation POD branch: the
+// driver captured evidence and asserted delivery, and ops confirms it into 'completed'
+// (migration 0025). The pod_state row keeps pod_strength='asserted' across the close —
+// ops closing an asserted trip does NOT upgrade it to a confirmed proof (§6.3). Adding
+// the source is inert on a pre-0025 database, where no booking can be in this state.
+const OPS_FORCE_COMPLETE_SOURCES: BookingStatus[] = ['accepted', 'in_transit', 'delivery_asserted']
 
 function assertOps(actor: AuthenticatedUser): void {
   if (actor.role !== 'admin') {
@@ -909,6 +1006,19 @@ export async function forceCompleteBooking(
       'Booking could not be force-completed — its status changed concurrently',
       'INVALID_TRANSITION',
       409,
+    )
+  }
+
+  // Closing an ASSERTED delivery is the ops half of the delivery_asserted branch. Stamp
+  // who/when on pod_state (pod_strength stays 'asserted') and audit it. Guarded on the
+  // source so a plain in_transit/accepted force-complete adds ZERO new DB calls — that
+  // path is byte-identical to before. Both writes are best-effort (0025 may be absent).
+  if (fromStatus === 'delivery_asserted') {
+    await podRepo.markOpsClosedBestEffort(bookingId, actor.userId, log)
+    await podRepo.appendAudit(
+      { booking_id: bookingId, action: 'ops_closed', actor_user_id: actor.userId, actor_role: actor.role,
+        detail: { from_status: fromStatus } },
+      log,
     )
   }
 

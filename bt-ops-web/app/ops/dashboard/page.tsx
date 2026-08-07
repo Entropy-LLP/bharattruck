@@ -12,6 +12,8 @@ const STATUS_BADGE: Record<BookingStatus, { variant: BadgeVariant; label: string
   negotiating: { variant: 'info',    label: 'Negotiating' },
   accepted:    { variant: 'accent',  label: 'Assigned'    },
   in_transit:  { variant: 'accent',  label: 'In Transit'  },
+  // Evidence captured, receiver could not confirm — waiting on an ops close (0025).
+  delivery_asserted: { variant: 'warning', label: 'Awaiting Close' },
   completed:   { variant: 'success', label: 'Delivered'   },
   paid:        { variant: 'success', label: 'Paid'        },
   cancelled:   { variant: 'error',   label: 'Cancelled'   },
@@ -23,6 +25,7 @@ const STATUS_DOTS: Record<BookingStatus, string> = {
   negotiating: 'bg-blue-400',
   accepted:    'bg-violet-400',
   in_transit:  'bg-[#FF7A00]',
+  delivery_asserted: 'bg-amber-400',
   completed:   'bg-emerald-500',
   paid:        'bg-emerald-500',
   cancelled:   'bg-red-500',

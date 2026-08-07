@@ -164,8 +164,12 @@ export interface AuthResponse {
   user: AuthUser
 }
 
+// 'delivery_asserted' (migration 0025) is the no-confirmation POD branch: the driver
+// captured evidence but the receiver could not confirm, so the trip parks here until
+// OPS closes it to 'completed' — which makes it this console's state above all others.
+// Listed so it is REPRESENTABLE; the surface that acts on it is a later PR.
 export type BookingStatus =
-  | 'pending' | 'accepted' | 'negotiating' | 'in_transit' | 'completed' | 'cancelled' | 'paid'
+  | 'pending' | 'accepted' | 'negotiating' | 'in_transit' | 'delivery_asserted' | 'completed' | 'cancelled' | 'paid'
 
 export interface Booking {
   id: string

@@ -27,6 +27,8 @@ const STATUS_BADGE: Record<BookingStatus, { label: string; className: string }> 
   negotiating: { label: 'Negotiating', className: 'bg-blue-500/15 text-blue-500' },
   accepted:    { label: 'Assigned',    className: 'bg-amber-500/15 text-amber-500' },
   in_transit:  { label: 'In Transit',  className: 'bg-[#F97316]/15 text-[#F97316]' },
+  // Evidence captured, receiver could not confirm — waiting on an ops close (0025).
+  delivery_asserted: { label: 'Awaiting Close', className: 'bg-amber-500/15 text-amber-500' },
   completed:   { label: 'Delivered',   className: 'bg-green-500/15 text-green-600' },
   paid:        { label: 'Paid',        className: 'bg-emerald-500/15 text-emerald-600' },
   cancelled:   { label: 'Cancelled',   className: 'bg-red-500/15 text-red-500' },
@@ -34,7 +36,12 @@ const STATUS_BADGE: Record<BookingStatus, { label: string; className: string }> 
 
 // Which ops override each status permits (mirrors the T-BE-6 state guards).
 const CANCELLABLE: BookingStatus[] = ['pending', 'negotiating', 'accepted']
-const FORCE_COMPLETABLE: BookingStatus[] = ['accepted', 'in_transit']
+// 'delivery_asserted' mirrors OPS_FORCE_COMPLETE_SOURCES in bt-booking-service — and it
+// is not optional here. An asserted delivery is closed by OPS and by nobody else, so a
+// console that does not offer the button parks the trip forever one step short of paid.
+// pod_strength stays 'asserted' across the close; the console surface that SHOWS which
+// proof is being closed is a later PR.
+const FORCE_COMPLETABLE: BookingStatus[] = ['accepted', 'in_transit', 'delivery_asserted']
 const REASSIGNABLE: BookingStatus[] = ['accepted', 'in_transit']
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i

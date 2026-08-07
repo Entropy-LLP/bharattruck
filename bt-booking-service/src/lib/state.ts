@@ -11,7 +11,18 @@ export const VALID_TRANSITIONS: Record<BookingStatus, BookingStatus[]> = {
   pending:      ['accepted', 'cancelled', 'negotiating'],
   negotiating:  ['accepted', 'cancelled'],
   accepted:     ['in_transit', 'cancelled'],
-  in_transit:   ['completed'],
+  // in_transit forks: the receiver-OTP path closes straight to 'completed'
+  // (confirmed proof), while a delivery the receiver cannot confirm branches to
+  // 'delivery_asserted' (migration 0025, evidence-only proof). Adding the second
+  // target does NOT change the first: an OTP completion is byte-identical to
+  // before, and on a pre-0025 database the enum value does not exist so the
+  // assert branch is simply unreachable.
+  in_transit:   ['completed', 'delivery_asserted'],
+  // delivery_asserted is closed by OPS, not the driver — force-complete moves it
+  // to 'completed' (the money loop then proceeds normally), or ops cancels a bad
+  // assertion. pod_state keeps pod_strength='asserted' across the close, so the
+  // weaker proof is never silently upgraded (§6.3).
+  delivery_asserted: ['completed', 'cancelled'],
   completed:    ['paid'],       // cash-recorded settlement closes the money loop
   paid:         [],
   cancelled:    [],

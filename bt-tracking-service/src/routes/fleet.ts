@@ -34,6 +34,19 @@ import { TrackingError, type AuthenticatedUser, type LiveLocation } from '../lib
 const LIVE_WINDOW_SECONDS = 90
 /** Matches the evaluator's MOVING_KMH and the existing fleet map page. */
 const MOVING_KMH = 5
+/**
+ * The booking statuses in which a GPS fix is EXPECTED — the mirror of
+ * ACTIVE_TRIP_STATUSES in bt-booking-service/src/lib/repository.ts, which is what
+ * /location/update actually enforces. The two must agree: this list only decides what
+ * the owner is TOLD, so a list that is narrower than the ingester's turns a truck that
+ * is reporting normally into "assigned, not started" and sends the owner chasing a
+ * driver who is doing nothing wrong.
+ *
+ * 'delivery_asserted' is in it because ingestion accepts it: the driver has claimed a
+ * delivery the receiver could not confirm and ops has not closed the trip yet, so the
+ * truck is still at the drop and still reporting (migration 0025).
+ */
+const GPS_EXPECTED_STATUSES = ['accepted', 'in_transit', 'delivery_asserted']
 
 type VehicleStatus =
   | 'moving'
@@ -111,9 +124,9 @@ function classify(args: {
   }
 
   // Assigned, but the trip has not reached a state where GPS is expected. booking-service
-  // rejects /location/update outside accepted|in_transit, so absence of a fix here is
+  // rejects /location/update outside GPS_EXPECTED_STATUSES, so absence of a fix here is
   // correct behaviour, not a fault.
-  if (bookingStatus !== 'accepted' && bookingStatus !== 'in_transit') {
+  if (!GPS_EXPECTED_STATUSES.includes(bookingStatus)) {
     return {
       status: 'assigned_not_started',
       status_label: 'Assigned',
