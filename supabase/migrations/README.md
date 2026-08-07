@@ -1,72 +1,122 @@
 # BharatTruck — Supabase migrations
 
-This directory is the **versioned source of truth** for the `bharattruck-mvp` Postgres schema.
+> # ⚠️ THIS FOLDER IS HISTORY, NOT STATE
+>
+> These files record **how the schema changed**. They do not describe what the schema is,
+> and they cannot be used to rebuild it.
+>
+> **For the current schema, read [`supabase/schema/baseline.sql`](../schema/baseline.sql)** —
+> generated from production by introspection, verified object-by-object against the live
+> catalog, and regenerable (`scripts/db/dump-schema.md`).
+>
+> **`0001`–`0008` do not exist and never did.** The DDL that created `users`, `bookings`,
+> `drivers`, `vehicles`, `quotes`, `trips`, `notifications` and most of the founding tables
+> was applied directly to the live project and was never committed to this repo. This
+> folder therefore starts mid-story at `0009`. Anyone who reads these files to learn the
+> schema gets a confident, badly incomplete answer — that is exactly the failure this
+> banner exists to prevent.
 
-> **Why this exists:** the MVP PRD makes "DB schema reproducible from committed migrations"
-> a P0 requirement (item #28) and a Definition-of-Done gate (§11). Until now the schema
-> lived only in the live Supabase project and in drifting `CREATE TABLE` comments inside
-> service code (e.g. `bt-booking-service/src/lib/quote-repository.ts`). These files begin
-> to close that gap.
+## Why the ledger cannot tell you what is applied
 
-## ⚠️ Step 0 — capture the baseline BEFORE applying these (do this once)
+`supabase_migrations.schema_migrations` is not an answer. It holds 27 rows keyed by
+Supabase-CLI timestamps that do not map onto our `NNNN_` filenames, and:
 
-The live schema was **not** created through migrations, so there is no baseline yet.
-Generate one from the live project so a clean environment can be rebuilt deterministically:
+- 14 rows carry names that match **no file in this folder** —
+  `add_email_auth_columns`, `add_auction_quotes_negotiations`,
+  `add_negotiating_to_booking_status`, `driver_track_complete_schema`,
+  `maps_tracking_009`, the five `secure_*` / `fix_*` / `revoke_*` / `pin_*` security
+  fixes, `create_dispatch_tracker_status`, `tracker_allow_reset_delete`, `pmo_schema`,
+  `pmo_autotrack_attachments`. Most are the missing `0001`–`0008` era. Whether any of them
+  is an earlier spelling of a file we do have is no longer recoverable — which is the
+  point.
+- One row, `reconcile_for_slice_demo_009_012`, folds four of our migrations into a single
+  entry.
+- Three rows (`0019`, `0020`, `0021`) are recorded under descriptive names rather than the
+  file name, so a filename lookup misses them.
+- **`0023_payout_split` has no row at all**, yet its columns
+  (`payouts.payee_type`, `fleet_drivers.revenue_share_pct`) are live.
+- The three most recent rows have a NULL `statements` column — they were written by hand
+  after the SQL was executed through `execute_sql`, because this harness blocks
+  `apply_migration`.
 
-```bash
-supabase link --project-ref rxbdzbcndpzznvqcbimg
-supabase db pull            # writes supabase/migrations/<ts>_remote_schema.sql (the baseline)
+So the ledger under-reports, over-reports and mislabels. **The only reliable test is
+whether the objects exist.**
+
+## How to check whether a migration is applied
+
+Query the catalog for something the migration creates. Never read the ledger, never
+assume a file on `main` is live.
+
+```sql
+-- a table
+select to_regclass('public.trip_economics') is not null;
+-- a column
+select exists (select 1 from pg_attribute
+               where attrelid = to_regclass('public.payouts')
+                 and attname = 'payee_type' and attnum > 0 and not attisdropped);
+-- an enum label
+select exists (select 1 from pg_enum e join pg_type t on t.oid = e.enumtypid
+               where t.typname = 'booking_status' and e.enumlabel = 'paid');
+-- a function ACL (for 0027)
+select proacl::text from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+where n.nspname = 'public' and p.proname = 'issue_lorry_receipt';
 ```
 
-Commit that generated baseline file **with a timestamp earlier** than the `0001_*` file
-below, so the ordering is: baseline → these incremental fixes.
+## Applied state, verified against the catalog on 2026-08-07
 
-## Applying
+Every line below was checked by querying for the objects, not by reading the ledger.
 
-Review the diff, then:
-
-```bash
-supabase db push            # applies pending migrations to the linked project
-# or, per file, via the dashboard SQL editor / `supabase migration up`
-```
-
-All migrations here are **forward-only, idempotent** (`IF EXISTS` / `IF NOT EXISTS`) and were
-written against the schema as it existed on 2026-07-04. Tables are essentially empty
-(pre-launch), so `ALTER TYPE` / type changes / constraint adds are safe without `NOT VALID`.
-
-## What these migrations fix (the "safe efficiency wins" pass)
-
-| File | Fixes | Review finding |
+| Migration | Applied | Evidence checked |
 |---|---|---|
-| `0001_drop_redundant_indexes.sql` | Drop 9 duplicate / leftmost-prefix / low-selectivity / useless indexes | #16 |
-| `0002_add_missing_indexes.sql` | Add the unindexed FKs (incl. the `negotiations` seq-scan) + the driver load-board hot path | #16 |
-| `0003_standardize_money_types.sql` | Unbounded `numeric` → `numeric(12,2)` + `> 0` checks on `negotiations.amount`, `bookings.min_acceptable` | #14 |
-| `0004_add_booking_status_expired.sql` | Add `'expired'` to `booking_status` for the auction-expiry job | #11 |
-| `0005_constrain_status_text_fields.sql` | `CHECK` on `quotes.status` + `bookings.booking_type` (were unconstrained free text) | #11 |
-| `0006_integrity_fks_and_checks.sql` | `awarded_quote_id` FK+index; `location_history` lat/lng bounds + `driver_id` FK | #13, #14 |
-| `0007_rls_initplan_perf.sql` | Wrap `auth.uid()`/`auth.role()` in `(select …)` so RLS isn't re-evaluated per row | (perf advisor: `auth_rls_initplan`, 20×) |
+| `0001`–`0008` | **n/a — never existed** | not in this repo; the equivalent DDL is live and unversioned |
+| `0009_location_history` | ✅ | `location_history` exists |
+| `0010_pod_receipts` | ✅ | `pod_receipts` exists; `bookings.receiver_email` exists |
+| `0011_payments_payouts` | ✅ | `payments`, `payouts` exist; `booking_status` has `'paid'` |
+| `0012_ops_overrides` | ✅ | `ops_overrides` exists; `user_role` has `'admin'` |
+| `0013_price_quotes` | ✅ | `price_quotes` exists |
+| `0014_fleet_owner_role` | ✅ | `user_role` has `'fleet_owner'` |
+| `0015_fleet_owner_core` | ✅ | `fleet_owners`, `fleet_drivers` exist |
+| `0016_fleet_assignment_and_auction` | ✅ | `vehicle_assignments` exists; `quotes.fleet_owner_id`, `vehicles.fleet_owner_id`, `bookings.fleet_owner_id`, `bookings.vehicle_id` exist |
+| `0017_fleet_asset_economics` | ✅ | `vehicle_finance`, `vehicle_permits`, `vehicle_lanes`, `trip_economics` exist; `trip_expenses.vehicle_id` exists |
+| `0018_vehicle_cost_norms` | ✅ | `vehicle_cost_norms`, `vehicle_service_cost_by_age`, `fleet_cost_settings` exist |
+| `0019_geofencing_and_telemetry` | ✅ | `geofences`, `geofence_events`, `trip_telemetry` exist; `route_alerts.severity` exists |
+| `0020_negotiations_fleet_owner_actor` | ✅ | `negotiations_actor_role_check` includes `'fleet_owner'` |
+| `0021_notification_outbox` | ✅ | `notification_outbox`, `notification_preferences` exist |
+| `0022_unified_identity` | ✅ | `users.primary_persona` exists (generated column) |
+| `0023_payout_split` | ✅ | `payouts.payee_type`, `fleet_drivers.revenue_share_pct` exist — **despite having no ledger row** |
+| `0024_freight_documents` | ✅ | `document_series`, `lorry_receipts`, `freight_invoices`, `eway_bill_records` and the five `*_document_*` functions exist |
+| `0025_pod_evidence` | ❌ **not applied** | not on `main` — lives on `feat/pod-evidence` and `feat/pod-rebuild`. `pod_evidence`, `pod_state`, `pod_discrepancies`, `pod_audit_log` do not exist; `booking_status` has no `'delivery_asserted'`; `bookings.pod_expected_quantity` does not exist |
+| `0026_consignee_party` | ✅ | `bookings.consignee_user_id`, `users.gstin`, `users.claimed_at` exist |
+| `0027_document_function_acls` | ❌ **not applied** | merged to `main` in PR #87, but `anon` and `authenticated` still hold explicit `EXECUTE` on `allocate_document_number`, `next_free_document_serial`, `sync_document_series_counter`, `issue_lorry_receipt`, `issue_freight_invoice` |
 
-Value lists in the `CHECK` constraints were validated against the actual literals the
-services emit (`bt-booking-service/src/lib/types.ts`) — e.g. `quotes.status` includes
-`'countered'`, which the naïve list would have wrongly rejected.
+`0027` is the one to act on: until it is applied, `anon` can call `issue_lorry_receipt`
+and `issue_freight_invoice`, which burn numbers off a legally gapless series and write
+documents. `baseline.sql` §13 records that grant as it stands.
 
-## Deliberately NOT in this pass (need a decision / bigger change)
+## Other things the catalog says these files did not do
 
-These are real, higher-value findings held back because they are structural, destructive,
-or product decisions — track them separately:
+The uncommitted `0001`–`0008` pass was described in an earlier version of this README as
+adding indexes, money-type constraints and integrity FKs. Some of that never landed:
 
-- **#1 baseline migration** — do Step 0 above.
-- **#2 KYC** — `user_kyc` table (level L0–L3 + encrypted number + SHA-256 dedup hash); code
-  currently targets a table that doesn't exist.
-- **#3 payments** — escrow state machine + RazorpayX payout/refund ids + idempotency key.
-- **#4/#5** — POD receiver-OTP artifact + `receiver_email`; persisted pricing quote-lock.
-- **#6 PII (security)** — drop the **plaintext** `drivers.bank_account_number` / `bank_ifsc_code`
-  (they duplicate the encrypted `bank_accounts` store); tighten the `drivers` SELECT policy that
-  currently exposes all-driver PII to any authenticated JWT. *Requires a code grep first —
-  `DROP COLUMN` is destructive.*
-- **#7 (security)** — `REVOKE` the anon/authenticated data-API grants and drop the
-  `pmo_*` / `dispatch_tracker_status` `USING(true)` policies; move `pmo_*` out of the product DB.
-- **#8/#9/#10** — cargo-ledger tables; fleet truck→driver assignment model; add `'fleet_owner'`
-  to `user_role` (auth code already writes it → currently 500s).
-- **#12/#15** — audit-trail `ON DELETE` review; consolidate the two GPS breadcrumb tables and
-  give the survivor a `bigint` identity PK + partitioning/retention.
+- `booking_status` has **no** `'expired'` label (the auction-expiry work of `0004`).
+- `bookings.awarded_quote_id` has **no** foreign key to `quotes` (`0006`).
+- `location_history.driver_id` has **no** foreign key to `drivers` (`0006`).
+- `bookings.min_acceptable` and `negotiations.amount` are still unbounded `numeric`,
+  not `numeric(12,2)` (`0003`).
+
+Treat any claim in a migration file about what "already exists" as unverified.
+
+## Applying a migration
+
+By hand, and only by hand. **CD does not apply migrations** — the deploy pipeline builds
+and ships services and never touches the database. Run the SQL against the project
+(historically via the Supabase MCP `execute_sql`, since `apply_migration` is blocked by
+this harness's classifier), then:
+
+1. Verify the objects exist with the catalog queries above.
+2. Regenerate `supabase/schema/baseline.sql` per `scripts/db/dump-schema.md`.
+3. Update the table in this file.
+
+Migrations here are forward-only and written idempotently (`IF EXISTS` / `IF NOT EXISTS`).
+Numbering is assigned centrally — ask before claiming a number, so two branches do not
+both take `00NN`.
