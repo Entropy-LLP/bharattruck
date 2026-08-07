@@ -88,6 +88,29 @@ const SCHEMA_ABSENT_CODES = new Set(['42703', '42P01', 'PGRST204', 'PGRST205'])
 // exists. Deriving it from the data avoids a schema probe and cannot drift.
 export type PayoutKey = { bookingId: string; payeeType: PayoutPayee['payee_type']; keyByPayeeType: boolean }
 
+// DriverShare — what the winning carrier's affiliation records say about the driver
+// who actually RAN the trip. Not a bare percentage, because the ways of arriving at
+// 0 are not the same fact and must not be paid out as if they were (D-24):
+//
+//   'affiliated' — a fleet_drivers row governs the pairing. share_pct 0 means
+//                  SALARIED: the owner keeps the freight and pays the driver off
+//                  the platform. That is all 620 live rows.
+//   'none'       — no fleet_drivers row pairs this driver with this carrier at all.
+//                  The truck ran, the driver ran it, and the two parties have no
+//                  standing term between them — D-24's sub-contracted case. There
+//                  is nothing to split on, which is an ANOMALY, not a salary.
+//   'unknown'    — the schema cannot answer: a database predating migration 0022
+//                  has no revenue_share_pct column, and on it every fleet trip is
+//                  salaried. That is today's behaviour, so it must stay silent —
+//                  flagging an anomaly on every fleet settlement would be noise.
+export type DriverShare = {
+  affiliation: 'affiliated' | 'none' | 'unknown'
+  /** The driver's cut of a fleet-won trip, 0..100. 0 on every branch with nothing to read. */
+  share_pct: number
+  /** The governing affiliation's status ('active'|'suspended'|'left'); null when there is no row. */
+  status: string | null
+}
+
 export interface PaymentStore {
   getPayment(bookingId: string): Promise<PaymentRecord | null>
   insertPayment(row: PaymentRecord): Promise<void>
@@ -101,8 +124,8 @@ export interface PaymentStore {
   deletePayout(key: PayoutKey): Promise<void>
   /** saga path — create a 'pending' payout only if none exists yet. */
   insertPendingPayoutIfAbsent(row: PayoutRecord): Promise<void>
-  /** D-7 — the driver's cut of a fleet-won trip, 0..100. 0 (salaried) when unset. */
-  getDriverRevenueSharePct(fleetOwnerId: string, driverId: string): Promise<number>
+  /** D-7/D-24 — the executing driver's cut of a fleet-won trip, and whether an affiliation backs it. */
+  getDriverShare(fleetOwnerId: string, driverId: string): Promise<DriverShare>
 }
 
 // wirePayout — the row as it goes over the wire to PostgREST.
@@ -204,7 +227,13 @@ export class SupabasePaymentStore implements PaymentStore {
   // left the fleet before settlement — the alternative silently hands their cut
   // to the owner. 'pending'/'rejected' are excluded: an invite that was never
   // accepted agreed no terms.
-  async getDriverRevenueSharePct(fleetOwnerId: string, driverId: string): Promise<number> {
+  //
+  // D-24 — "which row governs" and "is there a row at all" are answered
+  // SEPARATELY. This used to return a bare number, so no-affiliation collapsed
+  // into the salaried 0 and a driver executing a trip for a fleet they do not
+  // belong to was paid nothing, silently. The caller cannot act on a fact this
+  // method throws away, so it is carried out instead.
+  async getDriverShare(fleetOwnerId: string, driverId: string): Promise<DriverShare> {
     const { data, error } = await getSupabase()
       .from('fleet_drivers')
       .select('status, revenue_share_pct')
@@ -219,14 +248,22 @@ export class SupabasePaymentStore implements PaymentStore {
       // and must stay reachable. Anything else is a real failure and propagates
       // (the payout write is the first write, so settle() leaves no trace and
       // the retry replays cleanly).
-      if (SCHEMA_ABSENT_CODES.has((error as { code?: string }).code ?? '')) return 0
+      if (SCHEMA_ABSENT_CODES.has((error as { code?: string }).code ?? '')) {
+        return { affiliation: 'unknown', share_pct: 0, status: null }
+      }
       throw new Error(`fleet_drivers read failed: ${error.message}`)
     }
 
     const rows = (data as Array<{ status: string; revenue_share_pct: number | null }>) ?? []
     const governing = rows.find((r) => r.status === 'active') ?? rows[0]
-    const pct = Number(governing?.revenue_share_pct ?? 0)
-    return Number.isFinite(pct) ? pct : 0
+    // No row at all — the fact the old bare-number return destroyed. A driver whose
+    // only link to this fleet is an invite they never accepted lands here too, since
+    // 'pending'/'rejected' are filtered out above, and that is the right reading: an
+    // unaccepted invite is no more a wage agreement than no invite at all.
+    if (!governing) return { affiliation: 'none', share_pct: 0, status: null }
+
+    const pct = Number(governing.revenue_share_pct ?? 0)
+    return { affiliation: 'affiliated', share_pct: Number.isFinite(pct) ? pct : 0, status: governing.status }
   }
 }
 

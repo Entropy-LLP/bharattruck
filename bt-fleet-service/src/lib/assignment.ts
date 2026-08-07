@@ -1,6 +1,6 @@
 import { getSupabase } from './supabase.js'
 import { getActiveAffiliation } from './fleet-repo.js'
-import { requireFleetVehicle } from './vehicles-repo.js'
+import { getFleetVehicle } from './vehicles-repo.js'
 import { assertVehicleAvailable } from './vehicle-schedule.js'
 import {
   asRow,
@@ -88,6 +88,59 @@ export type AssignResult = {
   booking: BookingRow
 }
 
+// The two ownership reads the seam below rests on. Injected, with the live repos as
+// the default, so the policy itself can be asserted on without a database — which is
+// how the rest of this service's suite is written.
+export type ExecutionLookups = {
+  vehicle(fleetOwnerId: string, vehicleId: string): Promise<{ id: string } | null>
+  affiliation(fleetOwnerId: string, driverId: string): Promise<{ id: string } | null>
+}
+
+const LIVE_LOOKUPS: ExecutionLookups = {
+  vehicle: getFleetVehicle,
+  affiliation: getActiveAffiliation,
+}
+
+// mayExecuteFor — THE sub-contract seam (D-24), and the ONLY place that couples the
+// carrier who WON the work to the truck and driver that EXECUTE it.
+//
+// D-24 records those as separate facts: the commercial counterparty is whoever's bid
+// the shipper accepted, the executing assets are whatever actually rolls, and no
+// code may assume they coincide. Today's answer says they must — a fleet dispatches
+// its own truck, crewed by a driver holding a live affiliation with it — and that
+// answer is UNCHANGED here. What changes is that it is one named question instead of
+// two guards sitting a few lines apart, so when sub-contracting lands (post-MVP)
+// this is the function that gets relaxed, and a reader can see what today's policy
+// IS rather than reconstructing it from the order of the statements around it.
+//
+// Returns the refusal instead of throwing it, so both facts and their deliberately
+// different refusals sit side by side: a truck that is not this carrier's reads as a
+// 404 — never as somebody else's truck, which would confirm its existence to a fleet
+// that has no business knowing — while a driver without a live affiliation is a 403,
+// because the refusal there is about the relationship, not the driver.
+//
+// NOT a mutual-exclusion check. Whether the truck is FREE is the vehicle_assignments
+// insert's job, with D-19's read in front of it for a refusal that names the trip.
+// This answers only "whose assets are these".
+export async function mayExecuteFor(
+  carrier: { fleetOwnerId: string },
+  assets: { vehicleId: string; driverId: string },
+  lookups: ExecutionLookups = LIVE_LOOKUPS,
+): Promise<FleetError | null> {
+  // The truck must be the carrier's own. Scoped by fleet_owner_id, so another
+  // fleet's truck — or a solo driver's — is indistinguishable from one that does not
+  // exist at all.
+  const vehicle = await lookups.vehicle(carrier.fleetOwnerId, assets.vehicleId)
+  if (!vehicle) return new FleetError('Vehicle not found in this fleet', 'NOT_FOUND', 404)
+
+  // The driver must hold an ACTIVE affiliation with the carrier. Pending, suspended
+  // and left drivers cannot be dispatched.
+  const affiliation = await lookups.affiliation(carrier.fleetOwnerId, assets.driverId)
+  if (!affiliation) return new FleetError('Driver is not an active member of this fleet', 'FORBIDDEN', 403)
+
+  return null
+}
+
 export async function assignDriverAndVehicle(input: AssignInput): Promise<AssignResult> {
   const supabase = getSupabase()
 
@@ -102,17 +155,18 @@ export async function assignDriverAndVehicle(input: AssignInput): Promise<Assign
     )
   }
 
-  // (2) The truck must be THIS fleet's (throws 404 otherwise).
-  await requireFleetVehicle(input.fleetOwnerId, input.vehicleId)
+  // (2) THE SEAM (D-24) — may this truck and this driver execute work won by this
+  // carrier? The carrier is the booking's own fleet_owner_id, which (1) has just
+  // proved to be input.fleetOwnerId by scoping the read on it; passing it as a named
+  // argument is what keeps "who won the work" and "whose assets run it" two facts
+  // rather than one. mayExecuteFor is where they are (still) required to coincide.
+  const refusal = await mayExecuteFor(
+    { fleetOwnerId: input.fleetOwnerId },
+    { vehicleId: input.vehicleId, driverId: input.driverId },
+  )
+  if (refusal) throw refusal
 
-  // (3) The driver must hold an ACTIVE affiliation with THIS fleet. Pending,
-  // suspended and left drivers cannot be dispatched.
-  const affiliation = await getActiveAffiliation(input.fleetOwnerId, input.driverId)
-  if (!affiliation) {
-    throw new FleetError('Driver is not an active member of this fleet', 'FORBIDDEN', 403)
-  }
-
-  // (4) D-19 — the truck is committed to one trip at a time. The insert below is
+  // (3) D-19 — the truck is committed to one trip at a time. The insert below is
   // still the authority; this runs first so the dispatcher is told WHICH trip the
   // truck is on, and so a commitment recorded outside vehicle_assignments (a trip
   // still running after its assignment row was released) is seen at all. The
@@ -120,12 +174,12 @@ export async function assignDriverAndVehicle(input: AssignInput): Promise<Assign
   // must not report the truck as taken by that same booking.
   await assertVehicleAvailable(input.vehicleId, { exceptBookingId: input.bookingId })
 
-  // (5) The insert IS the mutual-exclusion check.
+  // (4) The insert IS the mutual-exclusion check.
   let created = await insertAssignment(input)
   if (!created) {
     // A unique violation can mean two things: a genuine live conflict, or a stale
     // row from a trip that has already ended. Sweep the stale ones (the roll-up
-    // hook may never have fired) and try once more before refusing. Note (4) cannot
+    // hook may never have fired) and try once more before refusing. Note (3) cannot
     // pre-empt this: it treats a live assignment on a finished booking as already
     // released, exactly so a missed hook does not retire the truck here either.
     const swept = await releaseFinishedAssignments(input)
@@ -139,7 +193,7 @@ export async function assignDriverAndVehicle(input: AssignInput): Promise<Assign
     }
   }
 
-  // (6) Bind the booking to the crew. bookings.driver_id is what tracking, POD and
+  // (5) Bind the booking to the crew. bookings.driver_id is what tracking, POD and
   // GPS ingestion key off, so from here the trip is indistinguishable from a solo
   // driver's. Guarded on the status we validated in (1) so a booking that moved on
   // between the two reads is not silently re-crewed.

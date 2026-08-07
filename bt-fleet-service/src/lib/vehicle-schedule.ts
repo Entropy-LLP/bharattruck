@@ -20,7 +20,7 @@ import { asRows, FleetError, type BookingRow } from './types.js'
 //   - vehicles_exactly_one_owner (0015) and vehicles_single_owner (0022) both assert
 //     num_nonnulls(driver_id, fleet_owner_id) = 1. A truck has exactly ONE owner, so
 //     "fleet A and fleet B commit the same truck" is not a hole, it is
-//     unrepresentable — and requireFleetVehicle scopes every assignment to the
+//     unrepresentable — and mayExecuteFor scopes every assignment to the
 //     owning fleet regardless.
 //   - by that same constraint a fleet-owned truck has driver_id NULL, so it has no
 //     "own driver" to self-select marketplace work with; a driver-owned truck has
