@@ -40,7 +40,7 @@ jobs:
           filters: |
             # Services consuming @bharattruck/shared via a `file:` dep list packages/shared
             # too: a shared-only change alters their compile input, so it must rebuild them.
-            bt-auth-service: ['bt-auth-service/**', '.github/workflows/ci.yml']
+            bt-auth-service: ['bt-auth-service/**', 'packages/shared/**', '.github/workflows/ci.yml']
             bt-booking-service: ['bt-booking-service/**', 'packages/shared/**', '.github/workflows/ci.yml']
             bt-pricing-service: ['bt-pricing-service/**', '.github/workflows/ci.yml']
             bt-payment-service: ['bt-payment-service/**', '.github/workflows/ci.yml']

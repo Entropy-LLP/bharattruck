@@ -1,8 +1,8 @@
 # Upload filter for `gcloud builds submit` (root-context builds).
 #
-# CD builds every service with the REPO ROOT as the Docker context, because the two
-# services that consume @bharattruck/shared via a `file:../packages/shared` dependency
-# cannot resolve it from a single-service context. That means the whole repo is uploaded
+# CD builds every service with the REPO ROOT as the Docker context, because the services
+# that consume @bharattruck/shared via a `file:../packages/shared` dependency (auth,
+# booking, tracking) cannot resolve it from a single-service context. That means the whole repo is uploaded
 # to Cloud Build on every deploy, so this file is what keeps that upload small.
 #
 # NOTE: unlike .dockerignore, the presence of this file makes gcloud STOP honouring

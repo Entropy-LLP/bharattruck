@@ -10,6 +10,7 @@
     "test": "for f in test/*.mts; do echo \"── $f\"; tsx \"$f\" || exit 1; done"
   },
   "dependencies": {
+    "@bharattruck/shared": "file:../packages/shared",
     "@fastify/cors": "^9.0.1",
     "@supabase/supabase-js": "2.100.1",
     "bcrypt": "^6.0.0",
