@@ -20,7 +20,6 @@
 
 import { enqueueNotification } from '@bharattruck/shared/notifications'
 import type { DbBooking, DbQuote } from '../types.js'
-import * as quoteRepo from '../quote-repository.js'
 import {
   carrierDisplayName,
   carrierRecipient,
@@ -139,10 +138,15 @@ export async function emitQuoteCountered(
  *
  * The losing-bidder notice is the half that is easy to skip and shouldn't be: a
  * carrier who never hears back holds capacity for a load they did not get.
+ *
+ * `losingQuotes` is passed IN rather than looked up here, and that is load-bearing:
+ * awarding expires every other open quote, so by the time this runs there is nothing
+ * live left to find. The caller has to snapshot the set before it awards.
  */
 export async function emitQuoteAwarded(
   booking: DbBooking,
   winningQuote: DbQuote,
+  losingQuotes: DbQuote[],
   log?: Logger,
 ): Promise<void> {
   await safely(log, 'quote_awarded', async () => {
@@ -157,10 +161,11 @@ export async function emitQuoteAwarded(
       }, log)
     }
 
-    // Losing bidders. Best-effort and non-fatal: if this lookup fails the winner has
-    // already been told, which is the part that matters.
-    const losers = await quoteRepo.listLosingQuotes(booking.id, winningQuote.id)
-    for (const loser of losers) {
+    // Losing bidders. Whoever was still in play at award time; the winner is not in
+    // this set. Guarded against a stale snapshot that still includes the winner, so a
+    // future caller cannot mail the winner a loss notice.
+    for (const loser of losingQuotes) {
+      if (loser.id === winningQuote.id) continue
       const recipient = await carrierRecipient(loser)
       if (!recipient) continue
       await enqueueNotification({
@@ -217,6 +222,45 @@ export async function emitQuoteWithdrawn(
       payload: { ...bookingPayload(booking), bidder_name: bidderName },
       dedupeKey: `quote_withdrawn:${quote.id}`,
     }, log)
+  })
+}
+
+/**
+ * The shipper attached the load to their own fleet (D-10) → tell everyone who had
+ * bid on it that the market is closed.
+ *
+ * There is no winner to congratulate and no shipper to inform: the same human is
+ * both parties and they just performed the action. The losing side is the entire
+ * audience, and it is the half that matters — a carrier who bid and never hears
+ * back holds capacity for a load they are not getting, exactly as on the auction
+ * path.
+ *
+ * The quotes are passed IN rather than looked up here, and that is load-bearing:
+ * by the time this runs the caller has already expired them, so a lookup keyed on
+ * the live statuses would find nothing and this function could never mail anyone.
+ * The caller snapshots the losing set before closing the market.
+ *
+ * Reuses the `quote_lost` event and the `quote_lost:<quoteId>` key shape the award
+ * and reject paths already use, so a bid that was rejected earlier and then swept
+ * up by this is still only mailed about once.
+ */
+export async function emitDirectAttached(
+  booking: DbBooking,
+  losingQuotes: DbQuote[],
+  log?: Logger,
+): Promise<void> {
+  await safely(log, 'quote_lost', async () => {
+    for (const loser of losingQuotes) {
+      const recipient = await carrierRecipient(loser)
+      if (!recipient) continue
+      await enqueueNotification({
+        event: 'quote_lost',
+        to: recipient.email,
+        userId: recipient.userId,
+        payload: bookingPayload(booking),
+        dedupeKey: `quote_lost:${loser.id}`,
+      }, log)
+    }
   })
 }
 

@@ -8,7 +8,9 @@
  * best-effort trip_completed emit pre-creates a pending payout; and the
  * D-7 fleet↔driver revenue split — including the one that matters most,
  * that a settle RETRIED after a crash mid-write does not double-pay
- * either party now that a booking may legitimately hold two payout rows.
+ * either party now that a booking may legitimately hold two payout rows;
+ * and D-24's unaffiliated executing driver, who used to be paid ₹0 in
+ * silence because a missing affiliation row read as a share of 0.
  * Run: npx tsx test/payment.e2e.mts
  */
 process.env.JWT_SECRET = 'shared-test-jwt-secret-hs256-both-services'
@@ -34,15 +36,18 @@ const BC = 'ccccccc1-cccc-4ccc-8ccc-ccccccccccc1' // completed — FLEET, split 
 const BD = 'ddddddd1-dddd-4ddd-8ddd-ddddddddddd1' // completed — FLEET, share = 100 after a saga pre-create
 const BE = 'eeeeeee1-eeee-4eee-8eee-eeeeeeeeeee1' // completed — solo, settled on the PRE-0023 schema
 const BF = 'fffffff1-ffff-4fff-8fff-fffffffffff1' // completed — FLEET split attempted on the PRE-0023 schema
+const BG = 'aaaaaaa2-aaaa-4aaa-8aaa-aaaaaaaaaaa2' // completed — FLEET, driver with NO affiliation (D-24)
 const D1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const D2 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab' // fleet driver on a 30% revenue share
 const D3 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaac' // fleet driver on 33.33% — the awkward one
 const D4 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaad' // fleet driver on 100% — the owner keeps nothing
+const D5 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaae' // ran a fleet trip with NO fleet_drivers row at all
 const F1 = 'ffffffff-ffff-4fff-8fff-ffffffffffff' // fleet_owners.id (NOT a users.id)
 const U1 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' // driver user
 const U2 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbc' // fleet-driver user (D2)
 const U3 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbd' // fleet-driver user (D3)
 const U4 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbe' // fleet-driver user (D4)
+const U5 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbf' // unaffiliated driver user (D5)
 const S1 = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' // shipper (owner) user
 const OTHER = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd' // shipper (non-owner)
 const ADMIN = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
@@ -74,13 +79,21 @@ const bstore: Record<string, Row[]> = {
     // split the old UNIQUE(booking_id) physically cannot store.
     { id: BE, driver_id: D1, shipper_id: S1, status: 'completed', quoted_price: 5000, final_price: 5000 },
     { id: BF, driver_id: D2, fleet_owner_id: F1, shipper_id: S1, status: 'completed', quoted_price: 6000, final_price: 6000 },
+    // D-24: the fleet won the work, but the driver of record holds no affiliation
+    // with it — the sub-contracted case. The share lookup has nothing to read.
+    { id: BG, driver_id: D5, fleet_owner_id: F1, shipper_id: S1, status: 'completed', quoted_price: 6000, final_price: 6000 },
   ],
-  drivers: [{ id: D1, user_id: U1 }, { id: D2, user_id: U2 }, { id: D3, user_id: U3 }, { id: D4, user_id: U4 }],
+  drivers: [
+    { id: D1, user_id: U1 }, { id: D2, user_id: U2 }, { id: D3, user_id: U3 },
+    { id: D4, user_id: U4 }, { id: D5, user_id: U5 },
+  ],
 }
 
 // fleet_drivers as bt-payment-service reads it (migration 0022, column added by
 // 0023's predecessor). D1 sits at 0 — salaried, which is what all 620 live rows
 // do — so every pre-split check in this file must stay byte-identical.
+// D5 is deliberately ABSENT: no row for (F1, D5) at all, which is not the same fact
+// as a row saying 0 and must not be paid out as if it were (D-24).
 const affiliations: Row[] = [
   { fleet_owner_id: F1, driver_id: D1, status: 'active', revenue_share_pct: 0 },
   { fleet_owner_id: F1, driver_id: D2, status: 'active', revenue_share_pct: 30 },
@@ -174,9 +187,18 @@ const fakeStore = {
     }
   },
   async insertPendingPayoutIfAbsent(r: Row) { if (!P.payouts.has(payoutKey(r))) P.payouts.set(payoutKey(r), { ...r }) },
-  async getDriverRevenueSharePct(fleetOwnerId: string, driverId: string) {
+  // Mirrors SupabasePaymentStore.getDriverShare: NO ROW is reported as its own
+  // answer rather than flattened into a share of 0. Returning a bare number here is
+  // what made the ₹0 sub-contract payout invisible to this suite.
+  async getDriverShare(fleetOwnerId: string, driverId: string) {
     const rows = affiliations.filter(a => a.fleet_owner_id === fleetOwnerId && a.driver_id === driverId)
-    return Number((rows.find(a => a.status === 'active') ?? rows[0])?.revenue_share_pct ?? 0)
+    const governing = rows.find(a => a.status === 'active') ?? rows[0]
+    if (!governing) return { affiliation: 'none' as const, share_pct: 0, status: null }
+    return {
+      affiliation: 'affiliated' as const,
+      share_pct: Number(governing.revenue_share_pct ?? 0),
+      status: governing.status as string,
+    }
   },
 }
 
@@ -222,7 +244,14 @@ async function main() {
   const { paymentRoutes } = await import('../src/routes/payments.js')
   const { internalPaymentRoutes } = await import('../src/routes/internal.js')
   const { HttpBookingClient } = await import('../src/lib/booking-client.js')
-  const deps = { booking: new HttpBookingClient(bookingBase, SECRET), store: fakeStore as any }
+  // A capturing logger, not a silent one: the D-24 anomaly is half a log line and
+  // half a response field, and the log is the half that survives the HTTP call.
+  const warnings: { obj: Record<string, unknown>; msg: string }[] = []
+  const deps = {
+    booking: new HttpBookingClient(bookingBase, SECRET),
+    store: fakeStore as any,
+    logger: { warn: (obj: unknown, msg: string) => { warnings.push({ obj: obj as Record<string, unknown>, msg }) } },
+  }
   const payApp = Fastify({ logger: false })
   await payApp.register(async (a) => { await a.register(pAuth); await a.register(paymentRoutes, { prefix: '/payments', deps }) })
   await payApp.register(async (a) => { await a.register(pInternalAuth); await a.register(internalPaymentRoutes, { prefix: '/internal', deps }) })
@@ -322,6 +351,9 @@ async function main() {
   // fleet trip would start recording a payout to a driver who is not owed one.
   check('salaried fleet booking still writes exactly ONE payout', (await fakeStore.getPayouts(B6)).length === 1, JSON.stringify(await fakeStore.getPayouts(B6)))
   check('that one payout is the owner, for the whole settled amount', fleetPayout?.amount === 8000, JSON.stringify(fleetPayout))
+  // A salaried trip is an AGREEMENT, not a gap: the affiliation exists and says 0.
+  // It must stay silent, or the D-24 signal is noise on all 620 live rows.
+  check('a salaried settlement raises NO anomaly', (r.json().data?.anomalies ?? []).length === 0, JSON.stringify(r.json().data?.anomalies))
   check('solo booking untouched by the split path (one driver payout, full amount)', (await fakeStore.getPayouts(B1)).length === 1 && (await payoutOf(B1))?.amount === 5000, JSON.stringify(await fakeStore.getPayouts(B1)))
 
   console.log('\n── D-7 revenue split: share = 30 pays both parties ──')
@@ -337,6 +369,7 @@ async function main() {
   // must keep meaning the party the shipper contracted with — the bidder.
   check('response.payout is still the BIDDER row (shipper back-compat)', r.json().data?.payout?.payee_type === 'fleet_owner', JSON.stringify(r.json().data?.payout))
   check('response.payouts carries every payee', (r.json().data?.payouts ?? []).length === 2, JSON.stringify(r.json().data?.payouts))
+  check('a split backed by a real affiliation raises NO anomaly', (r.json().data?.anomalies ?? []).length === 0, JSON.stringify(r.json().data?.anomalies))
 
   console.log('\n── D-7 revenue split: the parts must sum to the whole ──')
   // 33.33% of ₹5001 does not divide into whole paise. Somebody has to absorb the
@@ -349,16 +382,84 @@ async function main() {
   check('driver gets the exact percentage (5001 × 33.33% = 1666.83)', (await payoutOf(BB, 'driver'))?.amount === 1666.83, JSON.stringify(await payoutOf(BB, 'driver')))
   check('owner absorbs the remainder (3334.17, not 3334.16)', (await payoutOf(BB, 'fleet_owner'))?.amount === 3334.17, JSON.stringify(await payoutOf(BB, 'fleet_owner')))
 
+  console.log('\n── D-24: an UNAFFILIATED executing driver is LOUD, not silently paid ₹0 ──')
+  // The failure this closes. The D-7 share lookup returned 0 whenever no
+  // fleet_drivers row existed, so a driver who ran a trip for a fleet they are not
+  // affiliated with was treated as salaried and paid NOTHING — no payout row, no
+  // error, no log line, and a ledger that agrees the trip was settled in full. The
+  // only party who would ever notice is the one who drove.
+  //
+  // The payout POLICY is deliberately unchanged (the carrier won the work and is
+  // paid it; what a sub-contracted driver is owed is post-MVP). What changes is that
+  // the settlement now says which fact it was missing when it decided that.
+  r = await settle({ booking_id: BG, amount: 6000, mode: 'cash', reference: 'UTR-SUBK' }, tok(S1, 'shipper'))
+  check('an unaffiliated-driver trip still settles 200 paid (money is not held hostage)',
+    r.statusCode === 200 && bStatus(BG) === 'paid', `(got ${r.statusCode}/${bStatus(BG)})`)
+  const subcontract = (r.json().data?.anomalies ?? [])[0]
+  check('the settlement result carries the anomaly',
+    subcontract?.code === 'UNAFFILIATED_EXECUTING_DRIVER', JSON.stringify(r.json().data?.anomalies))
+  check('the anomaly names the driver AND the carrier, so it can be acted on',
+    subcontract?.driver_id === D5 && subcontract?.fleet_owner_id === F1, JSON.stringify(subcontract))
+  check('no ₹0 driver row was written to the ledger', !(await payoutOf(BG, 'driver')), JSON.stringify(await payoutOf(BG, 'driver')))
+  check('the whole freight is still recorded to the carrier that won the work',
+    (await fakeStore.getPayouts(BG)).length === 1 && (await payoutOf(BG, 'fleet_owner'))?.amount === 6000,
+    JSON.stringify(await fakeStore.getPayouts(BG)))
+  // The response field is read by whoever made the call; the log is what is still
+  // there next week. It has to carry every id needed to chase the driver's money
+  // without first working out which trip the line is about.
+  const warned = warnings.find(w => w.obj.code === 'UNAFFILIATED_EXECUTING_DRIVER')
+  check('the anomaly is logged, not only returned', !!warned, JSON.stringify(warnings.map(w => w.obj.code)))
+  check('the log line carries booking, driver, carrier and the amount settled',
+    warned?.obj.booking_id === BG && warned?.obj.driver_id === D5 &&
+    warned?.obj.fleet_owner_id === F1 && warned?.obj.amount === 6000, JSON.stringify(warned?.obj))
+  check('a salaried fleet settlement logged nothing of the kind',
+    warnings.filter(w => w.obj.code === 'UNAFFILIATED_EXECUTING_DRIVER').length === 1,
+    JSON.stringify(warnings.map(w => w.obj.booking_id)))
+
   console.log('\n── D-7 revenue split: the resolver, without a database ──')
   // resolvePayees is kept pure so the disbursement layer (D-12, a later PR) can
   // reuse it; these pin the edges that never show up in a happy-path settlement.
-  const { resolvePayees } = await import('../src/lib/payment-service.js')
+  const { resolvePayees, resolveSettlement } = await import('../src/lib/payment-service.js')
   const fleetBooking = { driver_id: D2, fleet_owner_id: F1 }
   check('share=100 pays the driver alone — no ₹0 owner row in the ledger', JSON.stringify(resolvePayees(fleetBooking, 6000, 100)) === JSON.stringify([{ payee_type: 'driver', driver_id: D2, fleet_owner_id: null, amount: 6000 }]), JSON.stringify(resolvePayees(fleetBooking, 6000, 100)))
   check('a share above 100 is clamped, never a negative owner payout', resolvePayees(fleetBooking, 6000, 150).every(p => p.amount >= 0) && resolvePayees(fleetBooking, 6000, 150).reduce((s, p) => s + paise(p.amount), 0) === paise(6000), JSON.stringify(resolvePayees(fleetBooking, 6000, 150)))
   check('a negative share is clamped to salaried (owner keeps 100%)', resolvePayees(fleetBooking, 6000, -5).length === 1 && resolvePayees(fleetBooking, 6000, -5)[0].payee_type === 'fleet_owner', JSON.stringify(resolvePayees(fleetBooking, 6000, -5)))
   check('fleet booking with no assigned driver has nobody to split with', resolvePayees({ driver_id: null, fleet_owner_id: F1 }, 6000, 30).length === 1, JSON.stringify(resolvePayees({ driver_id: null, fleet_owner_id: F1 }, 6000, 30)))
   check('a booking with no bidder resolves to no payees at all', resolvePayees({ driver_id: null, fleet_owner_id: null }, 6000, 30).length === 0, '')
+
+  console.log('\n── D-24: which zero is which, without a database ──')
+  // Three ways to arrive at "the driver gets nothing", only one of which is an
+  // anomaly. Getting these confused is the whole defect: two of them are ordinary
+  // and must stay silent, and the third must never be mistaken for them.
+  const salaried = { affiliation: 'affiliated' as const, share_pct: 0, status: 'active' }
+  const unaffiliated = { affiliation: 'none' as const, share_pct: 0, status: null }
+  const preMigration = { affiliation: 'unknown' as const, share_pct: 0, status: null }
+  const split30 = { affiliation: 'affiliated' as const, share_pct: 30, status: 'active' }
+  {
+    const asSalary = resolveSettlement(fleetBooking, 6000, salaried)
+    check('affiliated + share 0 is a SALARY: owner keeps 6000, nothing flagged',
+      asSalary.anomalies.length === 0 && asSalary.payees.length === 1 && asSalary.payees[0].amount === 6000,
+      JSON.stringify(asSalary))
+    const asSubcontract = resolveSettlement(fleetBooking, 6000, unaffiliated)
+    check('no affiliation row pays the SAME money but raises the anomaly',
+      asSubcontract.anomalies.length === 1 && asSubcontract.payees.length === 1 && asSubcontract.payees[0].amount === 6000,
+      JSON.stringify(asSubcontract))
+    check('and the anomaly quotes both parties in its message, not just its fields',
+      asSubcontract.anomalies[0].message.includes(D2) && asSubcontract.anomalies[0].message.includes(F1),
+      asSubcontract.anomalies[0]?.message)
+    check('a pre-0022 schema that CANNOT answer stays silent (every trip is salaried there)',
+      resolveSettlement(fleetBooking, 6000, preMigration).anomalies.length === 0, '')
+    check('an affiliated 30% split is unchanged and silent',
+      JSON.stringify(resolveSettlement(fleetBooking, 6000, split30).payees) === JSON.stringify(resolvePayees(fleetBooking, 6000, 30)) &&
+      resolveSettlement(fleetBooking, 6000, split30).anomalies.length === 0,
+      JSON.stringify(resolveSettlement(fleetBooking, 6000, split30)))
+    check('a solo booking has no carrier for its driver to be unaffiliated FROM',
+      resolveSettlement({ driver_id: D2, fleet_owner_id: null }, 5000, unaffiliated).anomalies.length === 0, '')
+    check('a fleet booking with no driver has nobody whose cut could have gone missing',
+      resolveSettlement({ driver_id: null, fleet_owner_id: F1 }, 6000, unaffiliated).anomalies.length === 0, '')
+    check('a booking whose share was never read (solo path) is silent too',
+      resolveSettlement({ driver_id: D2, fleet_owner_id: null }, 5000, null).anomalies.length === 0, '')
+  }
 
   console.log('\n── D-7 revenue split: a RETRIED settle does not double-pay ──')
   // The exact bug the payout-before-payment ordering exists to prevent, now that

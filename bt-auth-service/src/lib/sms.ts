@@ -41,7 +41,7 @@ export class SmsSendError extends Error {
 
 export interface SmsProvider {
   /** Stable id, for the boot line and for tests. */
-  readonly name: 'console' | 'msg91'
+  readonly name: 'console' | 'msg91' | 'twilio'
   /**
    * Deliver a one-time code to a BARE 10-digit Indian mobile number (no +91, no
    * spaces — the route's zod schema has already enforced /^[6-9]\d{9}$/).
@@ -162,6 +162,110 @@ export class Msg91SmsProvider implements SmsProvider {
   }
 }
 
+// ── Twilio ────────────────────────────────────────────────────────────────────
+
+/**
+ * The account credentials, and nothing else — the sender is checked separately
+ * because Twilio accepts two mutually exclusive forms of it (see TwilioConfig).
+ */
+export const TWILIO_REQUIRED_ENV = ['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN'] as const
+
+/**
+ * Twilio wants E.164, the route hands us a bare 10-digit number (its zod schema is
+ * /^[6-9]\d{9}$/), so the two are reconciled here rather than in the route — the
+ * route's shape is what every other provider and the Redis OTP key are built on,
+ * and widening it for one provider would ripple through all of them.
+ *
+ * This is the ONE line that changes if BharatTruck ever carries a non-India phone
+ * number. It is India-only today by product decision, not by accident.
+ */
+const INDIA_E164_PREFIX = '+91'
+
+export type TwilioConfig = {
+  accountSid: string
+  authToken:  string
+  /**
+   * Exactly one of these is used, and the messaging service wins when both are
+   * set: a Messaging Service carries the sender pool, the geo-permissions and the
+   * regulatory/compliance bundle, so sending through it is strictly more correct
+   * than pinning one raw From number. Twilio rejects a request carrying both.
+   */
+  messagingServiceSid: string | null
+  from:                string | null
+  baseUrl:   string
+  timeoutMs: number
+}
+
+/** Twilio's documented error envelope; it returns more fields and may add more. */
+type TwilioReply = { code?: unknown; message?: unknown }
+
+/**
+ * DLT applies to the DESTINATION, not to the vendor: an Indian operator will drop a
+ * transactional SMS whose entity/header/template are not registered on the DLT
+ * portal no matter whose API put it on the wire (docs/BLOCKERS.md B-2). So correct
+ * Twilio credentials are necessary and not sufficient — an unregistered sender can
+ * authenticate cleanly and still be refused downstream. That refusal surfaces as a
+ * Twilio error code/message on the throw below, which is the whole point: an
+ * operator reading the log can tell "wrong credentials" from "not registered yet".
+ * Until registration completes, leaving SMS_PROVIDER unset keeps every phone flow
+ * alive on the console provider, and nothing in this file changes when it does.
+ */
+export class TwilioSmsProvider implements SmsProvider {
+  readonly name = 'twilio' as const
+
+  constructor(private readonly cfg: TwilioConfig) {}
+
+  async sendOtp(phone: string, otp: string): Promise<void> {
+    // Twilio's REST API is form-encoded, NOT JSON — a JSON body is accepted by the
+    // socket and then rejected as a missing-parameter error, which reads like a
+    // credential problem and is not one.
+    const form = new URLSearchParams({
+      To:   `${INDIA_E164_PREFIX}${phone}`,
+      Body: `${otp} is your BharatTruck verification code. Do not share it with anyone.`,
+    })
+    if (this.cfg.messagingServiceSid) form.set('MessagingServiceSid', this.cfg.messagingServiceSid)
+    else if (this.cfg.from) form.set('From', this.cfg.from)
+
+    let res: Response
+    try {
+      res = await fetch(`${this.cfg.baseUrl}/2010-04-01/Accounts/${encodeURIComponent(this.cfg.accountSid)}/Messages.json`, {
+        method: 'POST',
+        headers: {
+          authorization:  `Basic ${Buffer.from(`${this.cfg.accountSid}:${this.cfg.authToken}`).toString('base64')}`,
+          'content-type': 'application/x-www-form-urlencoded',
+          accept:         'application/json',
+        },
+        body: form.toString(),
+        // Same reason as MSG91: the user is on a spinner and the code is already in
+        // Redis with its own TTL running, so a hung provider must not hold the
+        // request open until the platform's own timeout kills it.
+        signal: AbortSignal.timeout(this.cfg.timeoutMs),
+      })
+    } catch (err) {
+      throw new SmsSendError(this.name, err instanceof Error ? err.message : 'request failed')
+    }
+
+    // Unlike MSG91, Twilio does not hide a rejection behind a 200 — a refused send
+    // is a non-2xx with `{code, message}`. So the body is only read on failure, and
+    // res.ok is trusted on success.
+    if (!res.ok) {
+      const raw = await res.text().catch(() => '')
+      let parsed: TwilioReply | null = null
+      try { parsed = JSON.parse(raw) as TwilioReply } catch { parsed = null }
+      // The numeric code is what an operator acts on — 21608 is an unverified
+      // trial number, 21211 a malformed To, 20003 bad credentials — so it is
+      // surfaced verbatim. Only the two known fields are read: the raw body can
+      // echo the request back, and that request carries the live OTP.
+      const code = typeof parsed?.code === 'number' || typeof parsed?.code === 'string' ? String(parsed.code) : null
+      const detail = typeof parsed?.message === 'string' ? parsed.message.slice(0, 200) : null
+      throw new SmsSendError(
+        this.name,
+        `HTTP ${res.status}${code ? ` code ${code}` : ''}${detail ? `: ${detail}` : ''}`,
+      )
+    }
+  }
+}
+
 // ── resolution ────────────────────────────────────────────────────────────────
 
 export type SmsProviderResolution = {
@@ -215,6 +319,35 @@ export function resolveSmsProvider(env: NodeJS.ProcessEnv = process.env): SmsPro
         dltTeId:     (env.MSG91_DLT_TE_ID ?? '').trim() || null,
         baseUrl:     ((env.MSG91_BASE_URL ?? '').trim() || 'https://control.msg91.com').replace(/\/+$/, ''),
         timeoutMs:   Number(env.SMS_TIMEOUT_MS) > 0 ? Number(env.SMS_TIMEOUT_MS) : 8000,
+      }),
+      unwiredReason: null,
+    }
+  }
+
+  if (selected === 'twilio') {
+    const missing: string[] = TWILIO_REQUIRED_ENV.filter(k => !(env[k] ?? '').trim())
+    const messagingServiceSid = (env.TWILIO_MESSAGING_SERVICE_SID ?? '').trim() || null
+    const from = (env.TWILIO_FROM ?? '').trim() || null
+    // A send with neither a Messaging Service nor a From number is rejected by
+    // Twilio every time, so it counts as missing config exactly like a missing
+    // credential — fall back rather than burn a request per login attempt.
+    if (!messagingServiceSid && !from) missing.push('TWILIO_MESSAGING_SERVICE_SID or TWILIO_FROM')
+    if (missing.length > 0) {
+      return {
+        provider: new ConsoleSmsProvider(env),
+        unwiredReason: `SMS_PROVIDER=twilio but ${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} unset`,
+      }
+    }
+    return {
+      provider: new TwilioSmsProvider({
+        accountSid: env.TWILIO_ACCOUNT_SID!.trim(),
+        authToken:  env.TWILIO_AUTH_TOKEN!.trim(),
+        // Preferred over `from`, and the provider sends only one of the two —
+        // Twilio rejects a request that carries both.
+        messagingServiceSid,
+        from,
+        baseUrl:    ((env.TWILIO_BASE_URL ?? '').trim() || 'https://api.twilio.com').replace(/\/+$/, ''),
+        timeoutMs:  Number(env.SMS_TIMEOUT_MS) > 0 ? Number(env.SMS_TIMEOUT_MS) : 8000,
       }),
       unwiredReason: null,
     }

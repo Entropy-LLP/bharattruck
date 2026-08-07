@@ -96,27 +96,50 @@ export function can(snapshot, capability) {
     return snapshot.capabilities.includes(capability);
 }
 /**
- * Resolve the viewer's relation to a booking.
+ * Every relation the viewer holds to a booking, strongest claim first.
+ *
+ * One human can hold TWO relations to ONE booking, and that is not an edge case: under direct-attach
+ * (D-10) a distributor posts a load AND wins it with their own fleet, so they are shipper AND
+ * carrier. A single value has to drop one of those, which is right for "which screen do I render"
+ * and wrong for "may this human do X" — hence both functions.
  *
  * Order is significant and is not alphabetical:
- *   shipper first  — you posted it, and under direct-attach (D-10) you may ALSO be the carrier.
- *                    Whoever is paying sees the paying side; that is the relation with the
- *                    stronger claim on the screen.
+ *   shipper first  — you posted it. Whoever is paying sees the paying side; that is the relation
+ *                    with the stronger claim on the screen.
  *   carrier next   — the winning party, fleet or solo.
- *   driver last    — assigned to run it, which on a fleet booking is an employee relation.
+ *   driver next    — assigned to run it, which on a fleet booking is an employee relation.
+ *   consignee last — the receiving end. The weakest claim: they are downstream of the trip, not a
+ *                    party to its commercials.
+ *
+ * An EMPTY array means observer-only. 'observer' is deliberately not an element — it is the absence
+ * of a relation, and putting it in the set would make `.includes('observer')` read as a permission.
+ */
+export function relationsToBooking(booking, snapshot) {
+    const relations = [];
+    if (booking.shipper_id === snapshot.user_id)
+        relations.push('shipper');
+    const viewerIsBookingFleet = Boolean(booking.fleet_owner_id) && booking.fleet_owner_id === snapshot.fleet_owner_id;
+    const viewerIsAssignedDriver = Boolean(booking.driver_id) && booking.driver_id === snapshot.driver_id;
+    // A solo driver IS the carrier — they bid, they won, they carry the economics. A driver on a
+    // fleet-owned booking is staff instead, and `stripCommercialFields` will mask the money for them
+    // unless they own the truck (see seesCommercialsOnBooking). The two are mutually exclusive for
+    // the same person only because the fleet flag decides which one the assignment means.
+    if (viewerIsBookingFleet || (viewerIsAssignedDriver && !booking.fleet_owner_id))
+        relations.push('carrier');
+    if (viewerIsAssignedDriver && booking.fleet_owner_id)
+        relations.push('driver');
+    if (booking.consignee_user_id && booking.consignee_user_id === snapshot.user_id)
+        relations.push('consignee');
+    return relations;
+}
+/**
+ * The viewer's single strongest relation to a booking — the one that decides which view renders.
+ *
+ * This is `relationsToBooking()[0]`, and it must stay that way: the ordering above is exactly the
+ * precedence this function has always applied, so the set is the primitive and this is the picker.
  */
 export function relationToBooking(booking, snapshot) {
-    if (booking.shipper_id === snapshot.user_id)
-        return 'shipper';
-    if (booking.fleet_owner_id && booking.fleet_owner_id === snapshot.fleet_owner_id)
-        return 'carrier';
-    if (booking.driver_id && booking.driver_id === snapshot.driver_id) {
-        // A solo driver IS the carrier — they bid, they won, they carry the economics. A driver on a
-        // fleet-owned booking is staff, and `stripCommercialFields` will mask the money for them
-        // unless they own the truck (see seesCommercialsOnBooking).
-        return booking.fleet_owner_id ? 'driver' : 'carrier';
-    }
-    return 'observer';
+    return relationsToBooking(booking, snapshot)[0] ?? 'observer';
 }
 /**
  * Whether this viewer may see freight/price on THIS booking.
@@ -130,10 +153,20 @@ export function relationToBooking(booking, snapshot) {
  * booking's vehicle in hand, and a lookup here would put a query on every row of a list response.
  */
 export function seesCommercialsOnBooking(booking, snapshot, viewerOwnsBookingVehicle) {
+    // The strongest relation decides, and it is safe to look at only that one: every relation that
+    // can GRANT sorts ahead of every relation that cannot, so a viewer who is both shipper and
+    // consignee is answered by 'shipper' and never masked by the weaker claim.
     const relation = relationToBooking(booking, snapshot);
     if (relation === 'shipper' || relation === 'carrier')
         return true;
     if (relation === 'driver')
         return viewerOwnsBookingVehicle;
+    // A consignee is a stakeholder in the SHIPMENT, not in the carriage economics: they never see the
+    // carrier's margin or the fleet↔driver revenue split. What they legitimately see is what THEY owe
+    // — the freight on a "To Pay" consignment — and that is a per-document disclosure the documents
+    // layer makes on the LR/invoice they are handed, not a booking-wide unmask. Stated explicitly
+    // rather than left to fall through, so that widening this predicate cannot widen it by accident.
+    if (relation === 'consignee')
+        return false;
     return false;
 }

@@ -132,19 +132,30 @@ export async function getQuoteById(quoteId: string): Promise<DbQuote | null> {
 // a bidder's eyes (only their own address does). Restricted to the live
 // statuses so a bidder who already withdrew or was rejected earlier is not
 // told a second time that they lost.
+//
+// winningQuoteId is NULL on the direct-attach path (D-10): the shipper moved the
+// load with their own truck, so nobody's bid won and EVERY live bid is a losing
+// one. Excluding nothing is the correct answer there, not a degenerate case.
+//
+// CALL THIS BEFORE THE QUOTES ARE CLOSED — awardBooking's step 3 on the auction
+// path, expireOpenQuotes on the direct-attach one. Both flip the live bids to
+// 'expired', and the status filter below then matches nothing: call it afterwards
+// and you get an empty list, not the losers.
 // -----------------------------------------------------------
 
 export async function listLosingQuotes(
   bookingId: string,
-  winningQuoteId: string,
+  winningQuoteId: string | null,
 ): Promise<DbQuote[]> {
-  const { data, error } = await supabase
+  let query = supabase
     .from('quotes')
     .select('*')
     .eq('booking_id', bookingId)
-    .neq('id', winningQuoteId)
     .in('status', ['submitted', 'countered'])
 
+  if (winningQuoteId) query = query.neq('id', winningQuoteId)
+
+  const { data, error } = await query
   if (error) throw new Error(`DB list losing quotes failed: ${error.message}`)
   return (data ?? []) as DbQuote[]
 }
@@ -368,6 +379,13 @@ export async function countNegotiationsForQuote(quoteId: string): Promise<number
 //
 // Also marks the winning quote as 'accepted' and expires all
 // other open quotes on this booking.
+//
+// award_path='auction' goes in the SAME statement that binds the winner. It is
+// the column's default (migration 0022), so this changes no value today — it is
+// written explicitly because the default is now load-bearing in the other
+// direction: with direct-attach live, "how was this trip won" is a real question
+// with three answers, and the one path that genuinely IS an auction should say so
+// rather than rely on nobody having overwritten the default.
 // -----------------------------------------------------------
 
 export async function awardBooking(
@@ -388,6 +406,7 @@ export async function awardBooking(
       awarded_quote_id: quoteId,
       final_price:      finalPrice,
       status:           'accepted',
+      award_path:       'auction',
       updated_at:       new Date().toISOString(),
     })
     .eq('id', bookingId)
@@ -418,4 +437,94 @@ export async function awardBooking(
   if (expireErr) throw new Error(`DB expire quotes failed: ${expireErr.message}`)
 
   return data as DbBooking
+}
+
+// -----------------------------------------------------------
+// directAttachBooking — D-10, the award path with no auction in it.
+//
+// The shipper and the carrier are the same human, so there is no bid to accept:
+// the load is bound straight to the caller's own fleet or truck and the booking
+// moves to 'accepted'. Everything after that point is the auction flow's
+// 'accepted' booking, indistinguishable from it — which is the whole point of the
+// decision, and the reason this sets exactly the same columns awardBooking sets.
+//
+// ── RACE SAFETY (the sharp edge in this change) ─────────────
+//
+// There are now TWO writers that can bind a carrier to one booking: this, and
+// awardBooking. Both must be mutually exclusive, in both directions, without a
+// transaction — PostgREST gives us one statement, not a BEGIN.
+//
+// The guarantee comes from the WHERE clause being the ENTIRE precondition rather
+// than a re-check of something read earlier. Postgres serializes concurrent
+// UPDATEs of the same row: the second writer to reach the row blocks, and on
+// waking re-evaluates its WHERE against the COMMITTED post-award row. So:
+//
+//   • direct-attach loses to a concurrent auction award — that award left
+//     status='accepted', so `status IN ('pending','negotiating')` no longer
+//     matches and this returns null.
+//   • an auction award loses to a concurrent direct-attach — same reason, via
+//     awardBooking's identical status guard. Note its OTHER guard,
+//     `awarded_quote_id IS NULL`, does NOT catch this: direct-attach deliberately
+//     leaves awarded_quote_id NULL because no quote won. The status guard is what
+//     makes that direction safe, and it is why acceptQuote's pre-read check on
+//     awarded_quote_id can never be the real defence.
+//
+// `awarded_quote_id IS NULL` is carried here anyway so the two writers guard on
+// the SAME predicate. Today it is implied by the status guard; keeping it means a
+// future widening of either writer's accepted statuses cannot quietly open a
+// window on one side only.
+//
+// A second direct-attach by the same caller also matches nothing (status has
+// moved), so this never double-awards. Turning that null into idempotent success
+// vs. a conflict needs the booking re-read, which is the SERVICE's job — this
+// function reports only "did I win the row".
+// -----------------------------------------------------------
+
+export async function directAttachBooking(
+  bookingId: string,
+  carrier: Bidder,
+  finalPrice: number,
+): Promise<DbBooking | null> {
+  const carrierColumns = carrier.kind === 'fleet'
+    ? { fleet_owner_id: carrier.fleetOwnerId }
+    : { driver_id: carrier.driverId }
+
+  const { data, error } = await supabase
+    .from('bookings')
+    .update({
+      ...carrierColumns,
+      final_price: finalPrice,
+      status:      'accepted',
+      award_path:  'direct_attach',
+      updated_at:  new Date().toISOString(),
+    })
+    .eq('id', bookingId)
+    .in('status', ['pending', 'negotiating'])
+    .is('awarded_quote_id', null)
+    .select('*')
+    .maybeSingle()
+
+  if (error) throw new Error(`DB direct-attach booking failed: ${error.message}`)
+  return data as DbBooking | null
+}
+
+// -----------------------------------------------------------
+// expireOpenQuotes
+// Closes the market on a booking: every still-live bid becomes 'expired'.
+//
+// awardBooking does this inline with `.neq('id', winner)` because it has a winner
+// to exempt. Direct-attach has none — the shipper moved the load themselves — so
+// the whole set goes. Terminal statuses are left alone for the same reason they
+// are in awardBooking: a bid already withdrawn or rejected has its own outcome on
+// record and must not be overwritten with a vaguer one.
+// -----------------------------------------------------------
+
+export async function expireOpenQuotes(bookingId: string): Promise<void> {
+  const { error } = await supabase
+    .from('quotes')
+    .update({ status: 'expired', updated_at: new Date().toISOString() })
+    .eq('booking_id', bookingId)
+    .not('status', 'in', '(withdrawn,rejected,accepted,expired)')
+
+  if (error) throw new Error(`DB expire quotes failed: ${error.message}`)
 }

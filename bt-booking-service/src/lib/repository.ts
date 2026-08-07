@@ -1,4 +1,5 @@
 import { supabase } from './supabase.js'
+import { consigneeSchemaNotMigrated, isConsigneeSchemaMissing } from './consignee/repository.js'
 import type {
   AuthenticatedUser,
   BookingStatus,
@@ -11,12 +12,17 @@ import type {
 // createBooking
 // Inserts a new pending booking. Shipper identity comes from
 // the authenticated actor — never from the request body.
+//
+// consigneeUserId is the users.id already resolved by the service layer (linked
+// to an existing party, or a fresh unclaimed record) — null when the caller took
+// the legacy receiver_email-only path.
 // -----------------------------------------------------------
 
 export async function createBooking(
   body: CreateBookingBody,
   actor: AuthenticatedUser,
   quotedPrice: number,
+  consigneeUserId: string | null = null,
 ): Promise<DbBooking> {
   // Fetch shipper profile from DB — JWT only carries userId + role
   const { data: userRow } = await supabase
@@ -46,17 +52,37 @@ export async function createBooking(
       pickup_date:          body.pickup_date,
       pickup_time_slot:     body.pickup_time_slot ?? null,
       special_instructions: body.special_instructions ?? null,
-      receiver_email:       body.receiver_email,
+      // Still written, and still the address bt-cargo-ledger emails the POD code
+      // to. Taken from the consignee's email when one was given, so a client that
+      // has moved to `consignee` keeps the POD flow working unchanged. It is
+      // NEVER read off a LINKED party's profile — echoing a stranger's stored
+      // email back onto the caller's booking would turn "post a load naming this
+      // phone number" into an address-lookup oracle.
+      receiver_email:       body.consignee?.email ?? body.receiver_email ?? null,
       booking_type:         body.booking_type ?? 'direct',
       target_driver_id:     body.target_driver_id ?? null,
       auction_deadline:     body.auction_deadline ?? null,
       dimensions_json:      body.dimensions_json ?? null,
       status:               'pending',
+      // Omitted ENTIRELY when there is no consignee, rather than sent as null —
+      // the same trick LocationBreadcrumb uses for vehicle_id. A legacy
+      // receiver_email-only create therefore writes the exact column set it
+      // always has and keeps working on a database where 0026 has not landed.
+      ...(consigneeUserId ? { consignee_user_id: consigneeUserId } : {}),
     })
     .select('*')
     .single()
 
-  if (error) throw new Error(`DB insert failed: ${error.message}`)
+  if (error) {
+    // A create that NAMES a consignee on a pre-0026 database. Loud 503 naming
+    // the migration, never a silent drop: the consignee is the party the goods
+    // are for and the only contact that can close the trip, so pretending the
+    // booking was recorded correctly is the one outcome worse than failing.
+    if (consigneeUserId && isConsigneeSchemaMissing(error)) {
+      throw consigneeSchemaNotMigrated('Recording a booking with a consignee')
+    }
+    throw new Error(`DB insert failed: ${error.message}`)
+  }
   return data as DbBooking
 }
 
@@ -114,6 +140,36 @@ export async function getBookingById(id: string): Promise<BookingWithProfiles | 
 
   if (error) throw new Error(`DB select failed: ${error.message}`)
   return data as BookingWithProfiles | null
+}
+
+// -----------------------------------------------------------
+// ACTIVE_TRIP_STATUSES / getActiveBookingsForDriver
+//
+// The trips a driver is CURRENTLY executing. This is the server-side answer to
+// "which trip does this GPS fix belong to?" and to "is this driver on a trip at
+// all right now?" — the two questions that make a live position a property of a
+// TRIP rather than of a person.
+//
+// Normally 0 or 1 row. Two is legitimate and reachable (one booking accepted
+// while another is already in_transit), so the caller — not this query — decides
+// what an ambiguous pair means. Ordered most-recently-touched first.
+//
+// driverId is drivers.id, NOT the JWT's users.id (see the identity gotcha in
+// CLAUDE.md); bookings.driver_id references drivers(id).
+// -----------------------------------------------------------
+
+export const ACTIVE_TRIP_STATUSES: BookingStatus[] = ['accepted', 'in_transit']
+
+export async function getActiveBookingsForDriver(driverId: string): Promise<DbBooking[]> {
+  const { data, error } = await supabase
+    .from('bookings')
+    .select('*')
+    .eq('driver_id', driverId)
+    .in('status', ACTIVE_TRIP_STATUSES)
+    .order('updated_at', { ascending: false })
+
+  if (error) throw new Error(`DB active-trip lookup failed: ${error.message}`)
+  return (data ?? []) as DbBooking[]
 }
 
 // -----------------------------------------------------------
@@ -205,6 +261,13 @@ export async function listBookings(
 // Atomically sets driver_id + transitions to 'accepted'.
 // The WHERE status='pending' guard is optimistic concurrency:
 // only one driver wins when two race to accept the same booking.
+//
+// award_path='instant' is written in THIS statement, not a follow-up UPDATE.
+// The column defaults to 'auction' (migration 0022), so a self-accepted load
+// used to be recorded as though it had been through an auction that never ran —
+// and a second statement can fail on its own and leave the row claiming a
+// history it does not have. One statement means the carrier and the story of how
+// they got the trip commit together or not at all.
 // -----------------------------------------------------------
 
 export async function acceptBooking(
@@ -216,6 +279,7 @@ export async function acceptBooking(
     .update({
       driver_id:  driverId,
       status:     'accepted',
+      award_path: 'instant',
       updated_at: new Date().toISOString(),
     })
     .eq('id', bookingId)

@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import { z } from 'zod'
+import { canFleetAccessBooking, resolveFleetOwnerByUserId } from '@bharattruck/shared/fleet'
 import {
   redis,
   driverLocationKey,
@@ -9,7 +10,8 @@ import {
   LOCATION_TTL_SECONDS,
   BREADCRUMB_THROTTLE_SECONDS,
 } from '../lib/redis.js'
-import { BookingError } from '../lib/types.js'
+import { supabase } from '../lib/supabase.js'
+import { BookingError, type AuthenticatedUser, type DbBooking } from '../lib/types.js'
 import * as repo from '../lib/repository.js'
 import { emitLocationFix } from '../lib/tracking-emit.js'
 
@@ -48,6 +50,136 @@ async function getLocation(driverId: string): Promise<LocationData | null> {
   return raw ? (JSON.parse(raw) as LocationData) : null
 }
 
+// -----------------------------------------------------------
+// Read authorization — CLOSED BY DEFAULT.
+//
+// THE BUG THESE EXIST FOR: both read routes below branched on `role === 'driver'`
+// and `role === 'shipper'` and then simply continued. Every other role matched
+// NEITHER branch and fell through with no check at all, so a fleet_owner token
+// (live since migration 0014) could read ANY driver's current coordinates by
+// uuid — a cross-tenant leak of a person's position, not just of a trip.
+//
+// The shape deliberately mirrors bt-tracking-service's assertCanAccess: both
+// services serve the same live fix, so they must answer "may this caller see it?"
+// the same way, and the fleet reach test itself is the SHARED one
+// (@bharattruck/shared/fleet) so neither can drift from the other. Each relation
+// gets its own branch and returns; an unmatched role reaches the throw.
+// -----------------------------------------------------------
+
+async function assertCanAccessBooking(booking: DbBooking, user: AuthenticatedUser): Promise<void> {
+  if (user.role === 'admin') return
+  if (user.role === 'shipper') {
+    if (booking.shipper_id !== user.userId) throw new BookingError('Forbidden', 'FORBIDDEN', 403)
+    return
+  }
+  if (user.role === 'driver') {
+    const driverRow = await repo.getDriverByUserId(user.userId)
+    if (!driverRow || booking.driver_id !== driverRow.id) {
+      throw new BookingError('Forbidden', 'FORBIDDEN', 403)
+    }
+    return
+  }
+  if (user.role === 'fleet_owner') {
+    // A fleet_owner token with no fleet_owners row means registration never
+    // completed — that is "no fleet", never "all fleets".
+    const fleet = await resolveFleetOwnerByUserId(supabase, user.userId)
+    if (!fleet) throw new BookingError('Forbidden', 'FORBIDDEN', 403)
+    // getBookingById selects `*`, so fleet_owner_id / vehicle_id are already on the
+    // row — the reach test needs no extra read here.
+    if (!(await canFleetAccessBooking(supabase, fleet.id, booking))) {
+      throw new BookingError('Forbidden', 'FORBIDDEN', 403)
+    }
+    return
+  }
+  throw new BookingError('Forbidden', 'FORBIDDEN', 403)
+}
+
+async function assertCanAccessDriverLocation(driverId: string, user: AuthenticatedUser): Promise<void> {
+  if (user.role === 'admin') return
+  if (user.role === 'driver') {
+    const driverRow = await repo.getDriverByUserId(user.userId)
+    if (!driverRow || driverRow.id !== driverId) {
+      throw new BookingError('You can only view your own location', 'FORBIDDEN', 403)
+    }
+    return
+  }
+  if (user.role === 'shipper') {
+    if (!(await shipperHasActiveBookingWithDriver(user.userId, driverId))) {
+      throw new BookingError('You can only view location for drivers assigned to your active bookings', 'FORBIDDEN', 403)
+    }
+    return
+  }
+  if (user.role === 'fleet_owner') {
+    // This route names a PERSON, not a trip, and a fleet has no standing reach over a
+    // person — only over the trips it runs. So the grant is exactly "this driver is
+    // running a trip this fleet may see right now", which the active-trip lookup
+    // answers directly: employing the driver is not on its own enough, and the grant
+    // ends when the trip does. At most two rows (see ACTIVE_TRIP_STATUSES), so the
+    // sequential reach tests cost the same as the single one on the booking route.
+    const fleet = await resolveFleetOwnerByUserId(supabase, user.userId)
+    if (!fleet) throw new BookingError('Forbidden', 'FORBIDDEN', 403)
+    for (const booking of await repo.getActiveBookingsForDriver(driverId)) {
+      if (await canFleetAccessBooking(supabase, fleet.id, booking)) return
+    }
+    throw new BookingError('You can only view location for drivers currently running a trip for your fleet', 'FORBIDDEN', 403)
+  }
+  throw new BookingError('Forbidden', 'FORBIDDEN', 403)
+}
+
+// -----------------------------------------------------------
+// Trip association for an incoming fix — MANDATORY.
+//
+// THE BUG THESE EXIST FOR: booking_id was optional AND every trip/status check
+// sat inside `if (booking_id)`, so a payload that simply omitted it skipped all
+// of them and still wrote loc:driver:{id}. That cached a driver's position while
+// they were off duty, and bt-fleet-service's GET /fleet/live MGETs that key for
+// every driver on the roster regardless of assignment — turning a personal phone
+// into a tracker the fleet owner could watch on a rest day.
+//
+// booking_id stays OPTIONAL on the wire so the deployed driver app and the GPS
+// test harness keep working unchanged; what is now mandatory is the ASSOCIATION,
+// which we resolve server-side when the client did not name a trip.
+// -----------------------------------------------------------
+
+// The client named a trip: it must be this driver's, and it must be live.
+async function loadDriverActiveBooking(bookingId: string, driverId: string): Promise<DbBooking> {
+  const booking = await repo.getBookingById(bookingId)
+  if (!booking) throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
+  if (booking.driver_id !== driverId) throw new BookingError('You are not assigned to this booking', 'FORBIDDEN', 403)
+  if (booking.status !== 'accepted' && booking.status !== 'in_transit') {
+    throw new BookingError(
+      `Booking is in '${booking.status}' status — location tracking only allowed for accepted or in_transit bookings`,
+      'INVALID_TRANSITION',
+      409,
+    )
+  }
+  return booking
+}
+
+// No trip named: find the one the driver is running. Costs one query — the same
+// single booking read the booking_id path has always done — and only on the
+// payload shape that omits the field, so the driver app's hot path is unchanged.
+async function resolveDriverActiveBooking(driverId: string): Promise<DbBooking> {
+  const active = await repo.getActiveBookingsForDriver(driverId)
+  if (active.length === 0) {
+    throw new BookingError(
+      'No active trip — location is only tracked while you are running an accepted or in_transit booking',
+      'INVALID_TRANSITION',
+      409,
+    )
+  }
+  if (active.length > 1) {
+    // Guessing would file this fix and its breadcrumb against the wrong trip, which
+    // is worse than making the client say which one it means.
+    throw new BookingError(
+      'You have more than one active trip — send booking_id to say which one this location belongs to',
+      'VALIDATION_ERROR',
+      400,
+    )
+  }
+  return active[0]
+}
+
 export async function locationRoutes(app: FastifyInstance) {
 
   // POST /location/update
@@ -72,23 +204,18 @@ export async function locationRoutes(app: FastifyInstance) {
 
     const driverId = driverRow.id
 
+    // A location fix is a property of an ACTIVE TRIP, never of a person: past this
+    // line there is always a booking, so no path can cache a position for a driver
+    // who is off duty. Both helpers refuse rather than fall through.
+    const booking = booking_id
+      ? await loadDriverActiveBooking(booking_id, driverId)
+      : await resolveDriverActiveBooking(driverId)
+
+    const bookingId = booking.id
+
     // The truck running this booking, when one is bound (fleet trips get it
     // from the owner's assignment step). NULL for every solo booking.
-    let vehicleId: string | null = null
-
-    if (booking_id) {
-      const booking = await repo.getBookingById(booking_id)
-      if (!booking) throw new BookingError(`Booking ${booking_id} not found`, 'NOT_FOUND', 404)
-      if (booking.driver_id !== driverId) throw new BookingError('You are not assigned to this booking', 'FORBIDDEN', 403)
-      if (booking.status !== 'accepted' && booking.status !== 'in_transit') {
-        throw new BookingError(
-          `Booking is in '${booking.status}' status — location tracking only allowed for accepted or in_transit bookings`,
-          'INVALID_TRANSITION',
-          409,
-        )
-      }
-      vehicleId = booking.vehicle_id ?? null
-    }
+    const vehicleId: string | null = booking.vehicle_id ?? null
 
     const now = new Date().toISOString()
     const locationData: LocationData = {
@@ -98,16 +225,18 @@ export async function locationRoutes(app: FastifyInstance) {
       heading:    heading ?? null,
       speed_kmh:  speed_kmh ?? null,
       accuracy_m: accuracy_m ?? null,
-      booking_id: booking_id ?? null,
+      booking_id: bookingId,
       updated_at: now,
     }
 
+    // The keys stay `loc:driver:{driverId}` on purpose. Re-keying the live fix to
+    // the trip is the natural follow-up now that a fix cannot exist without one,
+    // but bt-fleet-service (GET /fleet/live) and bt-tracking-service both READ
+    // these keys, so it is a coordinated cross-service change and not this PR's.
     const pipeline = redis.pipeline()
     pipeline.set(driverLocationKey(driverId), JSON.stringify(locationData), 'EX', LOCATION_TTL_SECONDS)
-    if (booking_id) {
-      pipeline.set(driverBookingKey(driverId), booking_id, 'EX', LOCATION_TTL_SECONDS)
-      pipeline.set(bookingDriverKey(booking_id), driverId, 'EX', LOCATION_TTL_SECONDS)
-    }
+    pipeline.set(driverBookingKey(driverId), bookingId, 'EX', LOCATION_TTL_SECONDS)
+    pipeline.set(bookingDriverKey(bookingId), driverId, 'EX', LOCATION_TTL_SECONDS)
     await pipeline.exec()
 
     // Durable dense-GPS breadcrumb (location_history, D-007). Owned here in
@@ -118,58 +247,56 @@ export async function locationRoutes(app: FastifyInstance) {
     // (Redis above is the source of truth for the live position), so we log
     // and swallow rather than 500 the request. This also lets ingestion keep
     // working before infra's migration 009 lands the table.
-    if (booking_id) {
-      try {
-        const fresh = await redis.set(
-          breadcrumbGateKey(booking_id), '1', 'EX', BREADCRUMB_THROTTLE_SECONDS, 'NX',
-        )
-        if (fresh === 'OK') {
-          await repo.insertLocationBreadcrumb({
-            booking_id,
+    try {
+      const fresh = await redis.set(
+        breadcrumbGateKey(bookingId), '1', 'EX', BREADCRUMB_THROTTLE_SECONDS, 'NX',
+      )
+      if (fresh === 'OK') {
+        await repo.insertLocationBreadcrumb({
+          booking_id:  bookingId,
+          driver_id:   driverId,
+          // Asset attribution is additive: the key is present only when the
+          // booking actually names a truck, so a solo breadcrumb is written
+          // exactly as before.
+          ...(vehicleId ? { vehicle_id: vehicleId } : {}),
+          lat,
+          lng,
+          heading:     heading ?? null,
+          speed_kmh:   speed_kmh ?? null,
+          accuracy_m:  accuracy_m ?? null,
+          recorded_at: now,
+        })
+
+        // Hand the fix to bt-tracking-service's evaluator (D-014) — geofence
+        // crossings, route alerts, trip telemetry. Fired INSIDE the breadcrumb
+        // gate, not on every update, so evaluation runs at exactly the same
+        // ~1/12s cadence as the breadcrumbs it derives from: the telemetry
+        // deltas then line up 1:1 with persisted points instead of drifting
+        // ahead of them, and a driver polling faster than the throttle cannot
+        // multiply the evaluator's write load.
+        emitLocationFix(
+          {
+            booking_id:  bookingId,
             driver_id:   driverId,
-            // Asset attribution is additive: the key is present only when the
-            // booking actually names a truck, so a solo breadcrumb is written
-            // exactly as before.
-            ...(vehicleId ? { vehicle_id: vehicleId } : {}),
+            vehicle_id:  vehicleId,
             lat,
             lng,
-            heading:     heading ?? null,
             speed_kmh:   speed_kmh ?? null,
-            accuracy_m:  accuracy_m ?? null,
+            heading:     heading ?? null,
             recorded_at: now,
-          })
-
-          // Hand the fix to bt-tracking-service's evaluator (D-014) — geofence
-          // crossings, route alerts, trip telemetry. Fired INSIDE the breadcrumb
-          // gate, not on every update, so evaluation runs at exactly the same
-          // ~1/12s cadence as the breadcrumbs it derives from: the telemetry
-          // deltas then line up 1:1 with persisted points instead of drifting
-          // ahead of them, and a driver polling faster than the throttle cannot
-          // multiply the evaluator's write load.
-          emitLocationFix(
-            {
-              booking_id,
-              driver_id:   driverId,
-              vehicle_id:  vehicleId,
-              lat,
-              lng,
-              speed_kmh:   speed_kmh ?? null,
-              heading:     heading ?? null,
-              recorded_at: now,
-            },
-            app.log,
-          )
-        }
-      } catch (err) {
-        app.log.warn({ err, driver_id: driverId, booking_id }, 'Breadcrumb persist failed (live tracking unaffected)')
+          },
+          app.log,
+        )
       }
+    } catch (err) {
+      app.log.warn({ err, driver_id: driverId, booking_id: bookingId }, 'Breadcrumb persist failed (live tracking unaffected)')
     }
 
-    app.log.info({ driver_id: driverId, lat, lng, booking_id }, 'Location updated')
+    app.log.info({ driver_id: driverId, lat, lng, booking_id: bookingId }, 'Location updated')
 
     return reply.send({
       success: true,
-      data: { driver_id: driverId, lat, lng, booking_id: booking_id ?? null, updated_at: now, ttl_seconds: LOCATION_TTL_SECONDS },
+      data: { driver_id: driverId, lat, lng, booking_id: bookingId, updated_at: now, ttl_seconds: LOCATION_TTL_SECONDS },
     })
   })
 
@@ -182,17 +309,7 @@ export async function locationRoutes(app: FastifyInstance) {
 
     const { driver_id } = paramParsed.data
 
-    if (req.user.role === 'driver') {
-      const driverRow = await repo.getDriverByUserId(req.user.userId)
-      if (!driverRow || driverRow.id !== driver_id) {
-        throw new BookingError('You can only view your own location', 'FORBIDDEN', 403)
-      }
-    } else if (req.user.role === 'shipper') {
-      const hasActiveBooking = await shipperHasActiveBookingWithDriver(req.user.userId, driver_id)
-      if (!hasActiveBooking) {
-        throw new BookingError('You can only view location for drivers assigned to your active bookings', 'FORBIDDEN', 403)
-      }
-    }
+    await assertCanAccessDriverLocation(driver_id, req.user)
 
     const location = await getLocation(driver_id)
     return reply.send({
@@ -214,15 +331,7 @@ export async function locationRoutes(app: FastifyInstance) {
     const booking = await repo.getBookingById(booking_id)
     if (!booking) throw new BookingError(`Booking ${booking_id} not found`, 'NOT_FOUND', 404)
 
-    if (req.user.role === 'shipper' && booking.shipper_id !== req.user.userId) {
-      throw new BookingError('Forbidden', 'FORBIDDEN', 403)
-    }
-    if (req.user.role === 'driver') {
-      const driverRow = await repo.getDriverByUserId(req.user.userId)
-      if (!driverRow || booking.driver_id !== driverRow.id) {
-        throw new BookingError('Forbidden', 'FORBIDDEN', 403)
-      }
-    }
+    await assertCanAccessBooking(booking, req.user)
 
     if (!booking.driver_id) {
       return reply.send({ success: true, data: null, message: 'No driver assigned to this booking yet' })
@@ -246,7 +355,8 @@ export async function locationRoutes(app: FastifyInstance) {
 }
 
 async function shipperHasActiveBookingWithDriver(shipperId: string, driverId: string): Promise<boolean> {
-  const { supabase } = await import('../lib/supabase.js')
+  // Uses the module-level `supabase` handle now that the authz helpers above need it too;
+  // the dynamic import this replaced only ever shadowed the same lazy Proxy client.
   const { data, error } = await supabase
     .from('bookings')
     .select('id')

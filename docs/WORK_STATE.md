@@ -78,7 +78,7 @@ and its assigned migration number.
 | D-19, D-8 | truck schedule; multi-fleet | 🟠 in flight |
 | D-11 | pricing advisory | 🟠 in flight |
 | D-14 | phone OTP stubbed everywhere | 🟠 in flight |
-| D-10 | direct-attach | 🟠 `award_path` column live; flow not built |
+| D-10 | direct-attach | ✅ `PATCH /bookings/:id/direct-attach`; all three award paths stamp `award_path` |
 | D-13 | POD rebuild, QR scrapped | ⬜ delegated |
 | D-15–D-18 | invoice, multi-truck, LR, e-way bill record | ⬜ delegated |
 | D-12 | Razorpay Route | ⬜ next (build inert — no creds, `BLOCKERS.md` B-1) |

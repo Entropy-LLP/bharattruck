@@ -1,17 +1,23 @@
+import { can, relationsToBooking, resolvePersonas, type PersonaSnapshot } from '@bharattruck/shared/personas'
 import type { AuthenticatedUser, BookingStatus, BookingWithProfiles, CreateBookingBody, DbBooking } from './types.js'
 import { BookingError } from './types.js'
 import { assertFleetAssignmentReady, assertValidTransition } from './state.js'
 import * as repo from './repository.js'
+import * as quoteRepo from './quote-repository.js'
+import { supabase } from './supabase.js'
 import {
   hasLiveVehicleAssignment,
   isEmployedDriver,
   stripCommercialFields,
+  type Bidder,
   type PriceMasked,
 } from './fleet.js'
 import { defaultPricingClient, type PricingClient } from './pricing-client.js'
 import * as notify from './notifications/emit.js'
 import * as podRepo from './pod/repository.js'
 import { evaluateOtpGate, type OtpGateResult } from './pod/service.js'
+import { resolveConsigneeParty } from './consignee/repository.js'
+import { attachConsignee, attachConsignees, type WithConsignee } from './consignee/service.js'
 
 // -----------------------------------------------------------
 // createBooking — the price quote-lock saga.
@@ -114,8 +120,25 @@ export async function createBooking(
     )
   }
 
+  // 3b. Resolve the CONSIGNEE — the party the goods are for (D-22) — before the
+  //     booking row exists, because the booking references it.
+  //
+  //     Linked to an existing users row when the phone already belongs to one,
+  //     otherwise a fresh credential-less party record is created. That linking
+  //     path NEVER writes to the row it matched: see the block comment at the top
+  //     of consignee/repository.ts — a caller who could update the row they name
+  //     could rewrite any account on the platform by typing its phone number.
+  //
+  //     Runs BEFORE the insert and before the quote is consumed, so a bad
+  //     consignee (or a pre-0026 database) fails with nothing to compensate. A
+  //     party record left behind by a create that fails later is harmless and
+  //     deliberately not rolled back: it is a customer the shipper genuinely has,
+  //     it holds no credential, and the next booking naming that phone links
+  //     straight to it.
+  const consigneeUserId = body.consignee ? await resolveConsigneeParty(body.consignee) : null
+
   // 4. Insert the booking with the SERVER-SIDE locked price (client price is gone).
-  const booking = await repo.createBooking(body, actor, quote.quoted_price)
+  const booking = await repo.createBooking(body, actor, quote.quoted_price, consigneeUserId)
 
   // 5. Atomically consume the quote (DB-enforced replay/expiry guard). On any
   //    failure — including a concurrent double-submit that loses the race and
@@ -202,18 +225,33 @@ async function resolveDriverScope(actor: AuthenticatedUser): Promise<repo.Driver
 export async function getBooking(
   id: string,
   actor: AuthenticatedUser,
-): Promise<PriceMasked<BookingWithProfiles>> {
+): Promise<WithConsignee<PriceMasked<BookingWithProfiles>>> {
   const booking = await repo.getBookingById(id)
   if (!booking) {
     throw new BookingError(`Booking ${id} not found`, 'NOT_FOUND', 404)
   }
-  if (actor.role === 'shipper' && booking.shipper_id !== actor.userId) {
+  // A shipper-role caller reads their OWN bookings — and, since D-22, the ones
+  // consigned TO them. A claimed consignee is a party to the consignment, not a
+  // stranger: they are the person the goods are for, and refusing them the trip
+  // they are waiting on was only ever an artefact of "shipper" meaning "the
+  // party who posted it". This is a comparison against a value already on the
+  // row, NOT a new filter, so on a pre-0026 database consignee_user_id is
+  // undefined, nothing matches, and the guard behaves exactly as it did.
+  //
+  // Their INBOUND LIST is a separate change and deliberately not here: listing
+  // by consignee_user_id means querying a column that a pre-0026 database does
+  // not have, and it belongs with the claim flow (§9.2) rather than with this
+  // slice.
+  const viewerIsConsignee = !!booking.consignee_user_id && booking.consignee_user_id === actor.userId
+  if (actor.role === 'shipper' && booking.shipper_id !== actor.userId && !viewerIsConsignee) {
     throw new BookingError('Forbidden', 'FORBIDDEN', 403)
   }
 
   // Shipper/admin keep the payload they have always had — assigned_to_me is a
-  // driver-facing field and they are not drivers.
-  if (actor.role !== 'driver') return booking
+  // driver-facing field and they are not drivers. The consignee block is added
+  // for whoever is a party to the consignment (attachConsignee decides; an
+  // observer's payload is unchanged).
+  if (actor.role !== 'driver') return attachConsignee(booking, actor)
 
   // One driver lookup answers both questions below.
   const driverRow = await repo.getDriverByUserId(actor.userId)
@@ -226,10 +264,14 @@ export async function getBooking(
     if (!assignedToMe) {
       throw new BookingError(`Booking ${id} not found`, 'NOT_FOUND', 404)
     }
-    return { ...stripCommercialFields(booking), assigned_to_me: true }
+    // The money is masked, the receiver is NOT: this driver is the one standing
+    // at the drop and the consignee is who they hand the goods to. Price hiding
+    // (Q16) and the consignee gate are separate rules and neither implies the
+    // other.
+    return attachConsignee({ ...stripCommercialFields(booking), assigned_to_me: true }, actor)
   }
 
-  return { ...booking, assigned_to_me: assignedToMe }
+  return attachConsignee({ ...booking, assigned_to_me: assignedToMe }, actor)
 }
 
 // -----------------------------------------------------------
@@ -246,10 +288,17 @@ export async function getBooking(
 // own accepted/in_transit trip at all (BIBLE §5.4 item 3).
 // -----------------------------------------------------------
 
-export async function listBookings(actor: AuthenticatedUser): Promise<PriceMasked<DbBooking>[]> {
+export async function listBookings(
+  actor: AuthenticatedUser,
+): Promise<WithConsignee<PriceMasked<DbBooking>>[]> {
   const scope = await resolveDriverScope(actor)
   const bookings = await repo.listBookings(actor, scope ?? undefined)
-  return scope?.employed ? bookings.map(stripCommercialFields) : bookings
+  const masked = scope?.employed ? bookings.map(stripCommercialFields) : bookings
+  // Attached LAST, and per-row: a solo driver's list is a UNION of their own
+  // trips and the open 'pending' load board, so the same response legitimately
+  // contains bookings they are a party to and bookings they are merely browsing.
+  // A whole-response decision would be wrong for one half of it either way.
+  return attachConsignees(masked, actor)
 }
 
 // -----------------------------------------------------------
@@ -307,6 +356,210 @@ export async function acceptBooking(
 
   await notify.emitBookingAccepted(updated, log)
   return updated
+}
+
+// -----------------------------------------------------------
+// directAttachBooking — D-10: the shipper moves their own load with their own
+// trucks, so there is no auction to run against themselves.
+//
+// This is the distributor's core flow, not an edge case: they post a load, they
+// own the fleet, they attach it. Until now the platform had no route for it —
+// they had to bid on their own booking and accept their own quote — and
+// `bookings.award_path` recorded every such trip as 'auction' because nothing
+// ever wrote the column.
+//
+// THE TRIP IS NOT SPECIAL, ONLY THE AWARD PATH IS. This function ends where
+// acceptQuote ends: an 'accepted' booking with a carrier bound to it, the same
+// columns set, the same shape. Assignment, tracking, documents, POD and
+// settlement then run unchanged — see the note on carrier selection below for the
+// one behavioural consequence, which is also identical to a fleet auction win.
+//
+// ── AUTHORIZATION: capability + relation, never a role string (D-27) ──
+//
+// The caller must be the booking's SHIPPER *and* be able to carry it:
+//
+//   relation 'shipper'  — resolved by relationsToBooking(), i.e. they posted it.
+//   'carry' or 'operate' — resolved from what they OWN. 'carry' is one truck;
+//                          'operate' is a fleet. Either is enough to move a load.
+//
+// Both halves are load-bearing and neither implies the other. Without the
+// relation, anyone with a truck could seize any open load off the board. Without
+// the capability, any shipper could mark their own load 'accepted' with no
+// carrier behind it — a trip that can never be driven, holding an LR series and a
+// consignee's expectations.
+//
+// `actor.role` is passed to resolvePersonas ONLY as primary_persona, which is a
+// mailing address, not an authorization axis (see personas.ts). A 'shipper'-role
+// JWT held by someone who owns a truck passes; a 'fleet_owner'-role JWT held by
+// the human who posted the load passes too. That is the point of the model.
+// -----------------------------------------------------------
+
+/**
+ * Which of the caller's own carrier identities takes the load.
+ *
+ * Mirrors awardBooking's winner columns exactly, because the resulting booking
+ * has to be indistinguishable from an auctioned one:
+ *
+ *   a FLEET (fleet_owner_id, driver_id left NULL) when this human runs one. The
+ *   trip then needs the owner to pair a driver and a truck in bt-fleet-service
+ *   before it can start — assertFleetAssignmentReady enforces that on
+ *   accepted → in_transit, and it is the SAME gate a fleet that wins an auction
+ *   passes through. A distributor with a yard full of trucks has not decided
+ *   which one goes, and inventing that decision here would be wrong.
+ *
+ *   a SOLO OWNER-DRIVER (driver_id) otherwise. They are the truck, so there is
+ *   nothing left to assign and the trip is startable immediately.
+ *
+ * Fleet wins when the human is both, matching the capability ladder: 'operate'
+ * describes the larger business and is where their trucks and drivers are.
+ */
+function directAttachCarrier(snapshot: PersonaSnapshot): Bidder | null {
+  if (snapshot.fleet_owner_id && can(snapshot, 'operate')) {
+    return { kind: 'fleet', fleetOwnerId: snapshot.fleet_owner_id }
+  }
+  if (snapshot.driver_id && can(snapshot, 'carry')) {
+    return { kind: 'driver', driverId: snapshot.driver_id }
+  }
+  return null
+}
+
+/**
+ * Does this booking ALREADY have a carrier, and is it ours?
+ *
+ * Asked twice against the same rules: once on the row we read before writing, and
+ * again on the row we re-read after losing the conditional UPDATE. Those are the
+ * same question at two moments, so they must not be two implementations — the
+ * second one is the race, and a race handled by a slightly different rule is how
+ * a double-award gets in.
+ *
+ *   'replay'   — already attached to THIS caller's carrier. The request's
+ *                postcondition already holds, so it succeeds and returns the
+ *                booking. True even if the trip has since moved on: "attach my
+ *                load to my fleet" is satisfied by a trip that is already running
+ *                on that fleet, and answering 409 for a completed request is how
+ *                a retried double tap turns into a support call.
+ *   'conflict' — somebody has it: an auction winner, or a different carrier
+ *                identity of the caller's. Never silently overwritten.
+ *   'proceed'  — no carrier yet; the state machine decides whether it may move.
+ */
+type AttachOutcome = 'replay' | 'conflict' | 'proceed'
+
+function classifyExistingAward(booking: DbBooking, carrier: Bidder): AttachOutcome {
+  const isOurs = carrier.kind === 'fleet'
+    ? booking.fleet_owner_id === carrier.fleetOwnerId
+    : booking.driver_id === carrier.driverId
+
+  if (booking.award_path === 'direct_attach' && isOurs) return 'replay'
+  // Any bound carrier at all — auction winner, self-accepted driver, or another
+  // of the caller's own identities. awarded_quote_id is checked too because it is
+  // the other half of the atomic guard and must not drift away from it.
+  if (booking.awarded_quote_id || booking.driver_id || booking.fleet_owner_id) return 'conflict'
+  return 'proceed'
+}
+
+/** One wording for the conflict, raised from both the pre-read and the post-race branch. */
+function alreadyAwarded(): BookingError {
+  return new BookingError(
+    'Booking already has a carrier — it was awarded or attached concurrently',
+    'ALREADY_AWARDED',
+    409,
+  )
+}
+
+export async function directAttachBooking(
+  bookingId: string,
+  actor: AuthenticatedUser,
+  log?: Logger,
+): Promise<DbBooking> {
+  const booking = await repo.getBookingById(bookingId)
+  if (!booking) {
+    throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
+  }
+
+  const snapshot = await resolvePersonas(supabase, actor.userId, actor.role)
+
+  // A stranger is told the booking does not exist, not that they may not touch
+  // it — the same 404-over-403 choice getBooking makes for a scoped driver, and
+  // for the same reason: a 403 confirms which booking ids are real.
+  if (!relationsToBooking(booking, snapshot).includes('shipper')) {
+    throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
+  }
+
+  if (!can(snapshot, 'carry') && !can(snapshot, 'operate')) {
+    throw new BookingError(
+      'Direct-attach needs a truck of your own — add a vehicle, or accept a quote from a carrier',
+      'FORBIDDEN',
+      403,
+    )
+  }
+
+  const carrier = directAttachCarrier(snapshot)
+  if (!carrier) {
+    // Unreachable while capabilitiesFrom() holds: 'carry' and 'operate' are both
+    // derived from vehicles owned through drivers.id or fleet_owners.id, so a
+    // holder of either always has one of those ids. Reaching here means the
+    // capability set and the identity rows disagree — corrupt data, not a client
+    // mistake, and exactly how bidderOfQuote treats a bidderless quote.
+    throw new BookingError('Carrier identity could not be resolved', 'INTERNAL', 500)
+  }
+
+  // Answered BEFORE the state machine is consulted, because a replay is not a
+  // transition: the booking is already 'accepted', so assertValidTransition would
+  // (correctly) refuse accepted → accepted and a retried request could never be
+  // recognised as the success it is.
+  const existing = classifyExistingAward(booking, carrier)
+  if (existing === 'replay') return booking
+  if (existing === 'conflict') throw alreadyAwarded()
+
+  // Through the EXISTING state machine, never around it. Direct-attach is an
+  // award, so it lands on the same pending|negotiating → accepted edge the
+  // auction uses and inherits every rule already on it — a cancelled, completed
+  // or paid booking is refused here, with the same 409 and the same message every
+  // other caller gets.
+  assertValidTransition(booking.status, 'accepted')
+
+  // final_price is the server-locked quoted_price. There was no negotiation, but
+  // there IS a real price — the one pricing locked when the load was posted — and
+  // D-15 requires a direct-attached trip to invoice real freight. Leaving it NULL
+  // would make this the only kind of accepted trip without a settlement figure,
+  // i.e. exactly the sort of "special" D-10 says it must not be.
+  const attached = await quoteRepo.directAttachBooking(bookingId, carrier, booking.quoted_price)
+
+  if (!attached) {
+    // We lost the row between the read above and this write — a concurrent
+    // auction award, or our own request arriving twice at once. Re-read and ask
+    // the SAME question of the committed row: a replay still succeeds, anything
+    // else is a conflict. See the race-safety note on
+    // quoteRepo.directAttachBooking for why the loser is guaranteed to see the
+    // winner's row here.
+    const current = await repo.getBookingById(bookingId)
+    if (current && classifyExistingAward(current, carrier) === 'replay') return current
+    throw alreadyAwarded()
+  }
+
+  // The market on this load is now closed, so the bids on it are settled rather
+  // than abandoned. DELIBERATE CHOICE: live quotes are EXPIRED, not a reason to
+  // refuse the attach. Refusing would hand any outsider a veto over the shipper's
+  // own truck — one speculative bid on a distributor's load and they could no
+  // longer move it themselves — while silently discarding the bids would leave
+  // carriers holding capacity for a load that is gone.
+  //
+  // All of this runs AFTER the booking is won: expiring bids for an attach that
+  // then loses the race would close a market that is still open.
+  //
+  // The losing set is SNAPSHOTTED BEFORE the expiry, because expireOpenQuotes is
+  // what makes those rows stop matching the live-status filter the lookup uses. A
+  // notification pass that ran afterwards would find an empty set every time and
+  // silently tell nobody.
+  const losingQuotes = await quoteRepo.listLosingQuotes(bookingId, null)
+  await quoteRepo.expireOpenQuotes(bookingId)
+
+  // Only the losing bidders are told. There is no "your load was accepted" mail
+  // here on purpose: the shipper and the carrier are the same human and they are
+  // the one who just did this.
+  await notify.emitDirectAttached(attached, losingQuotes, log)
+
+  return attached
 }
 
 // -----------------------------------------------------------

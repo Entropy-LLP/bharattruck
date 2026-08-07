@@ -84,11 +84,16 @@ jobs:
           # A change to this workflow file redeploys everything (safety — same convention as ci.yml).
           filters: |
             bt-gateway: ['bt-gateway/**', '.github/workflows/deploy.yml', 'cloudbuild.yaml', '.gcloudignore']
-            bt-auth-service: ['bt-auth-service/**', '.github/workflows/deploy.yml', 'cloudbuild.yaml', '.gcloudignore']
-            # bt-booking-service and bt-tracking-service consume packages/shared via a `file:`
-            # dependency (verified in their package.json), so a change there must redeploy them —
-            # otherwise a shared fix like the fleet tenant-isolation guard lands in the repo but
-            # never reaches the running services. bt-fleet-service does NOT depend on shared.
+            # bt-auth-service, bt-booking-service and bt-tracking-service consume packages/shared
+            # via a `file:` dependency (verified in their package.json), so a change there must
+            # redeploy them — otherwise a shared fix like the fleet tenant-isolation guard, or the
+            # persona resolver behind /auth/me, lands in the repo but never reaches the running
+            # services. bt-fleet-service does NOT depend on shared.
+            #
+            # THIS LIST IS HAND-MAINTAINED AND GOES STALE SILENTLY: a service added to shared
+            # without being added here still builds green and still merges, it just keeps serving
+            # the old library forever. Adding the `file:` dep and editing this line are one change.
+            bt-auth-service: ['bt-auth-service/**', 'packages/shared/**', '.github/workflows/deploy.yml', 'cloudbuild.yaml', '.gcloudignore']
             bt-booking-service: ['bt-booking-service/**', 'packages/shared/**', '.github/workflows/deploy.yml', 'cloudbuild.yaml', '.gcloudignore']
             bt-pricing-service: ['bt-pricing-service/**', '.github/workflows/deploy.yml', 'cloudbuild.yaml', '.gcloudignore']
             bt-payment-service: ['bt-payment-service/**', '.github/workflows/deploy.yml', 'cloudbuild.yaml', '.gcloudignore']
@@ -106,9 +111,9 @@ jobs:
           CHANGES='${{ steps.filter.outputs.changes }}'
           # Backend services: the dir name IS the Cloud Run service name AND the Dockerfile dir.
           # NOTE `packages/shared` is a build input, not a deployable dir — it must never reach
-          # the services list, or CD would try to build and deploy a library as a service. The filter above already maps it onto its two real consumers
-          # (bt-booking-service, bt-tracking-service); this select drops the bare name, along
-          # with the four app dirs.
+          # the services list, or CD would try to build and deploy a library as a service. The filter above already maps it onto its three real consumers
+          # (bt-auth-service, bt-booking-service, bt-tracking-service); this select drops the bare
+          # name, along with the four app dirs.
           SERVICES=$(printf '%s' "$CHANGES" | jq -c '
             [ .[] | select(. == "driver" or . == "shipper" or . == "fleet"
                         or . == "bt-ops-web" or . == "packages/shared" | not) ]')
@@ -208,6 +213,38 @@ jobs:
             --allow-unauthenticated \
             --labels "commit-sha=${GITHUB_SHA},managed-by=github-actions" \
             --quiet
+      # `gcloud run deploy` returning 0 only means the revision was CREATED, not that it serves.
+      # A revision whose container crash-loops still leaves the step green -- which is exactly how
+      # a brand-new service ships: CD creates it with an EMPTY environment (env is deliberately
+      # never set here), it dies on its first config read, and nothing anywhere goes red. Probe the
+      # thing we just shipped instead of trusting the deploy's exit code.
+      - name: Verify ${{ matrix.svc }} actually serves /health
+        run: |
+          set -uo pipefail
+          # Ask Cloud Run for the URL rather than reconstructing it — the run.app hostname embeds a
+          # per-project hash, so a hand-built URL would probe nothing and "pass" on a 404.
+          URL=$(gcloud run services describe "${{ matrix.svc }}" \
+            --region "$REGION" --project "$PROJECT" --format='value(status.url)')
+          if [ -z "$URL" ]; then
+            echo "::error::could not resolve the Cloud Run URL for ${{ matrix.svc }} — cannot verify the deploy"
+            exit 1
+          fi
+          echo "probing $URL/health"
+          # A fresh revision takes a few seconds to take traffic, so retry — but bounded, and the
+          # failure path EXITS NON-ZERO. A warning here would recreate the silence this fixes.
+          for i in $(seq 1 10); do
+            # curl already prints 000 on a connection failure; `|| true` just keeps the non-zero
+            # exit from ending the step before the retries are spent.
+            CODE=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$URL/health" 2>/dev/null || true)
+            if [ "$CODE" = "200" ]; then
+              echo "  PASS  $URL/health -> 200 (attempt $i)"
+              exit 0
+            fi
+            echo "  attempt $i/10: $CODE"
+            sleep 6
+          done
+          echo "::error::${{ matrix.svc }} deployed but never served 200 on /health (last: $CODE). The revision is live and broken — check 'gcloud run services logs read ${{ matrix.svc }} --region $REGION' for a crash loop, and whether the service is missing env vars (CD never sets them)."
+          exit 1
 
   # ---------------------------------------------------------------------------
   # 3) Apps — build image with NEXT_PUBLIC_* baked from repo vars/secrets, push, deploy.
@@ -290,3 +327,34 @@ jobs:
             --allow-unauthenticated \
             --labels "commit-sha=${GITHUB_SHA},managed-by=github-actions" \
             --quiet
+      # Same proof-of-life check as the services lane, against the app's ROOT path: these are Next
+      # apps and have no /health route. Catches the 403-to-everyone shape (how bt-fleet-console first
+      # shipped) and a container that dies on boot, both of which leave the deploy step green.
+      - name: Verify ${{ matrix.service }} actually serves its root page
+        run: |
+          set -uo pipefail
+          URL=$(gcloud run services describe "${{ matrix.service }}" \
+            --region "$REGION" --project "$PROJECT" --format='value(status.url)')
+          if [ -z "$URL" ]; then
+            echo "::error::could not resolve the Cloud Run URL for ${{ matrix.service }} — cannot verify the deploy"
+            exit 1
+          fi
+          echo "probing $URL/"
+          # -L: every app's root is a redirect-to-login shell, and both a Next redirect and a Cloud
+          # Run hostname redirect are healthy. Any final code under 400 means the container is up and
+          # routing; deliberately permissive, because a false failure here blocks shipping.
+          for i in $(seq 1 10); do
+            CODE=$(curl -sSL -o /dev/null -w '%{http_code}' --max-time 20 "$URL/" 2>/dev/null || true)
+            # Glob-match rather than a numeric compare: curl reports a connection failure as "000",
+            # which any `-lt 400` test would happily accept as healthy.
+            case "$CODE" in
+              2??|3??)
+                echo "  PASS  $URL/ -> $CODE (attempt $i)"
+                exit 0
+                ;;
+            esac
+            echo "  attempt $i/10: $CODE"
+            sleep 6
+          done
+          echo "::error::${{ matrix.service }} deployed but never served its root page (last: $CODE). A 403 means the service is not public; 000/5xx means the container is not booting."
+          exit 1
