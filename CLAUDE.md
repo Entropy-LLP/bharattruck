@@ -6,6 +6,16 @@
 > `docs/BIBLE.md §0.3` for why) — every filename this file used to point you at individually is now
 > a section of `docs/BIBLE.md` instead.
 
+> **Building anything identity-, persona-, auth-, KYC-, document- or app-shaped? Read
+> `docs/ARCHITECTURE_UNIFIED_IDENTITY.md` FIRST.** It is the LOCKED model (D-1..D-38): one account,
+> personas COMPUTED from owned assets + relationships (never a `role` flag), KYC that prompts but
+> never gates (D-31), the consignee as an unclaimed party reachable by a claim link (D-22/D-35), and
+> the plan for the ONE app (`bt-app`) in `docs/UNIFIED_APP_PLAN.md`. **Authorize on capabilities +
+> `relationsToBooking` from `@bharattruck/shared/personas`, never on the JWT `role` string** — the
+> `role` gates are being removed (§10.3); do not add new ones. Current schema truth is
+> `supabase/schema/baseline.sql` (generated from prod); the files in `supabase/migrations/` are
+> HISTORY — never read them to learn current state.
+
 ## Repo orientation
 
 BharatTruck is an India interstate/intrastate freight-booking marketplace built on the LogisticOS microservices platform. **This is the single source-of-truth monorepo** for the whole system — all backend services, both customer PWAs, the internal ops console, the API gateway, infra, and DB migrations live here. MVP deadline: **31 Aug 2026**. North star: **Completed Paid Trips** — the bar is one shipper → one driver → one tracked, proven, paid interstate trip.
@@ -15,7 +25,7 @@ BharatTruck is an India interstate/intrastate freight-booking marketplace built 
 **Services** (Fastify / TypeScript / Node 20, deployed to GCP Cloud Run, `asia-south1`):
 - `bt-gateway` — Nginx edge; maps app `/api/*` → service routes. Every app talks to the backend only through this (`NEXT_PUBLIC_API_URL`).
 - `bt-auth-service` — authentication and identity (custom HS256 JWT; KYC via Surepass — currently stubbed).
-- `bt-booking-service` — bookings + auction/negotiation + **live GPS ingestion** (`POST /location/update`, `GET /location/booking/:id`, Redis-backed, 30s TTL) and the `location_history` breadcrumb write. NOTE: trip lifecycle currently dead-ends at `accepted` — closing it is the top priority.
+- `bt-booking-service` — bookings + auction/negotiation + direct-attach (D-10) + freight documents (LR/invoice/e-way-bill) + POD evidence + **live GPS ingestion** (`POST /location/update`, trip-scoped since 2026-08-07 — D-25, no GPS outside an active trip; `GET /location/booking/:id`, Redis-backed, 30s TTL) and the `location_history` breadcrumb write. The trip lifecycle **closes end-to-end** (posted → award → in_transit → completed/delivery_asserted → paid); the old "dead-ends at accepted" note is retired.
 - `bt-pricing-service` — freight quotes / pricing (CTO cost-breakdown anchor; RL engine is OUT of MVP).
 - `bt-payment-service` — payments (**cash-recorded/direct first**; escrow is OUT of MVP).
 - `bt-cargo-ledger` — cargo / trip POD + ledger (on-chain anchor is OUT of MVP; receiver-OTP POD is IN).
