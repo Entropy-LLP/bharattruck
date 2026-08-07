@@ -2,7 +2,9 @@
 
 > **Status:** LOCKED 2026-08-03 by founder decision. Supersedes the one-role-per-account model.
 > **Extended 2026-08-07** with D-21..D-30 (§9) after a full code audit — the consignee party model,
-> the live-location rule, the sub-contracting seam, and the removal of brokers from scope.
+> the live-location rule, the sub-contracting seam, and the removal of brokers from scope — and again
+> with D-31..D-38 (§10, the unified-app session): KYC-as-prompt, primary-persona-as-front-door,
+> magic-link removal, the consignee claim link, and the build order to a working `bt-app`.
 > Changing anything here needs an explicit dated reversal note in this file, the way `BIBLE.md §2`
 > handles scope reversals — do not silently overwrite.
 >
@@ -441,3 +443,58 @@ Each row is one PR, green CI, merged, deployed.
 | 8 | ✅ `award_path` + direct-attach endpoint (D-10) | Makes the distributor path real. |
 | 9 | Sub-contract predicate + payee fix (D-24) | Closes the ₹0 payout hole. |
 | 10 | Land `feat/pod-rebuild`; apply 0024 and 0026 | Sequenced last so the DB moves once, deliberately. |
+
+---
+
+# 10. Extension — locked 2026-08-07 (the unified-app session)
+
+> Founder session that decided how the ONE app onboards and shapes itself. These lock the
+> product model the `bt-app` frontend renders. Where one refines an earlier decision it says so.
+
+## 10.1 Decisions D-31..D-38
+
+| # | Decision | Consequence |
+|---|---|---|
+| **D-31** | **KYC prompts, never gates.** A capability unlocks on *either* a verified document *or* a recorded self-declaration. Both are evidence; neither is a wall. | Refines D-5 (which deferred KYC entirely). A transporter over the ₹20 L GST threshold who has not filed GST still sees the fleet-owner surfaces once they sign the **under-threshold / will-provide-later acknowledgement** we pop up. The declaration is an *artifact* (a missing KYC record is only an absence), so it is the stronger legal position. Applies to every persona — driver, shipper, fleet owner. |
+| **D-32** | **Primary persona is a FRONT DOOR, not a ladder.** At signup the user picks a primary persona — shipper, driver, **or fleet owner directly** — and it shapes the initial UI and the onboarding checklist. It gates nothing. | Corrects the earlier "shipper→driver→fleet owner promotion" framing: that chain is *one emergent path* (a driver who buys a second truck), not the only entry. A fleet owner who never drives declares "fleet owner", lands in the fleet console in a **setup state**, and is never made to onboard a truck-as-a-driver first. Capabilities still emerge from assets underneath (§4.2) — you cannot *assign* a truck you do not own — but the declared persona sets the initial shape so nobody climbs a ladder they do not belong on. |
+| **D-33** | **A persona-completeness ring** shows what a persona still needs (KYC docs, GST, bank, trucks) as a percentage. Incomplete never blocks; it nudges. | The visible form of D-31. Per-persona requirement sets: **driver** = Aadhaar + PAN + driving licence; **fleet owner** = the driver set (if they also drive) + GST + business/bank details; **shipper** = GST, prompted when a load is interstate / needs an e-way bill, or when volume is high. Each unmet item is a prompt with an acknowledgement escape hatch (D-31), never a gate. |
+| **D-34** | **Magic-link auth is DELETED.** Password + a production-grade password-reset flow only, one flow for the whole app. | The per-role `DRIVER_/SHIPPER_/FLEET_MAGIC_LINK_URL` routing (and the whole magic-link surface) goes away — nobody used it and under one front door it has no correct destination. Auth becomes conventional email+password as the rest of the industry runs it. Password reset is reviewed and hardened separately (single origin, single-use token, the callback-allowlist from the 2026-08-07 security fix). |
+| **D-35** | **The consignee is NOT a persona and NOT a KYC subject.** They join the network through a single emailed **claim link** to a standalone form — no app install, no KYC. | Refines D-22's claim trigger. The shipper already put the consignee's email on the booking, so we email them a signed, single-purpose URL → a standalone form where they confirm/complete only what a consignee needs (delivery confirmation, the details the LR/e-way-bill/invoice name them on). Landing on that form is "in the network" *lightly* — enough to be a named party on the documents and to drive the POD, and nothing more. They never carry a persona, a completeness ring, or a KYC burden. |
+| **D-36** | **`bt-app` is a FOURTH app, built alongside the three — not a rewrite of them, and the three are not deleted.** It references the existing apps' capabilities and unifies them under one capability-gated shell. | The driver/shipper/fleet apps stay in the repo and running. `bt-app` is themed on the **fleet console** (`fleet/`) — its sidebar, layout and business-grade UI are the convention to follow, because that is the strongest UI we have and this is a tool for businesses. |
+| **D-37** | **One endpoint now; per-persona subdomains are a FUTURE option, not built.** | MVP is a single origin. Later, a persona shift can move the session to a persona subdomain (cleaner isolation, an easier place to harden). Not designed now — noted so nothing precludes it. |
+| **D-38** | **The home is a single action feed** ("what needs me right now?") where each item carries its own persona tag and renders in its idiom. | §3.2 already locked the shape. The open build question (§10.2) is only HOW the backend assembles it. |
+
+## 10.2 The home feed — the one backend question still open
+
+The feed interleaves items of different persona kinds — *"3 bids on your load [shipper]"*, *"trip to Pune tomorrow [driver]"*, *"Ravi accepted your invite [fleet]"* — into one time-ordered list. Two ways to build it, and this is a real fork the frontend depends on:
+
+- **Client fan-out:** `bt-app` calls the existing per-surface endpoints (bookings, quotes, trips, fleet) in parallel and merges the results in the browser. Zero new backend. But every home render is N round-trips through the gateway, pagination across sources is awkward, and each app re-implements the merge.
+- **A server aggregate — `GET /me/feed`:** one endpoint that resolves the viewer's capabilities, queries only the sources those capabilities touch, and returns one ranked, paginated list of typed items. One round-trip, one place that knows the ranking, and it is reusable. Costs a new read-only endpoint (naturally lands in `bt-booking-service`, which already holds most sources).
+
+**Recommendation: the server aggregate.** The feed IS the product's front page; a fan-out makes it slow and puts persona logic back in the client, which is exactly what the capability model moved to the server. Decision pending founder confirmation.
+
+## 10.3 Distance to a working frontend — the honest gate
+
+The backend now serves capabilities, relations and documents correctly. **What still stands between "start the UI" and "the UI actually works":**
+
+1. **De-role-ify authorization (D-27) — the hard blocker.** ~30 sites still authorize on the JWT `role` string. The unified app shows every user every surface their capabilities allow, then the API 403s the ones the stale `role` forbids (a truck-owning driver cannot `POST /bookings`; a distributor cannot bid). **This must land before or with Phase 1 or the app is a tour of 403s.**
+2. **A driver-profile / fleet-profile creation endpoint.** Today the `drivers`/`fleet_owners` row is only ever created from the signup role-branch. "Add your truck → become a carrier" and "accept a fleet invite → become an employed driver" both need real endpoints.
+3. **The home feed source (§10.2).**
+4. **Consignee claim endpoint (D-35)** + the standalone form.
+5. **Magic-link removal + password-reset hardening (D-34).**
+6. **`GET /me/feed` or the client-fan-out decision.**
+
+None of these is the frontend itself; all are its preconditions. Sequencing them is §10.4.
+
+## 10.4 Build order to a working `bt-app`
+
+| # | Backend precondition (no UI) | Unblocks |
+|---|---|---|
+| 1 | De-role-ify authorization → capabilities + `relationsToBooking` everywhere (D-27) | every surface not 403-ing |
+| 2 | Driver/fleet profile-creation endpoints + persona-completeness data (D-32/D-33) | the emergence CTAs and the ring |
+| 3 | Magic-link removal + production password reset (D-34) | one clean auth flow |
+| 4 | Consignee claim endpoint + standalone form (D-35) | POD + documents name a real party |
+| 5 | `GET /me/feed` aggregate (D-38, §10.2) | the home page |
+| — | **Then** Phase 1 of `UNIFIED_APP_PLAN.md`: fork `fleet/` → `bt-app`, capability-gated shell, deploy | the app itself |
+
+Steps 1–5 are backend and independent of the UI signal. Phase 1 is the first frontend step and waits on the founder's go.
