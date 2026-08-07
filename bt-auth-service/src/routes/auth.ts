@@ -5,6 +5,7 @@ import jwt from 'jsonwebtoken'
 import { OAuth2Client } from 'google-auth-library'
 import nodemailer from 'nodemailer'
 import { randomInt } from 'node:crypto'
+import { resolvePersonas, type PersonaSnapshot, type UserRole } from '@bharattruck/shared'
 import type { JwtPayload } from '../lib/authenticate.js'
 import { authenticate } from '../lib/authenticate.js'
 import { consume, isLockedOut, recordFailure, clearFailures, envInt } from '../lib/rate-limit.js'
@@ -307,6 +308,55 @@ async function ensureRoleProfile(
     // Never fail sign-in on this: the token is valid regardless, and POST /fleet/owners
     // repairs a missing profile. Silently swallowing it, though, would strand the owner.
     if (error) app.log.error({ err: error, userId }, 'Failed to create fleet_owners profile')
+  }
+}
+
+// ── Persona resolution for /auth/me ───────────────────────────────────────────
+//
+// This is the gate every capability-driven client waits on: what a human may DO is COMPUTED from
+// the assets they own and the fleets they are tied to (@bharattruck/shared/personas), never read
+// off a stored role. /auth/me is where that computation is published.
+//
+// WHY `personas: null` AND A SEPARATE FLAG, RATHER THAN AN EMPTY LIST OR A 500:
+//
+//   • Not a 500. resolvePersonas() runs six lookups against four tables. A client that cannot
+//     read its own profile is dead — no name, no email, no session — which is strictly worse than
+//     one that renders with capabilities it has to re-fetch. The profile read already succeeded by
+//     the time we get here; throwing it away because a secondary read failed helps nobody.
+//
+//   • Not `capabilities: []`. An empty list is a VALID answer shape that no real user ever has
+//     (everyone gets 'ship'), and a client cannot tell it apart from a computed one. It would
+//     read as "this human may do nothing" and strip their entire UI — a silent, total lockout
+//     dressed up as a successful response. Absence must be unmistakably absence.
+//
+//   • So: `personas` is null and `personas_error` names the reason. A client sees "no answer
+//     yet", not "the answer is nothing", and can hold its previous snapshot or retry.
+//
+// This is also the missing-relation tolerance the repo requires (see
+// bt-booking-service/src/lib/documents/repository.ts): migrations are applied BY HAND while CD
+// deploys on merge, so `vehicles`/`fleet_drivers` columns from 0022 may not exist yet on the
+// database this code runs against. The lookup throws, /auth/me still answers, every existing
+// screen keeps working, and capabilities light up the moment the schema catches up.
+
+type PersonaResolution =
+  | { personas: PersonaSnapshot; personas_error: null }
+  | { personas: null; personas_error: 'PERSONA_RESOLUTION_FAILED' }
+
+async function resolveViewerPersonas(
+  app: FastifyInstance,
+  user: Record<string, unknown>,
+): Promise<PersonaResolution> {
+  // 0022 made `primary_persona` a generated mirror of `role`, so on a migrated database these are
+  // equal and either would do. Prefer the honest name — it is the column that survives when the
+  // last service stops authorizing on `role` — and fall back for the pre-0022 window.
+  const primaryPersona = (user.primary_persona ?? user.role) as UserRole
+
+  try {
+    const personas = await resolvePersonas(app.supabase, user.id as string, primaryPersona)
+    return { personas, personas_error: null }
+  } catch (err) {
+    app.log.error({ err, user_id: user.id }, 'persona resolution failed — /auth/me answered without capabilities')
+    return { personas: null, personas_error: 'PERSONA_RESOLUTION_FAILED' }
   }
 }
 
@@ -1047,7 +1097,13 @@ export async function authRoutes(app: FastifyInstance) {
       return reply.status(404).send({ success: false, error: 'User not found' })
     }
 
-    return reply.send({ success: true, data: { user: userProfile(user) } })
+    // STRICTLY ADDITIVE: `user` keeps every field it had, unchanged and in place. The four
+    // deployed apps all read `data.user` and ignore what they do not know about, so shipping
+    // capabilities here cannot break a client that has not been updated yet.
+    return reply.send({
+      success: true,
+      data: { user: userProfile(user), ...(await resolveViewerPersonas(app, user)) },
+    })
   })
 
   // ── POST /auth/register ──────────────────────────────────────────────────────

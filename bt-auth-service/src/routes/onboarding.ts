@@ -72,7 +72,9 @@ const UNFINISHED_BOOKING_FILTER = `status.is.null,status.not.in.${FINISHED_BOOKI
 // Whitelist, never a blacklist: every route below reads/writes `drivers`-keyed rows, and a
 // fleet_owner has no drivers row at all (fleet trucks and licences are bt-fleet-service's).
 // Letting one through would 500 on the missing row rather than 403 honestly.
-function driverOnly(role: string): string | null {
+// `role` is optional on the token now (see lib/authenticate.ts), and a token without one is
+// refused here exactly as a shipper's is — absent is not driver.
+function driverOnly(role: string | undefined): string | null {
   return role === 'driver' ? null : 'Only drivers can access onboarding'
 }
 
