@@ -18,6 +18,7 @@ import type {
   Booking, BookingType, ConsigneeInput,
   PriceQuote, PriceQuoteInput, PriceQuoteVehicleType,
   TrackData, DriverLocation,
+  LocationUpdate, PodContext, RequestOtpResult, RouteData, PumpsData, FuelData, AlertsData,
 } from './types'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
@@ -593,4 +594,88 @@ export function getTrack(bookingId: string) {
 /** The latest raw driver fix for a booking; null until the driver shares location. */
 export function getBookingLocation(bookingId: string) {
   return request<DriverLocation | null>(`/location/booking/${bookingId}`)
+}
+
+// ── Drive surfaces (My Trips / Navigate / POD capture — Phase 3) ───────────────
+//
+// The driver flow, ported from driver/src/lib/api.ts into this client's style.
+// bt-app talks to bt-booking-service (`/bookings`, `/location`), bt-tracking-service
+// (`/tracking`) and bt-cargo-ledger (`/cargo`) — all through the gateway. The listing
+// (listBookings), booking read (getBooking) and shipper live-track (getTrack) added in
+// Phase 2 are REUSED; only the driver-owned actions are added here.
+
+/** Move an assigned trip accepted → in_transit. The server authorises the caller as
+ *  the trip's driver, so this is safe to surface on the drive surface. */
+export function startTrip(bookingId: string) {
+  return request<Booking>(`/bookings/${bookingId}/start`, { method: 'PATCH' })
+}
+
+/**
+ * POD context for the driver: the receiver inbox the delivery code will be emailed to.
+ * Driver-only, requires the trip to be in_transit. `receiver_email` is null when the
+ * shipper never set one — the caller must say so, never send a code into a dead end.
+ */
+export function getPodContext(bookingId: string) {
+  return request<PodContext>(`/bookings/${bookingId}/pod-context`)
+}
+
+/**
+ * Ask bt-cargo-ledger to email the one-time delivery code to the receiver. The driver
+ * NEVER completes the trip directly — the receiver verifying this code out-of-band is
+ * what drives booking-service in_transit → completed (D-25 receiver-OTP POD).
+ */
+export function requestPodOtp(bookingId: string) {
+  return request<RequestOtpResult>('/cargo/pod/request-otp', {
+    method: 'POST', body: JSON.stringify({ booking_id: bookingId }),
+  })
+}
+
+/**
+ * Push one GPS fix (trip-scoped — always send booking_id, D-25). Fired ~every 10s
+ * from the in-transit trip screen; the caller swallows failures so a dropped push
+ * never interrupts the drive. Ingestion lives in bt-booking-service (never rebuilt
+ * in tracking) — this is the same `/location/update` the driver app writes to.
+ */
+export function pushLocation(body: LocationUpdate) {
+  return request<{ driver_id: string; lat: number; lng: number; updated_at: string }>(
+    '/location/update', { method: 'POST', body: JSON.stringify(body) })
+}
+
+/** Cached base polyline for the lane. One call per trip — never per GPS tick (the
+ *  service caches it 6h, D-006, so polling would redraw an identical line). */
+export function getRoute(bookingId: string) {
+  return request<RouteData>(`/tracking/route/${bookingId}`)
+}
+
+/** Top-8 nearest pumps (D-011). ON DEMAND ONLY — this is a billed Places (New) call. */
+export function getPumps(bookingId: string) {
+  return request<PumpsData>(`/tracking/pumps/${bookingId}`)
+}
+
+/** Fuel + DEF estimate. Pure arithmetic server-side, no Google call (D-009/D-015).
+ *  Accepts diesel-price / mileage overrides. */
+export function getFuel(bookingId: string, opts?: { diesel_price?: number; mileage_kmpl?: number }) {
+  const qs = new URLSearchParams()
+  if (opts?.diesel_price !== undefined) qs.set('diesel_price', String(opts.diesel_price))
+  if (opts?.mileage_kmpl !== undefined) qs.set('mileage_kmpl', String(opts.mileage_kmpl))
+  const suffix = qs.toString() ? `?${qs}` : ''
+  return request<FuelData>(`/tracking/fuel/${bookingId}${suffix}`)
+}
+
+/** Route alerts (D-012 thresholds). DB read only — safe to poll. */
+export function getTripAlerts(bookingId: string) {
+  return request<AlertsData>(`/tracking/alerts/${bookingId}`)
+}
+
+/**
+ * Alerts for a BACKGROUND poll — deliberately routed through `authRequest`, not
+ * `request`. `request()` treats a failed token refresh as session death (clears both
+ * tokens and hard-navigates to /login), which is correct for an action the driver just
+ * took and dangerous for a 60s timer running the whole trip: one refresh landing inside
+ * a tunnel would log the driver out mid-delivery. `authRequest` neither refreshes nor
+ * redirects, so a 401 here simply rejects and the alerts card hides until the next tick.
+ * Failing quiet is the right trade for a decoration; never for the POD flow.
+ */
+export function getTripAlertsQuiet(bookingId: string) {
+  return authRequest<AlertsData>(`/tracking/alerts/${bookingId}`)
 }
