@@ -26,6 +26,9 @@ const B_AUCTION = '11111111-1111-4111-8111-111111111111'
 // A booking already moved on by someone else: awarded_quote_id is still null, so
 // acceptQuote's own pre-check passes and only awardBooking's WHERE guard catches it.
 const B_STALE   = '1a1a1a1a-1111-4111-8111-111111111111'
+// The uncontested case: one bid, nobody to tell they lost. The loop must simply not
+// run, rather than degenerate into mailing the winner a loss notice.
+const B_SOLO    = '1b1b1b1b-1111-4111-8111-111111111111'
 const U_SHIPPER = '22222222-2222-4222-8222-222222222222'
 
 const Q_WIN       = '33333333-3333-4333-8333-333333333333'
@@ -35,6 +38,7 @@ const Q_LOSE_FLT  = '66666666-6666-4666-8666-666666666666'
 const Q_WITHDRAWN = '77777777-7777-4777-8777-777777777777'
 const Q_REJECTED  = '88888888-8888-4888-8888-888888888888'
 const Q_STALE     = '99999999-9999-4999-8999-999999999999'
+const Q_SOLO      = '9a9a9a9a-9999-4999-8999-999999999999'
 
 const D_WIN  = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const D_A    = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
@@ -61,11 +65,20 @@ const bookingBase = {
 
 const quoteBase = { driver_id: null, fleet_owner_id: null, message: null, updated_at: '2026-08-06T00:00:00.000Z' }
 
+/**
+ * Table whose next access fails, or null. The seam for "the notification layer is
+ * down": set it to notification_outbox and every enqueue on the award returns a DB
+ * error, exactly as a dead/overloaded Postgres would.
+ */
+let failTable: string | null = null
+
 function reset() {
+  failTable = null
   store.bookings = [
     { ...bookingBase, id: B_AUCTION, shipper_id: U_SHIPPER, status: 'negotiating', awarded_quote_id: null },
     // status 'accepted' — outside awardBooking's `status IN (pending, negotiating)` guard.
     { ...bookingBase, id: B_STALE, shipper_id: U_SHIPPER, status: 'accepted', awarded_quote_id: null },
+    { ...bookingBase, id: B_SOLO, shipper_id: U_SHIPPER, status: 'negotiating', awarded_quote_id: null },
   ]
   store.quotes = [
     { ...quoteBase, id: Q_WIN,       booking_id: B_AUCTION, driver_id: D_WIN, amount: 40000, status: 'submitted' },
@@ -77,6 +90,8 @@ function reset() {
     { ...quoteBase, id: Q_WITHDRAWN, booking_id: B_AUCTION, driver_id: D_GONE, amount: 39000, status: 'withdrawn' },
     { ...quoteBase, id: Q_REJECTED,  booking_id: B_AUCTION, driver_id: D_REJ,  amount: 50000, status: 'rejected' },
     { ...quoteBase, id: Q_STALE,     booking_id: B_STALE,   driver_id: D_WIN,  amount: 41000, status: 'submitted' },
+    // The only bid on its booking — no competing carrier to notify.
+    { ...quoteBase, id: Q_SOLO,      booking_id: B_SOLO,    driver_id: D_WIN,  amount: 41500, status: 'submitted' },
   ]
   store.drivers = [
     { id: D_WIN,  user_id: U_WIN,  truck_number: 'MH04 1111' },
@@ -137,6 +152,12 @@ class FakeQuery {
   }
 
   private run(): { data: any; error: any } {
+    // Injected outage. Not a 23505 — that one is the dedupe path and is swallowed by
+    // design; this is the genuine "the queue is unreachable" failure.
+    if (this.table === failTable) {
+      return { data: null, error: { code: '08006', message: 'connection failure' } }
+    }
+
     const rows = store[this.table] ?? (store[this.table] = [])
 
     if (this.mode === 'insert') {
@@ -267,6 +288,40 @@ async function main() {
   check('nothing is queued when the award did not land', outbox().length === 0,
     JSON.stringify(outbox().map(r => r.event_type)))
   check('and the quote is untouched', quoteRow(Q_STALE).status === 'submitted')
+
+  // ── An uncontested auction ────────────────────────────────────────────────
+  // The snapshot is legitimately empty here. The winner must still be told, and the
+  // loser loop must simply not run — an empty set is the normal single-bid case, not
+  // the symptom the fix exists to catch.
+  console.log('\n── sole bidder')
+  reset()
+
+  res = await accept(B_SOLO, Q_SOLO)
+  check('the sole bid is awarded', res.statusCode === 200, res.body)
+  check('the winner is still told they won',
+    eventsTo('win@carrier.test').includes('quote_awarded'))
+  check('nobody is told they lost', lostRecipients().length === 0,
+    JSON.stringify(lostRecipients()))
+  check('exactly one notice is queued in total', outbox().length === 1,
+    JSON.stringify(outbox().map(r => r.event_type)))
+
+  // ── The queue is down ─────────────────────────────────────────────────────
+  // Telling people is a consequence of the award, never a precondition. If the outbox
+  // is unreachable the award must still stand and the request must still succeed —
+  // the alternative is a shipper who cannot award a load because a mail table is sick.
+  console.log('\n── notification failure does not roll back the award')
+  reset()
+  failTable = 'notification_outbox'
+
+  res = await accept(B_AUCTION, Q_WIN)
+  check('the accept still succeeds', res.statusCode === 200, res.body)
+  check('the award still landed',
+    store.bookings[0].awarded_quote_id === Q_WIN && store.bookings[0].driver_id === D_WIN)
+  check('the winning quote is still accepted', quoteRow(Q_WIN).status === 'accepted')
+  check('the losers are still expired',
+    [Q_LOSE_A, Q_LOSE_B, Q_LOSE_FLT].every(id => quoteRow(id).status === 'expired'))
+  check('and nothing was queued', outbox().length === 0,
+    JSON.stringify(outbox().map(r => r.event_type)))
 
   // ── Summary ──────────────────────────────────────────────────────────────
   console.log(`\n${passed} passed, ${failures.length} failed`)
