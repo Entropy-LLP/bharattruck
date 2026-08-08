@@ -28,13 +28,13 @@ const UpdateOwnerBody = OwnerProfileBody.partial().refine(
 )
 
 export async function ownerRoutes(app: FastifyInstance) {
-  // POST /fleet/owners — register the fleet profile. Requires a fleet_owner token
-  // (migration 0014 adds the enum label); this is the one owner route that cannot
-  // go through requireFleetOwner, because the row it gates on is what we create.
+  // POST /fleet/owners — register the fleet profile. D-27/D-32 DE-ROLE: any authenticated
+  // user may create THEIR OWN fleet profile — becoming a fleet owner is a fact about
+  // yourself, gated by nothing but identity. user_id is taken from the verified token and
+  // never the body (see the file header), so one account can never mint another's; the
+  // existence check below is the only guard, 409-ing a second registration for the same
+  // account. (The idempotent sibling is POST /identity/fleet-owners/me in bt-auth-service.)
   app.post('/', async (req, reply) => {
-    if (req.user.role !== 'fleet_owner') {
-      throw new FleetError('Only fleet_owner accounts can register a fleet profile', 'FORBIDDEN', 403)
-    }
     const body = parseOrThrow(OwnerProfileBody, req.body)
     const existing = await getFleetOwnerByUserId(req.user.userId)
     if (existing) {

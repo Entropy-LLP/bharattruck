@@ -26,10 +26,15 @@ const OWNER_COLUMNS =
 
 // requireFleetOwner — THE tenancy gate. Call this first on every owner-scoped
 // route; the returned row's `id` is the only fleet_owner_id the request may touch.
+//
+// D-27 DE-ROLE (§10.3 item 1 — fleet-service was the one domain the earlier de-role
+// skipped): authorize on the RESOLVED fleet-owner PROFILE, never the JWT `role` string.
+// An owner-driver (role='driver') who has grown into a fleet — created a fleet_owners
+// row via POST /identity/fleet-owners/me — IS a fleet owner for this request, and the
+// stale `role` is not the truth of who owns the fleet. Tenancy is unchanged and is the
+// real gate: getFleetOwnerByUserId scopes to the caller's OWN user_id, so a caller with
+// no fleet profile still gets a 404 and no caller can ever reach another fleet's estate.
 export async function requireFleetOwner(user: AuthenticatedUser): Promise<FleetOwnerRow> {
-  if (user.role !== 'fleet_owner') {
-    throw new FleetError('Only fleet owners can access this resource', 'FORBIDDEN', 403)
-  }
   const owner = await getFleetOwnerByUserId(user.userId)
   if (!owner) {
     throw new FleetError('Fleet profile not found — register one at POST /fleet/owners', 'NOT_FOUND', 404)
