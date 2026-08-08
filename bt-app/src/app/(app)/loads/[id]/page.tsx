@@ -41,6 +41,7 @@ import type { Booking, Quote, TrackData, TrackEta, TrackLocation } from '@/lib/t
 import LiveTrackMap from '@/components/maps/LiveTrackMap'
 import { ReceiverEmailSection } from '@/components/receiver-email-section'
 import FreightDocuments from '@/components/freight-documents'
+import PaymentSection from '@/components/payment-section'
 import { NegotiationHistory } from '@/components/negotiation-history'
 import { CounterModal } from '@/components/counter-modal'
 
@@ -209,6 +210,10 @@ export default function LoadDetailPage({ params }: { params: Promise<{ id: strin
         {/* Freight documents (Phase 4): the shipper sees the LR the carrier raised and
             issues their own tax invoice, billed to the consignee. */}
         {booking.status !== 'cancelled' && <FreightDocuments booking={booking} onChanged={reload} />}
+
+        {/* Payment: the closing step — record the cash/UPI/direct settlement on a
+            completed trip (shipper only). Renders nothing until then, then the receipt. */}
+        <PaymentSection booking={booking} onChanged={reload} />
 
         {/* Tracking */}
         {isTracked ? (

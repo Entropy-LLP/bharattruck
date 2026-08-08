@@ -1279,3 +1279,62 @@ export type CompletenessReport = {
   overall_percentage: number
   personas: PersonaCompleteness[]
 }
+
+// ── Payment settlement (bt-payment-service — cash-recorded, NO escrow) ──────────
+//
+// The CLOSING step of the trip lifecycle: a `completed` trip is settled and the
+// booking flips completed → paid. Escrow/Razorpay are OUT of MVP (§2) — this records
+// a real-world cash/UPI/direct settlement. Wire shapes mirror
+// bt-payment-service/src/lib/payment-store.ts (PaymentRecord/PayoutRecord) + the
+// settle() return, snake_case verbatim — a field rename in the service is a compile
+// error here, not a silent `undefined` on the receipt.
+
+export type PaymentMode = 'cash' | 'upi' | 'direct'
+
+/** The recorded settlement (payments row). One per booking; `status` is always 'settled'. */
+export type PaymentRecord = {
+  booking_id: string
+  amount: number
+  mode: PaymentMode
+  reference: string | null
+  recorded_by: string
+  status: 'settled'
+}
+
+/**
+ * One payee's cut of a settled trip (D-7 split). A solo trip pays the driver 100%;
+ * a fleet trip may split between the owner and the driver per the affiliation. Both
+ * id columns are present with one null — the pairing is server-enforced.
+ */
+export type PayoutRecord = {
+  booking_id: string
+  payee_type: 'driver' | 'fleet_owner'
+  driver_id: string | null
+  fleet_owner_id: string | null
+  amount: number
+  mode: PaymentMode | null
+  status: 'pending' | 'recorded'
+  recorded_by: string | null
+}
+
+/**
+ * GET /payments/status/:id — the recorded payment + payout(s) for a booking. `payout`
+ * is the BIDDER's row (the party the shipper contracted with); `payouts` is every
+ * payee. Both null / empty until a settlement is recorded.
+ */
+export type PaymentStatus = {
+  booking_id: string
+  payment: PaymentRecord | null
+  payout: PayoutRecord | null
+  payouts: PayoutRecord[]
+}
+
+/**
+ * POST /payments/settle — records the settlement and asks booking-service to run
+ * completed → paid. Idempotent: a retry returns the existing settlement with
+ * `already_settled: true` rather than double-recording.
+ */
+export type SettleResult = PaymentStatus & {
+  status: 'paid'
+  already_settled: boolean
+}
