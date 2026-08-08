@@ -19,6 +19,7 @@ import type {
   PriceQuote, PriceQuoteInput, PriceQuoteVehicleType,
   TrackData, DriverLocation,
   LocationUpdate, PodContext, RequestOtpResult, VerifyOtpResult, RouteData, PumpsData, FuelData, AlertsData,
+  BookingDocuments, LorryReceipt, IssueLorryReceiptInput,
 } from './types'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
@@ -693,4 +694,32 @@ export function getTripAlerts(bookingId: string) {
  */
 export function getTripAlertsQuiet(bookingId: string) {
   return authRequest<AlertsData>(`/tracking/alerts/${bookingId}`)
+}
+
+// ── Freight documents (Phase 4 — bt-booking-service, migration 0024) ────────────
+//
+// The trip's paperwork. Registered under the EXISTING /bookings prefix, so these ride
+// the gateway route bt-app already uses (no edge change — the routes cannot be half-
+// deployed). Reads are relation-gated server-side (shipper / carrier / assigned driver
+// / ops); the LR issue is carrier-only and its issuer identity is derived server-side.
+
+/**
+ * Everything on file for a booking: the LR, the tax invoice, and the e-way bill(s) with
+ * their standing + expiry status. Degrades to nulls / an empty list on a pre-0024
+ * database, so an empty result means "none issued yet", never an error.
+ */
+export function getBookingDocuments(bookingId: string) {
+  return request<BookingDocuments>(`/bookings/${bookingId}/documents`)
+}
+
+/**
+ * The CARRIER issues the consignment note (LR). Idempotent per booking — a repeat returns
+ * the LR already issued rather than burning a second serial out of the gapless statutory
+ * series. Issuable only while the booking is accepted or in_transit; the server derives
+ * the issuer from the booking + actor and rejects any attempt to name it from the body.
+ */
+export function issueLorryReceipt(bookingId: string, body: IssueLorryReceiptInput) {
+  return request<LorryReceipt>(`/bookings/${bookingId}/documents/lr`, {
+    method: 'POST', body: JSON.stringify(body),
+  })
 }

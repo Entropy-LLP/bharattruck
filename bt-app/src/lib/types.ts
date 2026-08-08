@@ -930,3 +930,108 @@ export type AlertsData = {
   open_count: number
   alerts: TripAlert[]
 }
+
+// ── Freight documents (Phase 4 — bt-booking-service, migration 0024) ────────────
+//
+// The paperwork a real freight trip generates: the carrier's consignment note (LR),
+// the shipper's tax invoice, and the recorded e-way bill(s). Wire shapes mirror
+// bt-booking-service/src/lib/documents/{service,repository,rules}.ts verbatim
+// (snake_case). The platform is never a named party — the LR issuer is derived
+// server-side from the booking + actor, never sent (red line 1, §1.3).
+
+export type FreightTerm = 'PAID' | 'TO_PAY' | 'TO_BE_BILLED'
+
+/** Consignment note / lorry receipt (lorry_receipts). Issued by the CARRIER. */
+export type LorryReceipt = {
+  id: string
+  booking_id: string
+  lr_number: string
+  financial_year: string
+  issuer_legal_name: string
+  consignor_name: string
+  consignee_name: string
+  origin_place: string
+  destination_place: string
+  vehicle_number: string | null
+  actual_weight_kg: number
+  charged_weight_kg: number
+  said_to_contain: string
+  freight_charge_inr: number
+  total_charge_inr: number
+  freight_term: FreightTerm
+  invoice_number: string | null
+  eway_bill_number: string | null
+  issued_at: string
+  /** Convenience total the server echoes on issue (the charge lines summed). */
+  charges_total_inr?: number
+}
+
+/** The shipper's tax invoice (freight_invoices). */
+export type FreightInvoice = {
+  id: string
+  booking_id: string
+  invoice_number: string
+  financial_year: string
+  supplier_legal_name: string
+  billed_to_name: string
+  taxable_value_inr: number
+  consignment_value_inr: number
+  grand_total_inr: number
+  lr_number: string | null
+  eway_bill_number: string | null
+  issued_at: string
+}
+
+/** Expiry verdict computed from the STORED valid_upto (never a stored 'expired'). */
+export type EwayBillExpiry = {
+  state: 'valid' | 'expiring_soon' | 'expired'
+  hours_remaining: number
+  valid_upto: string
+}
+
+/** A recorded (externally generated) e-way bill (eway_bill_records, D-17). */
+export type EwayBillRecord = {
+  id: string
+  booking_id: string
+  ewb_number: string
+  generated_at: string
+  valid_upto: string
+  issuing_portal: 'NIC1' | 'NIC2'
+  status: 'active' | 'cancelled' | 'rejected'
+  document_number: string | null
+  consignment_value_inr: number | null
+  expiry: EwayBillExpiry
+}
+
+/**
+ * Everything on file for a booking (GET /bookings/:id/documents). Degrades to all-null
+ * / empty on a pre-0024 database rather than failing, so an empty result means "none
+ * issued yet", never an error. `standing_eway_bill_number` is the bill that currently
+ * STANDS (skipping any the portal cancelled/rejected) — the list alone cannot say which.
+ */
+export type BookingDocuments = {
+  booking_id: string
+  lorry_receipt: LorryReceipt | null
+  invoice: FreightInvoice | null
+  eway_bills: EwayBillRecord[]
+  standing_eway_bill_number: string | null
+}
+
+/**
+ * Issue a consignment note (POST /bookings/:id/documents/lr). Most fields prefill from
+ * the booking; the caller confirms the weight, description, freight charge and term. The
+ * ISSUER is derived server-side from the booking + actor and can never be set from here.
+ */
+export type IssueLorryReceiptInput = {
+  consignor_name: string
+  consignee_name: string
+  consignee_gstin?: string
+  consignee_address?: string
+  origin_place: string
+  destination_place: string
+  vehicle_number?: string
+  actual_weight_kg: number
+  said_to_contain: string
+  freight_charge_inr: number
+  freight_term: FreightTerm
+}
