@@ -1246,3 +1246,36 @@ export type SetEwayBillStatusInput = {
   status: 'cancelled' | 'rejected'
   reason?: string
 }
+
+// ── Persona completeness (D-33 ring — bt-auth-service GET /api/me/completeness) ──
+//
+// DISPLAY-ONLY, NEVER GATES (D-31). The payload even carries `gates_nothing: true` so a
+// client cannot misread a low percentage as a permission decision. Per persona the human
+// HAS (shipper=everyone, driver=has a drivers row, fleet_owner=has a fleet_owners row) it
+// lists the D-33 requirement set; each item is 'verified' (a checked doc), 'declared' (a
+// typed datum OR a signed D-31 acknowledgement — both count), or 'missing' (a prompt).
+
+export type CompletenessItemStatus = 'verified' | 'declared' | 'missing'
+
+export type CompletenessItem = {
+  key: string
+  label: string
+  status: CompletenessItemStatus
+  /** The acknowledgement kind that flips a 'missing' item to 'declared' (D-31), or null. */
+  acknowledgement_kind: string | null
+  note: string
+}
+
+export type PersonaCompleteness = {
+  persona: 'shipper' | 'driver' | 'fleet_owner'
+  /** Share of items that are not 'missing' (verified OR declared both count). */
+  percentage: number
+  items: CompletenessItem[]
+}
+
+export type CompletenessReport = {
+  /** Machine-readable "this never gates" — a client must not treat a low % as a block. */
+  gates_nothing: true
+  overall_percentage: number
+  personas: PersonaCompleteness[]
+}
