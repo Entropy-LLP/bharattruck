@@ -26,6 +26,7 @@ import { toast } from 'sonner'
 
 import { PageHeader } from '@/components/app-shell'
 import { Card, CardHead, Empty, ErrorNote, Loading } from '@/components/stat'
+import CompletenessSection from '@/components/completeness-section'
 import { ApiError, getMyFleet, updateMyFleet } from '@/lib/api'
 import { dateTime, inr } from '@/lib/format'
 import type { FleetOwner } from '@/lib/types'
@@ -119,6 +120,10 @@ export default function SettingsPage() {
         title="Settings"
         subtitle="Your company details, your monthly overhead, and how every rupee of cost is worked out."
       />
+
+      {/* Persona completeness (D-33) — cross-persona, so it sits ABOVE the fleet-owner-gated
+          content below and shows for every account (shipper / driver / fleet owner). */}
+      <CompletenessSection />
 
       {loading ? (
         <Loading label="Loading fleet profile" />

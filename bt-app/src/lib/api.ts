@@ -22,6 +22,7 @@ import type {
   EvidenceCaptureInput, CaptureResult, AssertReason, AssertResult, DiscrepancyInput, DiscrepancyResult, PodRecord,
   BookingDocuments, LorryReceipt, IssueLorryReceiptInput, FreightInvoice, IssueInvoiceInput,
   EwayBillRecord, RecordEwayBillInput, SetEwayBillStatusInput,
+  CompletenessReport,
 } from './types'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
@@ -231,6 +232,22 @@ export function becomeFleetOwner() {
 export function becomeDriver() {
   return request<{ driver: { id: string }; created: boolean }>(
     '/drivers/me', { method: 'POST', body: JSON.stringify({}) })
+}
+
+/** The D-33 persona-completeness report — per-persona requirement sets + status. DISPLAY
+ *  ONLY; it gates nothing (D-31), which the payload's `gates_nothing:true` also states. */
+export function getMyCompleteness() {
+  return request<{ completeness: CompletenessReport }>('/me/completeness')
+}
+
+/**
+ * Sign a D-31 self-declaration ("I'll provide this later" / "under threshold"). The server
+ * stores the EXACT text it served, keyed by kind — an artifact, not a boolean. Flips the
+ * matching completeness item from 'missing' to 'declared'. Never gates anything.
+ */
+export function acknowledgePersona(kind: string) {
+  return request<{ acknowledgement: { id: string; kind: string; version: string } }>(
+    '/me/acknowledgements', { method: 'POST', body: JSON.stringify({ kind }) })
 }
 
 // ── Drivers ───────────────────────────────────────────────────
