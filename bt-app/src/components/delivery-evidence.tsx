@@ -274,7 +274,7 @@ export default function DeliveryEvidence({
           <div className="rounded-xl bg-amber-50 border border-amber-200 p-3">
             <p className="text-sm font-semibold text-amber-800">Delivery reported — awaiting confirmation</p>
             <p className="text-xs text-amber-700 mt-0.5">
-              You reported this delivery without a receiver-confirmed code. Our team reviews the evidence and closes the trip.
+              Our team reviews the evidence and closes the trip.
             </p>
           </div>
         )}
@@ -302,7 +302,7 @@ export default function DeliveryEvidence({
             )}
           </button>
           <p className="mt-2 text-xs text-gray-500">
-            Photograph the delivered goods (and the signed LR). Each photo is hashed and time-stamped on your phone — it can&apos;t be altered afterwards.
+            Photograph the delivered goods and the signed LR.
           </p>
         </div>
 
@@ -355,7 +355,7 @@ export default function DeliveryEvidence({
                   <div>
                     <p className="text-sm font-semibold text-gray-900">Report delivery without a code</p>
                     <p className="text-xs text-gray-500 mt-0.5">
-                      Use this only when the receiver can&apos;t confirm. Capture at least one photo first; our team reviews and closes the trip.
+                      Use only when the receiver can&apos;t confirm; capture a photo first.
                     </p>
                   </div>
                   <label className="block">
@@ -401,7 +401,7 @@ export default function DeliveryEvidence({
                   <div>
                     <p className="text-sm font-semibold text-gray-900">Report a problem with this delivery</p>
                     <p className="text-xs text-gray-500 mt-0.5">
-                      Backed by your captured photo. Enter what you actually received — we hold the expected quantity.
+                      Enter what you actually received.
                     </p>
                   </div>
                   <label className="block">

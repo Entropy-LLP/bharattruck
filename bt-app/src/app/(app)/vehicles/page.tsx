@@ -607,7 +607,7 @@ function AddTruckDialog({
         <DialogHeader>
           <DialogTitle>Add truck</DialogTitle>
           <DialogDescription>
-            Category and year are what make the per-truck P&amp;L computable, so both are required.
+            Category and year are required.
           </DialogDescription>
         </DialogHeader>
 
@@ -668,8 +668,7 @@ function AddTruckDialog({
                     className={cls('model_category')}
                   />
                   <p className="mt-1 text-xs text-gray-500">
-                    The category list could not be loaded. Type it exactly as it appears in the
-                    cost norms — an unknown value is rejected.
+                    Category list unavailable — type the exact value or it&apos;s rejected.
                   </p>
                 </>
               )}
@@ -884,21 +883,14 @@ function BulkUploadDialog({
         <DialogHeader>
           <DialogTitle>Bulk upload trucks</DialogTitle>
           <DialogDescription>
-            Import a register you already keep instead of typing each truck.
+            Import your existing truck register.
           </DialogDescription>
         </DialogHeader>
 
         <div className="rounded-xl border border-orange-200 bg-orange-50 px-3 py-2.5 text-xs text-orange-900">
           <span className="inline-flex items-start gap-2">
             <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
-            <span>
-              <strong className="font-semibold">OCR extraction is not live yet — rows will need
-              review.</strong> A CSV is parsed row by row and those trucks really are created.
-              Spreadsheets, PDFs and scans need the document/OCR pipeline, which is not wired, so
-              they come back rejected rather than half-imported — export the sheet to CSV instead.
-              Rows that fail validation are skipped with a reason while the rest still import, so
-              read the summary before you trust the register.
-            </span>
+            <span>OCR isn&apos;t live yet — upload a CSV; other formats aren&apos;t parsed.</span>
           </span>
         </div>
 
@@ -917,9 +909,7 @@ function BulkUploadDialog({
               className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-gray-100 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-gray-700 hover:file:bg-gray-200"
             />
             <p className="mt-1 text-xs text-gray-500">
-              .xlsx, .csv or .pdf — up to 500 trucks per upload. The header needs an rc_number (or
-              registration_no) column and a model_category column. CSV is the only format parsed
-              end-to-end today.
+              CSV only, up to 500 rows; needs rc_number and model_category columns.
             </p>
             {fileName && formatOf(fileName) !== 'csv' && (
               <p className="mt-1 text-xs text-orange-700">

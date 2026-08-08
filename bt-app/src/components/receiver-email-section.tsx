@@ -89,7 +89,7 @@ export function ReceiverEmailSection({ booking, onSaved }: { booking: Booking; o
             ) : (
               <p className={`text-sm ${blocking ? 'text-amber-800' : 'text-gray-500'}`}>
                 {blocking
-                  ? 'Not set — your driver cannot confirm delivery without it, and payment is not released until they do.'
+                  ? 'Not set — delivery can’t be confirmed, and payment waits on it.'
                   : 'Not set. Add it before the trip reaches the drop.'}
               </p>
             )}

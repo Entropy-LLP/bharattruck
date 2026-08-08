@@ -225,7 +225,7 @@ export default function LoadDetailPage({ params }: { params: Promise<{ id: strin
               <p className="text-sm text-gray-500">
                 {booking.status === 'cancelled'
                   ? 'This load was cancelled — there is no trip to track.'
-                  : 'Live tracking starts once a carrier is booked and the trip goes in transit. The route and the truck will appear here then.'}
+                  : 'Live tracking starts once the trip is in transit.'}
               </p>
             </div>
           </Card>

@@ -326,7 +326,7 @@ export default function PostLoadPage() {
 
         {/* Consignee (D-29) */}
         <Card>
-          <CardHead title="Consignee" sub="Who receives the goods. Required — the delivery is confirmed against them." />
+          <CardHead title="Consignee" sub="Who receives the goods." />
           <div className="p-4 space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <Field id="consignee_name" label="Name" hint="The person or business receiving the load.">
@@ -353,7 +353,7 @@ export default function PostLoadPage() {
             <Field
               id="receiver_email"
               label="Receiver email (optional)"
-              hint="If given, the one-time delivery code is emailed here. You can also add it later."
+              hint="Delivery code is emailed here."
             >
               <input
                 id="receiver_email"
@@ -369,7 +369,7 @@ export default function PostLoadPage() {
 
         {/* Cargo & vehicle — these drive the price quote */}
         <Card>
-          <CardHead title="Cargo & vehicle" sub="Distance is calculated from the pickup & drop coordinates above." />
+          <CardHead title="Cargo & vehicle" info="Distance is derived from the coordinates above." />
           <div className="p-4 space-y-4">
             <div className="grid grid-cols-2 gap-4">
               <Field id="vehicle_type" label="Vehicle type">
@@ -484,7 +484,7 @@ export default function PostLoadPage() {
 
         {/* Marketplace routing */}
         <Card>
-          <CardHead title="How to fill it" sub="Open it to every carrier, or hand it to one driver you choose." />
+          <CardHead title="How to fill it" />
           <div className="p-4 space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <TypeToggle

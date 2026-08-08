@@ -281,7 +281,7 @@ function TripActionSection({
         <div className="p-6 text-center">
           <p className="text-sm font-semibold text-gray-900">This trip isn&apos;t yours to drive</p>
           <p className="text-xs text-gray-500 mt-1">
-            You can see it, but starting the trip and capturing delivery are done by the assigned driver.
+            Only the assigned driver can start it or capture delivery.
           </p>
         </div>
       </Card>
@@ -751,7 +751,7 @@ function ActiveTripSection({ booking, onRefresh }: { booking: Booking; onRefresh
                   <p className="font-medium text-gray-900 break-all">{receiverEmail}</p>
                 ) : (
                   <p className="font-medium text-red-600">
-                    No receiver contact is set for this trip — the shipper must add one before delivery can be confirmed.
+                    No receiver contact set — the shipper must add one to confirm delivery.
                   </p>
                 )}
               </div>
@@ -781,7 +781,7 @@ function ActiveTripSection({ booking, onRefresh }: { booking: Booking; onRefresh
               <p className="text-sm text-gray-600">
                 A code was sent to{' '}
                 <span className="font-medium text-gray-900 break-all">{receiverEmail ?? 'the receiver'}</span>.
-                Ask them to read it out and enter it here to close the trip.
+                Ask them to read it out and enter it below.
               </p>
               <input
                 inputMode="numeric"
@@ -803,7 +803,7 @@ function ActiveTripSection({ booking, onRefresh }: { booking: Booking; onRefresh
                 {verifying ? 'Confirming…' : 'Confirm delivery'}
               </button>
               <p className="text-xs text-gray-400 text-center">
-                If the receiver enters the code on their own phone, the trip closes automatically.
+                Or the receiver enters it on their phone to close it.
               </p>
               <div className="flex gap-2 pt-1">
                 <button

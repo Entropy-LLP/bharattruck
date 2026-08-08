@@ -326,7 +326,7 @@ export default function FreightDocuments({ booking, onChanged }: { booking: Book
               <div className="rounded-xl border border-dashed border-gray-200 p-4 text-center">
                 <p className="text-sm font-medium text-gray-700">No documents on file yet</p>
                 <p className="text-xs text-gray-500 mt-1">
-                  The carrier raises the consignment note; the shipper the tax invoice. They appear here once issued.
+                  They appear here once issued.
                 </p>
               </div>
             )}
@@ -344,7 +344,7 @@ export default function FreightDocuments({ booking, onChanged }: { booking: Book
                   <div>
                     <p className="text-sm font-semibold text-gray-900">Issue consignment note</p>
                     <p className="text-xs text-gray-500 mt-0.5">
-                      Prefilled from the booking — confirm the details. This raises a numbered LR that cannot be undone.
+                      Raises a numbered LR — cannot be undone.
                     </p>
                   </div>
                   <Field label="Consignee">
@@ -396,7 +396,7 @@ export default function FreightDocuments({ booking, onChanged }: { booking: Book
                   <div>
                     <p className="text-sm font-semibold text-gray-900">Issue tax invoice</p>
                     <p className="text-xs text-gray-500 mt-0.5">
-                      Your invoice for the goods, billed to the consignee. Raises a numbered invoice that cannot be undone.
+                      Raises a numbered invoice — cannot be undone.
                     </p>
                   </div>
                   <Field label="Billed to">
@@ -432,7 +432,7 @@ export default function FreightDocuments({ booking, onChanged }: { booking: Book
                   <div>
                     <p className="text-sm font-semibold text-gray-900">Record e-way bill</p>
                     <p className="text-xs text-gray-500 mt-0.5">
-                      Enter the bill generated on the NIC portal. We record it — we don&apos;t generate one.
+                      Records a bill already generated on the NIC portal.
                     </p>
                   </div>
                   <Field label="E-way bill number (12 digits)">

@@ -44,15 +44,23 @@ function isDismissed(kind: string): boolean {
 function computePrompt(p: PersonaSnapshot): Prompt | null {
   const caps = p.capabilities ?? []
 
-  // 1) Runs trucks but hasn't set up fleet management → become a fleet owner. This is what
-  //    opens the (de-roled) fleet surfaces; without a fleet_owner profile they still 404.
-  if (caps.includes('operate') && !p.fleet_owner_id) {
+  // 1) A DECLARED fleet owner (the D-32 front door: primary_persona picked at signup), or
+  //    an owner-driver who already runs trucks — who has not created a fleet profile yet.
+  //    This is what opens the (de-roled) fleet surfaces; without a profile they still 404,
+  //    and a declared fleet owner would otherwise land on a bare ship view with no way in.
+  const runsTrucks = caps.includes('operate')
+  if ((runsTrucks || p.primary_persona === 'fleet_owner') && !p.fleet_owner_id) {
     return {
       kind: 'setup_fleet',
-      title: `You run ${p.owned_vehicle_count} trucks`,
-      body: 'Set up fleet management to invite drivers and assign them to your trucks.',
+      title: runsTrucks ? `You run ${p.owned_vehicle_count} trucks` : 'Set up your fleet',
+      body: runsTrucks
+        ? 'Set up fleet management to invite drivers and assign them to your trucks.'
+        : 'Create your fleet profile to add trucks, invite drivers, and bid on loads.',
       cta: 'Set up fleet management',
       action: 'become_fleet_owner',
+      // A fresh fleet owner starts with no trucks, so send them to add the first one;
+      // an owner-driver who already runs trucks needs the driver roster instead.
+      href: runsTrucks ? '/drivers' : '/vehicles',
     }
   }
 
@@ -90,8 +98,8 @@ export default function EmergenceCta() {
     try {
       await becomeFleetOwner()
       await refresh()
-      toast.success('Fleet management is set up — invite drivers to assign your trucks')
-      router.push('/drivers')
+      toast.success('Fleet management is set up')
+      router.push(p.href ?? '/drivers')
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : 'Could not set up fleet management')
       setBusy(false)

@@ -118,7 +118,7 @@ export default function SettingsPage() {
     <div className="p-4 lg:p-6 max-w-7xl mx-auto">
       <PageHeader
         title="Settings"
-        subtitle="Your company details, your monthly overhead, and how every rupee of cost is worked out."
+        subtitle="Your company profile and monthly overhead."
       />
 
       {/* Persona completeness (D-33) — cross-persona, so it sits ABOVE the fleet-owner-gated
@@ -136,7 +136,7 @@ export default function SettingsPage() {
         <Card>
           <Empty
             title="No fleet profile on this account"
-            hint="This login is a fleet owner, but no company has been registered against it yet. Register the fleet first — the profile, trucks and cost model all hang off it."
+            hint="Register your fleet first to set up this profile."
           />
         </Card>
       ) : !owner ? (
@@ -424,7 +424,7 @@ function OverheadCard({ owner, onSaved }: { owner: FleetOwner; onSaved: (o: Flee
     <Card>
       <CardHead
         title="Monthly overhead"
-        sub="Fixed cost that belongs to the business, not to any one truck."
+        info="Fixed monthly business cost, not tied to any truck."
         actions={<Wallet className="w-4 h-4 text-gray-300" />}
       />
       <form onSubmit={submit}>
@@ -433,7 +433,6 @@ function OverheadCard({ owner, onSaved }: { owner: FleetOwner; onSaved: (o: Flee
             <Field
               id="monthly_overhead_inr"
               label="Overhead per month (₹)"
-              hint="Enter 0 if you would rather judge each truck on running cost and EMI alone."
             >
               <input
                 id="monthly_overhead_inr"

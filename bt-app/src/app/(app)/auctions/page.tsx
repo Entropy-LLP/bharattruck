@@ -23,7 +23,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  AlertTriangle, ArrowRight, Clock, Gavel, Info, RefreshCw, TrendingUp, Truck, Wallet,
+  AlertTriangle, ArrowRight, Clock, Gavel, RefreshCw, TrendingUp, Truck, Wallet,
 } from 'lucide-react'
 import { PageHeader } from '@/components/app-shell'
 import { Card, CardHead, Empty, ErrorNote, Loading, Stat } from '@/components/stat'
@@ -162,6 +162,7 @@ export default function AuctionsPage() {
     <div className="p-4 lg:p-6 max-w-7xl mx-auto">
       <PageHeader
         title="Auctions"
+        info="Bid with the whole fleet; the truck and driver are chosen after you win."
         subtitle="Open loads from shippers, this fleet's live bids, and everything it has won"
         actions={
           <button
@@ -222,7 +223,7 @@ export default function AuctionsPage() {
                   {countered.length} shipper counter-offer{countered.length === 1 ? '' : 's'} awaiting your reply
                 </p>
                 <p className="mt-0.5 text-orange-800">
-                  A countered bid is not live until you answer it. Open My bids to reply with a new price.
+                  A countered bid is not live until you answer it.
                 </p>
               </div>
             </button>
@@ -256,19 +257,6 @@ export default function AuctionsPage() {
           )}
           {tab === 'won' && <WonTable rows={wonList} />}
 
-          <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 mt-5 flex gap-3">
-            <Info className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
-            <div className="text-sm text-blue-900">
-              <p className="font-semibold">How fleet bidding works</p>
-              <ul className="mt-1 space-y-1 text-blue-800 list-disc list-inside">
-                <li>The fleet may bid on any number of auctions at the same time.</li>
-                <li>A bid does not need a free truck — you can bid with the whole fleet on the road.</li>
-                <li>The truck and the driver are chosen later, at the assign step, not at bid time.</li>
-                <li>That assignment is what gates departure: a won load stays parked until a driver and a truck are bound to it.</li>
-                <li>Rival bid amounts are never shown — only how many bids a load has.</li>
-              </ul>
-            </div>
-          </div>
         </>
       )}
 
@@ -796,7 +784,7 @@ function BidDialog({
           <DialogDescription>
             {auction?.my_bid
               ? 'Your current bid is withdrawn and replaced with this one.'
-              : 'The shipper sees your price and message. You can change or withdraw it until they accept.'}
+              : 'You can change or withdraw it until the shipper accepts.'}
           </DialogDescription>
         </DialogHeader>
 
@@ -868,7 +856,7 @@ function CounterDialog({
         <DialogHeader>
           <DialogTitle>Reply to the counter-offer</DialogTitle>
           <DialogDescription>
-            The shipper countered your bid. Send a new price to keep the negotiation alive.
+            Send a new price to keep it live.
           </DialogDescription>
         </DialogHeader>
 
@@ -924,7 +912,7 @@ function HistoryDialog({ bid, onClose }: { bid: FleetBid | null; onClose: () => 
       <DialogContent className="sm:max-w-lg bg-white border border-gray-200 max-h-[80vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Price history</DialogTitle>
-          <DialogDescription>Every offer and counter on this bid, oldest first.</DialogDescription>
+          <DialogDescription>Every offer and counter, oldest first.</DialogDescription>
         </DialogHeader>
 
         {bid?.booking && <LoadSummary booking={bid.booking} />}
