@@ -185,6 +185,50 @@ export function refreshAccessToken(refresh_token: string) {
     '/auth/refresh', { method: 'POST', body: JSON.stringify({ refresh_token }) })
 }
 
+// ── Registration + account recovery (bt-auth-service /auth/*) ──────────────────
+//
+// The full auth surface D-32/D-34 asks for, all on this ONE origin. Registration takes
+// a PRIMARY PERSONA (shipper/driver/fleet_owner) — the front door that shapes onboarding
+// — and gates nothing; capabilities still emerge from assets. Email is verified with a
+// 6-digit OTP; password reset is a single-origin, single-use, expiring-link flow.
+
+export type PrimaryPersona = 'shipper' | 'driver' | 'fleet_owner'
+
+/** Create an account. Sends a 6-digit verification code to the email; login is gated on
+ *  verifying it. `role` is the declared primary persona (D-32). */
+export function registerWithEmail(email: string, password: string, full_name: string, role: PrimaryPersona) {
+  return authRequest<{ email?: string; message?: string }>(
+    '/auth/email/register', { method: 'POST', body: JSON.stringify({ email, password, full_name, role }) })
+}
+
+/** Verify the email OTP. May return tokens; the caller logs in with the password regardless. */
+export function verifyEmailOtp(email: string, otp: string) {
+  return authRequest<{ access_token?: string; refresh_token?: string; user?: AuthUser }>(
+    '/auth/email/verify', { method: 'POST', body: JSON.stringify({ email, otp }) })
+}
+
+export function resendEmailOtp(email: string) {
+  return authRequest<{ message: string }>('/auth/email/resend-otp', { method: 'POST', body: JSON.stringify({ email }) })
+}
+
+/** Enumeration-safe: always resolves with the same generic message whether or not the
+ *  account exists. Emails a single-use reset link (30-min TTL) that lands on /auth/reset. */
+export function forgotPassword(email: string) {
+  return authRequest<{ message: string }>('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) })
+}
+
+/** Set a new password from a reset-link token (the `token` query param on /auth/reset). */
+export function resetPassword(token: string, password: string) {
+  return authRequest<{ message?: string }>('/auth/reset-password', { method: 'POST', body: JSON.stringify({ token, password }) })
+}
+
+/** Sign in with a Google ID token (from Google Identity Services). Needs GOOGLE_CLIENT_ID
+ *  set on bt-auth-service AND NEXT_PUBLIC_GOOGLE_CLIENT_ID here — otherwise the button is hidden. */
+export function googleSignIn(id_token: string, role: PrimaryPersona) {
+  return authRequest<{ access_token: string; refresh_token: string; user: AuthUser }>(
+    '/auth/google', { method: 'POST', body: JSON.stringify({ id_token, role }) })
+}
+
 // ── Home action feed (D-38) ───────────────────────────────────
 //
 // GET /api/me/feed → bt-booking-service. ONE ranked, capability-aware list of typed
