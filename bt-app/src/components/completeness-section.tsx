@@ -8,10 +8,11 @@
  * `gates_nothing: true` is honoured; nothing here blocks a surface or an action.
  */
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 
 import { Card, CardHead, ErrorNote, Loading } from '@/components/stat'
+import { useAuth } from '@/lib/auth'
 import { ApiError, acknowledgePersona, getMyCompleteness } from '@/lib/api'
 import type { CompletenessItem, CompletenessReport, PersonaCompleteness } from '@/lib/types'
 
@@ -60,10 +61,21 @@ function AckButton({ kind, busy, onAck }: { kind: string; busy: boolean; onAck: 
 }
 
 export default function CompletenessSection() {
+  const { personas } = useAuth()
   const [report, setReport] = useState<CompletenessReport | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [ackBusy, setAckBusy] = useState<string | null>(null)
+
+  // Lead with the user's PRIMARY persona (D-32 front door): their main role's ring
+  // sits first and wears a badge; the rest follow in the server's order. primary_persona
+  // can be 'admin' (matches no completeness persona) — the sort then no-ops and the
+  // list stays as the server sent it. A stable sort keeps the non-primary order intact.
+  const primary = personas?.primary_persona
+  const ordered = useMemo(() => {
+    const list = report?.personas ?? []
+    return [...list].sort((a, b) => Number(b.persona === primary) - Number(a.persona === primary))
+  }, [report, primary])
 
   const load = useCallback(() => {
     setLoading(true)
@@ -98,14 +110,19 @@ export default function CompletenessSection() {
         {report && report.personas.length === 0 && (
           <p className="text-sm text-gray-500">Nothing to complete yet.</p>
         )}
-        {report && report.personas.length > 0 && (
+        {report && ordered.length > 0 && (
           <div className="space-y-5">
-            {report.personas.map((p) => (
+            {ordered.map((p) => (
               <div key={p.persona}>
                 <div className="flex items-center gap-3 mb-2">
                   <Ring pct={p.percentage} />
                   <div>
-                    <p className="text-sm font-semibold text-gray-900">{PERSONA_LABEL[p.persona]}</p>
+                    <p className="text-sm font-semibold text-gray-900 flex items-center gap-1.5">
+                      {PERSONA_LABEL[p.persona]}
+                      {p.persona === primary && (
+                        <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700">Primary</span>
+                      )}
+                    </p>
                     <p className="text-xs text-gray-500">
                       {p.items.filter((i) => i.status !== 'missing').length} of {p.items.length} done
                     </p>
