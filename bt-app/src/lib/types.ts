@@ -1222,3 +1222,27 @@ export type IssueInvoiceInput = {
   igst_inr?: number
   place_of_supply_state?: string
 }
+
+/**
+ * Record an externally generated e-way bill (POST /bookings/:id/documents/eway-bill,
+ * D-17 — we record theirs, we generate nothing). `valid_upto` is REQUIRED and stored
+ * verbatim: a day of validity expires at midnight of the day FOLLOWING generation, so
+ * it cannot be derived locally (§4.4). Either party may file it (whoever holds the paper).
+ */
+export type RecordEwayBillInput = {
+  ewb_number: string
+  generated_at: string
+  valid_upto: string
+  issuing_portal: 'NIC1' | 'NIC2'
+  document_number?: string
+}
+
+/**
+ * File what the portal did to a bill (PATCH /bookings/:id/documents/eway-bill/:ewbNumber,
+ * §4.5): cancelled within 24h, rejected within 72h. We record the portal's act; we do not
+ * adjudicate its window. This is what makes `standing_eway_bill_number` answerable.
+ */
+export type SetEwayBillStatusInput = {
+  status: 'cancelled' | 'rejected'
+  reason?: string
+}

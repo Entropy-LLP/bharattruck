@@ -21,6 +21,7 @@ import type {
   LocationUpdate, PodContext, RequestOtpResult, VerifyOtpResult, RouteData, PumpsData, FuelData, AlertsData,
   EvidenceCaptureInput, CaptureResult, AssertReason, AssertResult, DiscrepancyInput, DiscrepancyResult, PodRecord,
   BookingDocuments, LorryReceipt, IssueLorryReceiptInput, FreightInvoice, IssueInvoiceInput,
+  EwayBillRecord, RecordEwayBillInput, SetEwayBillStatusInput,
 } from './types'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
@@ -786,5 +787,27 @@ export function issueLorryReceipt(bookingId: string, body: IssueLorryReceiptInpu
 export function issueFreightInvoice(bookingId: string, body: IssueInvoiceInput) {
   return request<FreightInvoice>(`/bookings/${bookingId}/documents/invoice`, {
     method: 'POST', body: JSON.stringify(body),
+  })
+}
+
+/**
+ * Record an externally generated e-way bill (D-17 — we record, never generate). Either
+ * party may file it. Per-booking unique on the 12-digit number, so re-recording the same
+ * paper against the same trip is refused.
+ */
+export function recordEwayBill(bookingId: string, body: RecordEwayBillInput) {
+  return request<EwayBillRecord>(`/bookings/${bookingId}/documents/eway-bill`, {
+    method: 'POST', body: JSON.stringify(body),
+  })
+}
+
+/**
+ * File what the portal did to a recorded bill (§4.5): mark it cancelled or rejected so
+ * `standing_eway_bill_number` stops pointing at a dead number. Records the portal's act;
+ * does not enforce the 24h/72h window.
+ */
+export function setEwayBillStatus(bookingId: string, ewbNumber: string, body: SetEwayBillStatusInput) {
+  return request<EwayBillRecord>(`/bookings/${bookingId}/documents/eway-bill/${ewbNumber}`, {
+    method: 'PATCH', body: JSON.stringify(body),
   })
 }
