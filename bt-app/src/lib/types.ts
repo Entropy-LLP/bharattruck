@@ -862,6 +862,178 @@ export type VerifyOtpResult = {
   status: string
 }
 
+// ── POD evidence capture (Phase 3b — bt-booking-service, migration 0025) ────────
+//
+// The hardened POD layer that sits ON TOP of the receiver-OTP flow above (§6.3,
+// ARCHITECTURE_UNIFIED_IDENTITY.md). The OTP is the CONFIRMED tier; this is the
+// evidence the driver captures at the drop regardless — camera-only, hashed on the
+// device, geofenced against the delivery address — plus the ASSERTED tier for when
+// the receiver cannot confirm at all. Wire shapes mirror
+// bt-booking-service/src/lib/pod/service.ts verbatim (snake_case) — a field rename in
+// the service is a compile error here, not a silent `undefined` on the drop screen.
+
+/** Why a delivery was ASSERTED without a receiver-confirmed code (pod_state.assert_reason). */
+export type AssertReason =
+  | 'no_smartphone' | 'night_delivery' | 'warehouse_handoff'
+  | 'receiver_refused_confirm' | 'no_receiver_present' | 'other'
+
+/** A typed delivery discrepancy (pod_discrepancies.reason, §5.7). */
+export type DiscrepancyReason =
+  | 'shortage' | 'damage' | 'wrong_goods' | 'refusal' | 'partial_acceptance'
+
+/** A coarse verdict on where the photo was taken relative to the drop address. */
+export type GeofenceResult = 'inside' | 'outside' | 'unknown'
+
+/**
+ * A camera capture the driver records at the drop (POST /bookings/:id/pod-evidence).
+ * `sha256_original` is hashed ON THE DEVICE from the photo's own bytes and sent
+ * verbatim — the server stores it as the integrity anchor and never recomputes it
+ * (§5.4). `capture_method` is the literal 'camera'; the bytes are never re-encoded.
+ * lat/lng/gps_accuracy_m are the fix AT capture, used to geofence the photo against
+ * the Rule 46(o) delivery address; all optional, because a photo with no fix still
+ * captures — its geofence verdict is then 'unknown'.
+ */
+export type EvidenceCaptureInput = {
+  sha256_original: string
+  capture_method: 'camera'
+  captured_at_device?: string
+  lat?: number
+  lng?: number
+  gps_accuracy_m?: number
+  gps_source?: string
+  content_type?: string
+  lr_number?: string
+}
+
+/**
+ * Result of a capture. `created` is false when the same (booking, hash) was already
+ * recorded — the write is idempotent, so a retry on a flaky rural connection returns
+ * the existing row rather than a duplicate.
+ */
+export type CaptureResult = {
+  evidence_id: string
+  booking_id: string
+  sha256_original: string
+  captured_at_server: string
+  clock_skew_seconds: number | null
+  geofence_result: GeofenceResult
+  geofence_distance_m: number | null
+  mock_location_detected: boolean
+  storage_status: string
+  created: boolean
+}
+
+/**
+ * Result of asserting delivery (POST /bookings/:id/assert-delivery). The trip is now
+ * `delivery_asserted` (NOT completed) with `pod_strength='asserted'`; ops closes it.
+ * The server REQUIRES ≥1 captured photo to already exist and 400s otherwise, so the
+ * caller must gate the action on evidence rather than let the driver hit the 400.
+ */
+export type AssertResult = {
+  booking_id: string
+  status: BookingStatus
+  pod_strength: 'asserted'
+  assert_reason: AssertReason
+  asserted_at: string | null
+  created: boolean
+}
+
+/**
+ * Log a shortage/damage note (POST /bookings/:id/discrepancy). The driver reports ONLY
+ * the actual quantity — the expected side is server-held (§5.7) and never sent from
+ * here. A captured `evidence_id` is required when the counts differ or for damage.
+ */
+export type DiscrepancyInput = {
+  actual_quantity: number
+  reason: DiscrepancyReason
+  quantity_unit?: string
+  evidence_id?: string
+}
+
+/**
+ * The two claim clocks surfaced on a discrepancy (§5.7): the 180-day pre-suit notice
+ * runs from BOOKING, the 7-day insurance intimation from DELIVERY.
+ */
+export type ClaimClocks = {
+  booking_date: string | null
+  delivery_date: string | null
+  claim_notice_deadline: string | null
+  insurance_intimation_deadline: string | null
+  claim_notice_days: number
+  insurance_intimation_days: number
+}
+
+export type DiscrepancyResult = {
+  discrepancy_id: string
+  booking_id: string
+  expected_quantity: number | null
+  actual_quantity: number
+  delta: number | null
+  reason: DiscrepancyReason
+  evidence_id: string | null
+  driver_ack_at: string
+  consignee_ack_at: string | null
+  claim_clocks: ClaimClocks
+  created: boolean
+}
+
+/**
+ * One evidence row as the POD ledger returns it (GET /bookings/:id/pod). The forensic
+ * fields (lat/lng, device fingerprint, fraud signals, storage URI) are attached by the
+ * server ONLY for the shipper/ops viewer, so they are optional here — a driver reading
+ * their own trip never receives them.
+ */
+export type PodEvidenceView = {
+  evidence_id: string
+  captured_at_server: string
+  capture_method: string
+  sha256_original: string
+  geofence_result: GeofenceResult
+  geofence_distance_m: number | null
+  storage_status: string
+  lr_number: string | null
+  lat?: number | null
+  lng?: number | null
+  mock_location_detected?: boolean
+  clock_skew_seconds?: number | null
+}
+
+export type PodDiscrepancyView = {
+  discrepancy_id: string
+  expected_quantity: number | null
+  actual_quantity: number
+  delta: number | null
+  quantity_unit: string | null
+  reason: DiscrepancyReason
+  evidence_id: string | null
+  driver_ack_at: string
+  consignee_ack_at: string | null
+  consignee_ack_via: string | null
+  consignee_user_id: string | null
+  claim_clocks: ClaimClocks
+}
+
+/**
+ * The POD ledger for a trip (GET /bookings/:id/pod) — proof strength, the evidence
+ * list and the discrepancy. `pod_hardening_available` is false on a database without
+ * migration 0025 (the read degrades to "nothing recorded" rather than failing), so a
+ * caller must treat an empty evidence list as "none captured yet", never as an error.
+ */
+export type PodRecord = {
+  booking_id: string
+  status: BookingStatus
+  viewer_relations: BookingRelation[]
+  pod_hardening_available: boolean
+  pod_strength: 'confirmed' | 'asserted' | null
+  confirmed_at: string | null
+  confirmed_via: string | null
+  asserted_at: string | null
+  assert_reason: AssertReason | null
+  closed_by_ops_at: string | null
+  evidence: PodEvidenceView[]
+  discrepancy: PodDiscrepancyView | null
+}
+
 /** Cached base polyline for the lane (GET /tracking/route/:id). One call per trip. */
 export type RouteData = {
   polyline: string
