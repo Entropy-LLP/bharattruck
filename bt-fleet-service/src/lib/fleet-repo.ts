@@ -45,13 +45,14 @@ export async function requireFleetOwner(user: AuthenticatedUser): Promise<FleetO
   return owner
 }
 
-// requireDriver — the mirror gate for the two driver-side invite routes. A
-// fleet_owner token can never satisfy it (owners hold no drivers row at all), so
-// the invite inbox is not reachable from the owner persona.
+// requireDriver — D-27 DE-ROLE (§10.3, mirror of requireFleetOwner above): authorize on
+// the RESOLVED drivers PROFILE, never the JWT `role` string. A shipper-turned-driver
+// (role='shipper') who completed driver onboarding via POST /drivers/me — and so holds a
+// drivers row — IS a driver for this request; the stale `role` is not the truth of it. The
+// drivers-row lookup is the real gate: it scopes to the caller's OWN user_id, so a caller
+// with no driver profile still gets a 404 and a fleet_owner token (which holds no drivers
+// row at all) can never reach the invite inbox — exactly as the old role check refused it.
 export async function requireDriver(user: AuthenticatedUser): Promise<{ id: string }> {
-  if (user.role !== 'driver') {
-    throw new FleetError('Only drivers can access this resource', 'FORBIDDEN', 403)
-  }
   const { data, error } = await getSupabase()
     .from('drivers')
     .select('id')
@@ -132,14 +133,17 @@ export type DriverIdentity = {
   total_trips: number | null
 }
 
-// findDriverByPhone — invites name an EXISTING driver account (locked model: we
-// never create driver identities on the owner's behalf), so this resolves
-// phone -> users.id -> drivers.id and refuses anything that is not a driver.
+// findDriverByPhone — invites name an EXISTING driver account (locked model: we never
+// create driver identities on the owner's behalf), so this resolves phone -> users.id ->
+// drivers.id. D-27 DE-ROLE: a target IS a driver iff they hold a drivers row (completed
+// driver onboarding), NOT iff their JWT `role` string is 'driver' — a shipper-turned-driver
+// must be invitable. The drivers-row lookup below is the authoritative test and 404s a
+// phone that belongs to an account with no driver profile.
 export async function findDriverByPhone(phone: string): Promise<DriverIdentity> {
   const supabase = getSupabase()
   const { data: user, error: userErr } = await supabase
     .from('users')
-    .select('id, full_name, phone_number, role, kyc_status')
+    .select('id, full_name, phone_number, kyc_status')
     .eq('phone_number', phone)
     .maybeSingle()
   if (userErr) throw new Error(`users select failed: ${userErr.message}`)
@@ -149,9 +153,6 @@ export async function findDriverByPhone(phone: string): Promise<DriverIdentity> 
       'NOT_FOUND',
       404,
     )
-  }
-  if ((user as { role: string }).role !== 'driver') {
-    throw new FleetError('That account is not a driver account', 'VALIDATION_ERROR', 400)
   }
 
   const { data: driver, error: driverErr } = await supabase
