@@ -33,6 +33,7 @@ import { MapBoundary } from '@/components/map-guard'
 import LiveTrackMap from '@/components/maps/LiveTrackMap'
 import TripInsights from '@/components/trip-insights'
 import DeliveryEvidence from '@/components/delivery-evidence'
+import FreightDocuments from '@/components/freight-documents'
 import {
   ApiError,
   getBooking,
@@ -146,6 +147,10 @@ export default function TripDetailPage({ params }: { params: Promise<{ id: strin
         <TripSummaryCard booking={booking} />
         {booking.status !== 'cancelled' && <TripStatusStepper status={booking.status} />}
         <TripActionSection booking={booking} canDrive={canDrive} onRefresh={reload} />
+        {/* Freight documents (Phase 4): the trip's paperwork — LR / invoice / e-way bill.
+            Page-level (not in the in_transit-only section) so it shows from 'accepted'
+            through 'completed'; the carrier can raise the LR while accepted/in_transit. */}
+        {booking.status !== 'cancelled' && <FreightDocuments booking={booking} onChanged={reload} />}
       </div>
     </div>
   )
