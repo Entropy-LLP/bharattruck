@@ -40,6 +40,7 @@ import { dateTime, inr, shortDate } from '@/lib/format'
 import type { Booking, Quote, TrackData, TrackEta, TrackLocation } from '@/lib/types'
 import LiveTrackMap from '@/components/maps/LiveTrackMap'
 import { ReceiverEmailSection } from '@/components/receiver-email-section'
+import FreightDocuments from '@/components/freight-documents'
 import { NegotiationHistory } from '@/components/negotiation-history'
 import { CounterModal } from '@/components/counter-modal'
 
@@ -204,6 +205,10 @@ export default function LoadDetailPage({ params }: { params: Promise<{ id: strin
             <ReceiverEmailSection booking={booking} onSaved={reload} />
           </div>
         </Card>
+
+        {/* Freight documents (Phase 4): the shipper sees the LR the carrier raised and
+            issues their own tax invoice, billed to the consignee. */}
+        {booking.status !== 'cancelled' && <FreightDocuments booking={booking} onChanged={reload} />}
 
         {/* Tracking */}
         {isTracked ? (

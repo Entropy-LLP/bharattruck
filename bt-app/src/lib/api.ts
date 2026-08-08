@@ -20,7 +20,7 @@ import type {
   TrackData, DriverLocation,
   LocationUpdate, PodContext, RequestOtpResult, VerifyOtpResult, RouteData, PumpsData, FuelData, AlertsData,
   EvidenceCaptureInput, CaptureResult, AssertReason, AssertResult, DiscrepancyInput, DiscrepancyResult, PodRecord,
-  BookingDocuments, LorryReceipt, IssueLorryReceiptInput,
+  BookingDocuments, LorryReceipt, IssueLorryReceiptInput, FreightInvoice, IssueInvoiceInput,
 } from './types'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
@@ -773,6 +773,18 @@ export function getBookingDocuments(bookingId: string) {
  */
 export function issueLorryReceipt(bookingId: string, body: IssueLorryReceiptInput) {
   return request<LorryReceipt>(`/bookings/${bookingId}/documents/lr`, {
+    method: 'POST', body: JSON.stringify(body),
+  })
+}
+
+/**
+ * The SHIPPER issues their tax invoice (for the goods they sold, billed to the consignee).
+ * The server computes the consignment value + grand total from the parts and numbers it on
+ * the shipper's own series. Issuable pending → completed. The response also carries the
+ * server's e-way-bill requirement verdict (ignored here; the ledger reload reflects it).
+ */
+export function issueFreightInvoice(bookingId: string, body: IssueInvoiceInput) {
+  return request<FreightInvoice>(`/bookings/${bookingId}/documents/invoice`, {
     method: 'POST', body: JSON.stringify(body),
   })
 }

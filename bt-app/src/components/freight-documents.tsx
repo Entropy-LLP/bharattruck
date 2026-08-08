@@ -19,9 +19,9 @@ import { toast } from 'sonner'
 import { FileText } from 'lucide-react'
 
 import { Card, CardHead, ErrorNote, Loading } from '@/components/stat'
-import { ApiError, getBookingDocuments, issueLorryReceipt } from '@/lib/api'
+import { ApiError, getBookingDocuments, issueFreightInvoice, issueLorryReceipt } from '@/lib/api'
 import { inr, dateTime } from '@/lib/format'
-import type { Booking, BookingDocuments, EwayBillRecord, FreightTerm, IssueLorryReceiptInput } from '@/lib/types'
+import type { Booking, BookingDocuments, EwayBillRecord, FreightTerm, IssueInvoiceInput, IssueLorryReceiptInput } from '@/lib/types'
 
 const FREIGHT_TERMS: { value: FreightTerm; label: string }[] = [
   { value: 'TO_PAY', label: 'To pay — receiver pays freight' },
@@ -89,6 +89,14 @@ export default function FreightDocuments({ booking, onChanged }: { booking: Book
   const [vehicleNumber, setVehicleNumber] = useState('')
   const [freightTerm, setFreightTerm] = useState<FreightTerm>('TO_PAY')
 
+  // Invoice form (shipper side), prefilled where the booking knows the answer.
+  const [showInvoiceForm, setShowInvoiceForm] = useState(false)
+  const [invoicing, setInvoicing] = useState(false)
+  const [invoiceErr, setInvoiceErr] = useState<string | null>(null)
+  const [billedTo, setBilledTo] = useState(booking.consignee?.name ?? '')
+  const [taxableValue, setTaxableValue] = useState('')
+  const [igst, setIgst] = useState('')
+
   const load = useCallback(() => {
     setLoading(true)
     setError(null)
@@ -106,6 +114,15 @@ export default function FreightDocuments({ booking, onChanged }: { booking: Book
   const rel = booking.viewer?.relations
   const isCarrier = rel === undefined || rel.includes('carrier') || rel.includes('driver')
   const canIssueLr = isCarrier && ['accepted', 'in_transit'].includes(booking.status) && !!docs && !docs.lorry_receipt
+
+  // The invoice is the SHIPPER's document; issuable pending → completed (wider than the LR
+  // at both ends — the invoice number can precede a carrier and a TO_BE_BILLED load is
+  // invoiced after delivery). Server-authorized; stay permissive when the relation is absent.
+  const isShipper = rel === undefined || rel.includes('shipper')
+  const canIssueInvoice =
+    isShipper &&
+    ['pending', 'negotiating', 'accepted', 'in_transit', 'completed'].includes(booking.status) &&
+    !!docs && !docs.invoice
 
   async function handleIssue(e: FormEvent) {
     e.preventDefault()
@@ -138,6 +155,33 @@ export default function FreightDocuments({ booking, onChanged }: { booking: Book
       setFormErr(err instanceof ApiError ? err.message : 'Could not issue the consignment note')
     } finally {
       setIssuing(false)
+    }
+  }
+
+  async function handleIssueInvoice(e: FormEvent) {
+    e.preventDefault()
+    const taxable = Number(taxableValue)
+    const igstNum = igst.trim() ? Number(igst) : undefined
+    if (!billedTo.trim()) { setInvoiceErr('Enter who the invoice is billed to.'); return }
+    if (!Number.isFinite(taxable) || taxable <= 0) { setInvoiceErr('Enter the taxable value of the goods.'); return }
+    if (igstNum !== undefined && (!Number.isFinite(igstNum) || igstNum < 0)) { setInvoiceErr('Enter a valid IGST amount.'); return }
+    setInvoicing(true)
+    setInvoiceErr(null)
+    try {
+      const body: IssueInvoiceInput = {
+        billed_to_name: billedTo.trim(),
+        taxable_value_inr: taxable,
+        ...(igstNum !== undefined ? { igst_inr: igstNum } : {}),
+      }
+      await issueFreightInvoice(booking.id, body)
+      toast.success('Tax invoice issued')
+      setShowInvoiceForm(false)
+      load()
+      onChanged?.()
+    } catch (err) {
+      setInvoiceErr(err instanceof ApiError ? err.message : 'Could not issue the invoice')
+    } finally {
+      setInvoicing(false)
     }
   }
 
@@ -250,6 +294,45 @@ export default function FreightDocuments({ booking, onChanged }: { booking: Book
                     <button type="submit" disabled={issuing} className="flex-1 h-11 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm disabled:opacity-50 flex items-center justify-center gap-2">
                       {issuing && <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />}
                       {issuing ? 'Issuing…' : 'Issue LR'}
+                    </button>
+                  </div>
+                </form>
+              )
+            )}
+
+            {canIssueInvoice && (
+              !showInvoiceForm ? (
+                <button
+                  onClick={() => setShowInvoiceForm(true)}
+                  className="w-full h-11 rounded-xl border border-blue-600 text-blue-700 hover:bg-blue-50 font-semibold text-sm transition-colors"
+                >
+                  Issue tax invoice
+                </button>
+              ) : (
+                <form onSubmit={handleIssueInvoice} className="rounded-xl border border-gray-200 p-3 space-y-3">
+                  <div>
+                    <p className="text-sm font-semibold text-gray-900">Issue tax invoice</p>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      Your invoice for the goods, billed to the consignee. Raises a numbered invoice that cannot be undone.
+                    </p>
+                  </div>
+                  <Field label="Billed to">
+                    <input value={billedTo} onChange={(e) => { setBilledTo(e.target.value); setInvoiceErr(null) }} className={inputCls} />
+                  </Field>
+                  <div className="flex gap-2">
+                    <Field label="Taxable value (₹)" className="flex-1">
+                      <input inputMode="decimal" value={taxableValue} onChange={(e) => { setTaxableValue(e.target.value.replace(/[^\d.]/g, '')); setInvoiceErr(null) }} className={inputCls} />
+                    </Field>
+                    <Field label="IGST (₹, optional)" className="flex-1">
+                      <input inputMode="decimal" value={igst} onChange={(e) => { setIgst(e.target.value.replace(/[^\d.]/g, '')); setInvoiceErr(null) }} className={inputCls} />
+                    </Field>
+                  </div>
+                  {invoiceErr && <p className="text-xs text-red-600">{invoiceErr}</p>}
+                  <div className="flex gap-2">
+                    <button type="button" onClick={() => { setShowInvoiceForm(false); setInvoiceErr(null) }} disabled={invoicing} className="flex-1 h-11 rounded-xl border border-gray-200 text-gray-600 hover:bg-gray-50 font-medium text-sm disabled:opacity-50">Cancel</button>
+                    <button type="submit" disabled={invoicing} className="flex-1 h-11 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm disabled:opacity-50 flex items-center justify-center gap-2">
+                      {invoicing && <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />}
+                      {invoicing ? 'Issuing…' : 'Issue invoice'}
                     </button>
                   </div>
                 </form>
