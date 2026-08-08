@@ -215,7 +215,7 @@ export default function LiveFleetPage() {
               <Card>
                 <Empty
                   title="No trucks in your fleet yet"
-                  hint="Add a truck under Trucks, then assign it to a driver and a booking to see it here."
+                  hint="Add a truck under Trucks to see it here."
                 />
               </Card>
             </div>
@@ -426,10 +426,7 @@ function VehicleDetail({ vehicle, onClose }: { vehicle: TrackedVehicle; onClose:
             )}
           </div>
         ) : (
-          <p className="text-xs text-gray-500">
-            No trip telemetry yet. Distance, idle time and fuel start accruing once the driver
-            begins sending location.
-          </p>
+          <p className="text-xs text-gray-500">No trip telemetry yet.</p>
         )}
 
         {/* Fuel is shown for EVERY truck — the rated figure is a property of the asset, not

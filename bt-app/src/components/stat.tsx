@@ -4,6 +4,27 @@ import type { ReactNode } from 'react'
 import { ArrowDownRight, ArrowUpRight, Info } from 'lucide-react'
 
 /**
+ * InfoDot — the ONLY place explanatory text is allowed in bt-app. A small ⓘ beside
+ * a term that, on hover, reveals a SINGLE PHRASE. No page carries paragraph help or
+ * teaching prose; anything a user might not grasp at a glance gets one of these.
+ * Deliberately terse — one phrase, never a sentence of detail.
+ */
+export function InfoDot({ text, className = '' }: { text: string; className?: string }) {
+  return (
+    <span className={`group relative inline-flex items-center align-middle ${className}`}>
+      <Info className="w-3.5 h-3.5 text-gray-300 hover:text-gray-500 cursor-help transition-colors" aria-hidden />
+      <span className="sr-only">{text}</span>
+      <span
+        role="tooltip"
+        className="pointer-events-none absolute left-1/2 bottom-full z-30 mb-2 w-max max-w-[220px] -translate-x-1/2 rounded-lg bg-gray-900 px-2.5 py-1.5 text-[11px] font-medium normal-case leading-snug tracking-normal text-center text-white opacity-0 shadow-lg transition-opacity duration-150 group-hover:opacity-100"
+      >
+        {text}
+      </span>
+    </span>
+  )
+}
+
+/**
  * The stat tile. Deliberately plain: white card, 1px border, shadow-sm — the
  * dominant card convention in driver/ and shipper/ (depth comes from borders,
  * not shadows).
@@ -31,11 +52,7 @@ export function Stat({
       <div className="flex items-start justify-between gap-2">
         <span className="text-xs text-gray-400 uppercase tracking-wide inline-flex items-center gap-1">
           {label}
-          {info && (
-            <span title={info} aria-label={info} className="text-gray-300 cursor-help normal-case">
-              <Info className="w-3 h-3" />
-            </span>
-          )}
+          {info && <InfoDot text={info} />}
         </span>
         {icon && <span className="text-gray-300 shrink-0">{icon}</span>}
       </div>
@@ -103,11 +120,14 @@ export function Card({ children, className = '' }: { children: ReactNode; classN
   )
 }
 
-export function CardHead({ title, sub, actions }: { title: string; sub?: string; actions?: ReactNode }) {
+export function CardHead({ title, sub, actions, info }: { title: string; sub?: string; actions?: ReactNode; info?: string }) {
   return (
     <div className="flex items-start justify-between gap-3 px-4 py-3 border-b border-gray-100">
       <div className="min-w-0">
-        <h2 className="text-sm font-semibold text-gray-900">{title}</h2>
+        <h2 className="text-sm font-semibold text-gray-900 inline-flex items-center gap-1.5">
+          {title}
+          {info && <InfoDot text={info} />}
+        </h2>
         {sub && <p className="text-xs text-gray-500 mt-0.5">{sub}</p>}
       </div>
       {actions && <div className="shrink-0">{actions}</div>}

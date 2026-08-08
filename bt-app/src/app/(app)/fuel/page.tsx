@@ -315,7 +315,7 @@ function ByVehicle({ rows, covered }: { rows: VehicleRow[]; covered: boolean }) 
       <CardHead
         title="Gap by truck"
         sub={comparable.length === 0
-          ? 'Only trucks with at least one driver fuel entry can appear here'
+          ? 'Only trucks with a fuel entry appear here'
           : `${comparable.length} ${comparable.length === 1 ? 'truck' : 'trucks'} comparable — ${overspending} over model. Biggest gap first.`}
       />
 

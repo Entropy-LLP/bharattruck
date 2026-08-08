@@ -2,11 +2,11 @@
 
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import {
-  AlertTriangle, Clock, Info, Pencil, RotateCcw, Star, TrendingUp, UserMinus,
+  AlertTriangle, Clock, Pencil, RotateCcw, Star, TrendingUp, UserMinus,
   UserPlus, Users, Wallet, X,
 } from 'lucide-react'
 import { PageHeader } from '@/components/app-shell'
-import { Card, CardHead, Empty, ErrorNote, Loading, Stat } from '@/components/stat'
+import { Card, CardHead, Empty, ErrorNote, InfoDot, Loading, Stat } from '@/components/stat'
 import {
   ApiError, getDriverAnalytics, inviteDriver, listFleetDrivers, removeFleetDriver,
   updateFleetDriver,
@@ -141,6 +141,7 @@ export default function DriversPage() {
     <div className="p-4 lg:p-6 max-w-7xl mx-auto">
       <PageHeader
         title="Drivers"
+        info="Fleet drivers see the job, not the price — you assign their truck and trip."
         subtitle={rows ? `${active.length} active · ${pending.length} invited · ${former.length} former` : undefined}
         actions={
           <button
@@ -153,13 +154,6 @@ export default function DriversPage() {
         }
       />
 
-      <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 mb-5 flex gap-2.5">
-        <Info className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
-        <p className="text-sm text-blue-900">
-          Fleet drivers do not see trip prices and do not choose their own trips. You assign both the
-          truck and the driver for every booking; the driver app shows them the job, not the money.
-        </p>
-      </div>
 
       {loading ? (
         <Loading label="Loading roster" />
@@ -177,7 +171,7 @@ export default function DriversPage() {
         <Card>
           <Empty
             title="No drivers on the roster yet"
-            hint="Invite a driver by their BharatTruck phone number. They must accept before they can be assigned."
+            hint="Invite a driver by their BharatTruck phone number."
           />
         </Card>
       ) : (
@@ -297,7 +291,7 @@ export default function DriversPage() {
             <Card>
               <CardHead
                 title="Pending invitation"
-                sub="Only the driver can accept, from their own BharatTruck app. You cannot activate the affiliation for them."
+                info="Only the driver can accept, from their own app."
               />
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[720px]">
@@ -336,17 +330,13 @@ export default function DriversPage() {
                   </tbody>
                 </table>
               </div>
-              <p className="px-4 py-3 text-xs text-gray-500 border-t border-gray-100">
-                You can set the salary now so it is agreed before they join — but the affiliation stays
-                pending until the driver accepts it themselves.
-              </p>
             </Card>
           )}
 
           {/* ── Former ─────────────────────────────────────────── */}
           {former.length > 0 && (
             <Card>
-              <CardHead title="Former" sub="Left, declined or suspended. History and wage allocation stay on your books." />
+              <CardHead title="Former" sub="Left, declined or suspended" />
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[760px]">
                   <thead>
@@ -545,10 +535,6 @@ function InviteDialog({ onClose, onInvited }: { onClose: () => void; onInvited: 
   return (
     <Modal title="Invite a driver" onClose={onClose}>
       <form onSubmit={submit} className="space-y-4">
-        <p className="text-sm text-gray-600">
-          The driver must already have a BharatTruck driver account — the fleet never creates driver
-          identities. We look up the number, send them an invitation, and they decide whether to join.
-        </p>
         <div>
           <label htmlFor="invite-phone" className="text-xs text-gray-400 uppercase tracking-wide">
             Driver mobile number
@@ -625,8 +611,9 @@ function SalaryDialog({
           <div className="text-xs text-gray-500">{phoneOf(row) ?? 'No phone on file'}</div>
         </div>
         <div>
-          <label htmlFor="salary" className="text-xs text-gray-400 uppercase tracking-wide">
+          <label htmlFor="salary" className="text-xs text-gray-400 uppercase tracking-wide inline-flex items-center gap-1.5">
             Monthly salary (₹)
+            <InfoDot text="Allocated across this driver's trips as wage cost." />
           </label>
           <input
             id="salary"
@@ -638,14 +625,10 @@ function SalaryDialog({
             placeholder="25000"
             className="mt-1.5 w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm tabular-nums outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
           />
-          <p className="mt-1.5 text-xs text-gray-500">
-            Used to allocate wage cost across the trips this driver runs, so per-trip profit is real.
-          </p>
         </div>
         {row.status === 'pending' && (
           <p className="text-xs text-gray-500 rounded-lg bg-gray-50 border border-gray-200 px-3 py-2">
-            This invitation is still pending. Agreeing the salary now is fine — it does not accept the
-            invitation on the driver&apos;s behalf.
+            Setting a salary does not accept the invitation for them.
           </p>
         )}
         {err && <ErrorNote message={err} />}
@@ -709,8 +692,7 @@ function RemoveDialog({
         </div>
         <p className="text-sm text-gray-600">
           Remove <span className="font-medium text-gray-900">{nameOf(row) ?? 'this driver'}</span> from
-          your fleet? The affiliation is marked as left, so their trip history and wage allocation stay
-          on your books. Re-inviting them later needs a fresh invitation they must accept.
+          your fleet?
         </p>
         {err && <ErrorNote message={err} />}
         {hint && <p className="text-xs text-gray-500">{hint}</p>}

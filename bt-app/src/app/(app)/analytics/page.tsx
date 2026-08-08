@@ -27,7 +27,7 @@ import {
 
 import { PageHeader } from '@/components/app-shell'
 import {
-  Card, CardHead, CoverPill, Empty, ErrorNote, Loading, Meter, Stat,
+  Card, CardHead, CoverPill, Empty, ErrorNote, InfoDot, Loading, Meter, Stat,
 } from '@/components/stat'
 import {
   ApiError, getDriverAnalytics, getFleetSummary, getVehicleAnalytics,
@@ -142,7 +142,7 @@ export default function AnalyticsPage() {
   const header = (
     <PageHeader
       title="Utilisation"
-      subtitle="How full the trucks ran, how hard they were worked, and whether each one paid for itself"
+      info="Whether each truck ran full and paid for itself."
       actions={switcher}
     />
   )
@@ -172,7 +172,7 @@ export default function AnalyticsPage() {
         <Card>
           <Empty
             title="No utilisation data yet"
-            hint="Add a truck and complete a trip — these numbers are built from the per-trip roll-up."
+            hint="Add a truck and complete a trip."
           />
         </Card>
       </div>
@@ -244,23 +244,24 @@ export default function AnalyticsPage() {
 // ── 1-3: the three fleet-level views ──────────────────────────
 
 function UtilPanel({
-  icon, title, question, meterLabel, value, rows, note,
+  icon, title, info, meterLabel, value, rows,
 }: {
   icon: ReactNode
   title: string
-  question: string
+  info: string
   meterLabel: string
   value: number | null
   rows: { label: string; value: string }[]
-  note: string
 }) {
   return (
     <div className="p-4">
       <div className="flex items-center gap-2">
         <span className="text-gray-400">{icon}</span>
-        <h3 className="text-sm font-semibold text-gray-900">{title}</h3>
+        <h3 className="text-sm font-semibold text-gray-900 inline-flex items-center gap-1.5">
+          {title}
+          <InfoDot text={info} />
+        </h3>
       </div>
-      <p className="mt-0.5 text-xs text-gray-500 italic">{question}</p>
 
       <div className="mt-3">
         <Meter pct={value} label={meterLabel} />
@@ -274,8 +275,6 @@ function UtilPanel({
           </div>
         ))}
       </dl>
-
-      <p className="mt-3 text-xs text-gray-500 leading-relaxed">{note}</p>
     </div>
   )
 }
@@ -291,49 +290,36 @@ function FleetUtilisation({ utilization, sub }: { utilization: Utilization; sub:
         <UtilPanel
           icon={<Weight className="w-4 h-4" />}
           title="Tonnage"
-          question="Am I filling the truck by weight?"
+          info="Load weight carried vs the trucks' weight capacity, on trips that ran."
           meterLabel="Laden weight vs capacity"
           value={u.tonnage_pct}
           rows={[
             { label: 'Carried', value: tons(u.laden_weight_kg) },
             { label: 'Capacity offered', value: tons(u.capacity_kg) },
           ]}
-          note="Laden weight on the trips that ran, against the capacity those same trucks offered. A low number means you are moving air by weight — the load could have been heavier for the same diesel."
         />
         <UtilPanel
           icon={<Box className="w-4 h-4" />}
           title="Volume"
-          question="Am I filling it by space?"
+          info="Cargo space used vs capacity — read alongside tonnage, not instead."
           meterLabel="Cubic feet used vs capacity"
           value={u.volume_pct}
           rows={[
             { label: 'Used', value: cuft(u.volume_used_cuft) },
             { label: 'Capacity offered', value: cuft(u.capacity_cuft) },
           ]}
-          note="Space, not weight. A light bulky load — foam, empty drums, packaged FMCG — can read 100% volume and 30% tonnage: the body is packed to the roof and the truck is nowhere near its payload. Read this one against tonnage, never instead of it."
         />
         <UtilPanel
           icon={<Gauge className="w-4 h-4" />}
           title="Distance"
-          question="Is the truck moving at all?"
+          info="Actual km vs the category's expected km — exposes idle trucks."
           meterLabel="Actual km vs expected km"
           value={u.distance_pct}
           rows={[
             { label: 'Actual', value: km(u.distance_km) },
             { label: 'Expected', value: km(u.expected_distance_km) },
           ]}
-          note="Actual kilometres against what each truck's category is expected to cover in this window (its annual-km norm, pro-rated). This is the only one of the three measured against the calendar, so it is the one that exposes idle trucks."
         />
-      </div>
-
-      <div className="px-4 py-3 border-t border-gray-100 bg-gray-50 rounded-b-xl">
-        <p className="text-xs text-gray-500 leading-relaxed">
-          <span className="font-medium text-gray-700">These three are not interchangeable.</span>{' '}
-          Tonnage and volume only count trips that actually ran, so a truck that sat in the yard for
-          three weeks and did one full load still reads near 100% on both — and near zero on
-          distance. Expected distance is blank for any truck whose model category has no annual-km
-          norm on file.
-        </p>
       </div>
     </Card>
   )
@@ -425,6 +411,7 @@ function VehicleTable({ vehicles, periodLabel }: { vehicles: VehicleAnalytics[];
     <Card>
       <CardHead
         title="Per-truck utilisation"
+        info="Per-truck revenue, cost and surplus — an idle truck still carries its EMI."
         sub={
           vehicles.length === 0
             ? 'No trucks in this fleet yet'
@@ -437,23 +424,18 @@ function VehicleTable({ vehicles, periodLabel }: { vehicles: VehicleAnalytics[];
       {vehicles.length === 0 ? (
         <Empty
           title="No trucks on the books"
-          hint="Add a truck under Trucks to start scoring it on tonnage, volume and distance."
+          hint="Add a truck under Trucks to start scoring it."
         />
       ) : (
         <>
-          <div className="px-4 py-2.5 border-b border-gray-100 text-xs text-gray-500">
-            Click any of the four right-hand headers to re-rank the fleet.
-            {shortCount > 0 && (
-              <>
-                {' '}
-                <span className="inline-flex items-center gap-1.5">
-                  <span className="inline-block w-0.5 h-3 bg-red-400 align-middle" />
-                  {shortCount} {shortCount === 1 ? 'truck' : 'trucks'} did not cover the period&apos;s
-                  running cost, fixed cost and EMI.
-                </span>
-              </>
-            )}
-          </div>
+          {shortCount > 0 && (
+            <div className="px-4 py-2.5 border-b border-gray-100 text-xs text-gray-500">
+              <span className="inline-flex items-center gap-1.5">
+                <span className="inline-block w-0.5 h-3 bg-red-400 align-middle" />
+                {shortCount} {shortCount === 1 ? 'truck' : 'trucks'} did not cover their cost.
+              </span>
+            </div>
+          )}
 
           <div className="overflow-x-auto">
             <table className="w-full min-w-[1000px]">
@@ -527,11 +509,6 @@ function VehicleTable({ vehicles, periodLabel }: { vehicles: VehicleAnalytics[];
             </table>
           </div>
 
-          <div className="px-4 py-3 border-t border-gray-100 text-xs text-gray-500 leading-relaxed">
-            Revenue and cost per km are blank until a truck has recorded distance. Surplus is
-            revenue minus running cost minus the truck&apos;s share of fixed cost — so a truck with
-            no trips this period still carries its EMI and reads short.
-          </div>
         </>
       )}
     </Card>
@@ -555,6 +532,7 @@ function RunningCostChart({ vehicles, days }: { vehicles: VehicleAnalytics[]; da
     <Card>
       <CardHead
         title="Running-cost score"
+        info="Revenue minus running, fixed and EMI cost — right of the line paid for itself."
         sub={
           vehicles.length === 0
             ? 'No trucks to score'
@@ -565,17 +543,10 @@ function RunningCostChart({ vehicles, days }: { vehicles: VehicleAnalytics[]; da
       {vehicles.length === 0 ? (
         <Empty
           title="Nothing to rank yet"
-          hint="Each truck is scored once it exists on the books, whether or not it ran a trip."
+          hint="Add a truck to see it ranked."
         />
       ) : (
         <div className="p-4">
-          <p className="text-sm text-gray-600 mb-4">
-            Revenue minus running cost minus this asset&apos;s share of fixed cost — EMI, insurance,
-            permit and fitness spread over the year, plus its slice of the monthly office overhead.
-            Bars right of the line paid for themselves; bars left of it were funded by the rest of
-            the fleet.
-          </p>
-
           <div className="flex items-center gap-3 text-[11px] text-gray-400 uppercase tracking-wide mb-1.5">
             <span className="w-20 sm:w-28 shrink-0" />
             <span className="flex-1 min-w-0 flex justify-between">
@@ -630,7 +601,7 @@ function RunningCostChart({ vehicles, days }: { vehicles: VehicleAnalytics[]; da
 
           {maxAbs === 0 && (
             <p className="mt-4 text-xs text-gray-500">
-              Every truck scored exactly zero this period — no revenue and no fixed cost on file.
+              Every truck scored exactly zero this period.
             </p>
           )}
         </div>
@@ -657,6 +628,7 @@ function DriverLeaderboard({
     <Card>
       <CardHead
         title="Driver leaderboard"
+        info="Net profit per trip, after the driver's wage — excludes EMI and overhead."
         sub={
           errorMessage
             ? 'Could not be loaded'
@@ -673,7 +645,7 @@ function DriverLeaderboard({
       ) : ranked.length === 0 ? (
         <Empty
           title="No driver figures yet"
-          hint="A driver appears here once a trip they crewed has been completed and rolled up."
+          hint="Appears once a crewed trip is completed."
         />
       ) : (
         <div className="overflow-x-auto">
@@ -725,12 +697,6 @@ function DriverLeaderboard({
         </div>
       )}
 
-      {!errorMessage && ranked.length > 0 && (
-        <div className="px-4 py-3 border-t border-gray-100 text-xs text-gray-500 leading-relaxed">
-          Net profit here is per trip and already has the driver&apos;s allocated wage taken out of
-          it. It does not carry EMI or overhead — that sits on the truck, above.
-        </div>
-      )}
     </Card>
   )
 }

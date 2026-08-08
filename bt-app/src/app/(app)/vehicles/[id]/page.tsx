@@ -9,7 +9,7 @@
 import { use, useEffect, useMemo, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import {
-  ArrowLeft, Gauge, Info, Pencil, Plus, Route, ShieldCheck, Trash2, Wallet, X,
+  ArrowLeft, Gauge, Pencil, Plus, Route, ShieldCheck, Trash2, Wallet, X,
 } from 'lucide-react'
 import {
   ApiError, getOneVehicleAnalytics, getVehicle,
@@ -17,7 +17,7 @@ import {
 } from '@/lib/api'
 import type { CostBreakdown, Vehicle, VehicleFinance, VehicleLane, VehiclePermit } from '@/lib/types'
 import { inr, km, pct, periodDays, shortDate, tons, vehicleAge, inrSigned } from '@/lib/format'
-import { Card, CardHead, CoverPill, Empty, ErrorNote, Loading, Meter, Stat } from '@/components/stat'
+import { Card, CardHead, CoverPill, Empty, ErrorNote, InfoDot, Loading, Meter, Stat } from '@/components/stat'
 import { PageHeader } from '@/components/app-shell'
 
 const PERIODS = [30, 90, 180] as const
@@ -93,15 +93,6 @@ function Field({ label, value }: { label: string; value: ReactNode }) {
     <div className="min-w-0">
       <div className={LABEL}>{label}</div>
       <div className="mt-0.5 text-sm text-gray-900 tabular-nums truncate">{value}</div>
-    </div>
-  )
-}
-
-function Note({ children }: { children: ReactNode }) {
-  return (
-    <div className="flex items-start gap-2 px-4 py-3 border-t border-gray-100 text-xs text-gray-500">
-      <Info className="w-3.5 h-3.5 shrink-0 mt-0.5 text-gray-400" />
-      <p>{children}</p>
     </div>
   )
 }
@@ -365,7 +356,6 @@ function FinanceDialog({
   return (
     <Modal
       title="Edit finance"
-      sub="EMI and the annual carrying costs feed the verdict at the top of this page."
       onClose={onClose}
     >
       <div className="p-4 space-y-4">
@@ -386,9 +376,6 @@ function FinanceDialog({
 
         <div>
           <p className="text-xs font-semibold text-gray-700">Annual carrying costs</p>
-          <p className="text-xs text-gray-500 mt-0.5">
-            Spread over twelve months and charged to this truck alongside the EMI.
-          </p>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-2">
             {num('Insurance (₹ / yr)', 'insurance_annual_inr')}
             {num('Permit (₹ / yr)', 'permit_annual_inr')}
@@ -483,7 +470,6 @@ function PermitsDialog({
   return (
     <Modal
       title="Edit permits"
-      sub="Saving replaces the whole permit set for this truck."
       onClose={onClose}
     >
       <div className="p-4 space-y-3">
@@ -681,7 +667,6 @@ function LanesDialog({
   return (
     <Modal
       title="Edit corridors"
-      sub="Saving replaces the whole corridor set, including the observed trip counts."
       onClose={onClose}
     >
       <div className="p-4 space-y-3">
@@ -877,7 +862,7 @@ export default function VehicleDetailPage({ params }: { params: Promise<{ id: st
 
           <VerdictCard report={report} days={days} loading={loading} />
           <UtilisationCard report={report} />
-          <CostCard report={report} age={age} />
+          <CostCard report={report} />
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <FinanceCard
@@ -946,7 +931,6 @@ function VerdictCard({
   const s = report.score
   const covered = s.covered
   const surplus = s.surplus_inr
-  const otherFixed = s.fixed_cost_inr - s.emi_inr
 
   const verdict =
     report.trips === 0
@@ -973,7 +957,10 @@ function VerdictCard({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <span className={LABEL}>{covered ? 'Surplus' : 'Shortfall'} · last {days} days</span>
+              <span className={`${LABEL} inline-flex items-center gap-1`}>
+                {covered ? 'Surplus' : 'Shortfall'} · last {days} days
+                <InfoDot text="Revenue less running cost, EMI and pro-rated fixed costs" />
+              </span>
               <CoverPill covered={covered} />
             </div>
             <div className={`mt-1 text-4xl font-bold tabular-nums ${
@@ -1030,12 +1017,6 @@ function VerdictCard({
         />
       </div>
 
-      <Note>
-        Surplus is revenue less running cost, EMI, the annual carrying costs spread over twelve
-        months, and this truck&apos;s share of fleet overhead — {inr(otherFixed)} of the{' '}
-        {inr(s.fixed_cost_inr)} fixed charge is everything other than the EMI. Fixed charges are
-        applied once and pro-rated to the window, never allocated per trip.
-      </Note>
     </Card>
   )
 }
@@ -1051,6 +1032,7 @@ function UtilisationCard({ report }: { report: VehicleReport | null }) {
       <CardHead
         title="Utilisation"
         sub="How full it ran, and how hard it was worked"
+        info="Tonnage, volume and distance are measured independently"
         actions={<Gauge className="w-4 h-4 text-gray-300" />}
       />
       {report.trips === 0 ? (
@@ -1077,11 +1059,6 @@ function UtilisationCard({ report }: { report: VehicleReport | null }) {
               </p>
             </div>
           </div>
-          <Note>
-            The three are deliberately separate: a truck can run every expected kilometre while
-            half empty. Expected distance comes from the annual-km norm for its model category,
-            pro-rated to this window — a truck with no norm shows no distance figure.
-          </Note>
         </>
       )}
     </Card>
@@ -1090,7 +1067,7 @@ function UtilisationCard({ report }: { report: VehicleReport | null }) {
 
 // ── 4. Cost breakdown ─────────────────────────────────────────
 
-function CostCard({ report, age }: { report: VehicleReport | null; age: number | null }) {
+function CostCard({ report }: { report: VehicleReport | null }) {
   const lines = useMemo(() => {
     if (!report) return []
     return COST_LINES.map(line => ({
@@ -1106,7 +1083,11 @@ function CostCard({ report, age }: { report: VehicleReport | null; age: number |
 
   return (
     <Card>
-      <CardHead title="Cost breakdown" sub="Where the money went this period" />
+      <CardHead
+        title="Cost breakdown"
+        sub="Where the money went this period"
+        info="Modelled from category and age norms, not receipts"
+      />
 
       {report.trips === 0 || total === 0 ? (
         <Empty title="No costs recorded in this window" hint="Costs are written once a trip is paid." />
@@ -1151,7 +1132,6 @@ function CostCard({ report, age }: { report: VehicleReport | null; age: number |
                     <tr key={line.key} className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
                       <td className="py-3 px-4 text-sm text-gray-900">
                         {line.label}
-                        {line.outsideRunning && <span className="text-gray-400"> †</span>}
                       </td>
                       <td className="py-3 px-4 text-sm text-gray-900 text-right tabular-nums">{inr(line.value)}</td>
                       <td className="py-3 px-4 text-sm text-gray-500 text-right tabular-nums">{pct(share, 1)}</td>
@@ -1184,17 +1164,6 @@ function CostCard({ report, age }: { report: VehicleReport | null; age: number |
             </table>
           </div>
 
-          <Note>
-            Service cost is age-indexed and non-linear — it climbs to a peak around year three and
-            tapers after, which is why an older truck can show a lower service line than a mid-life
-            one{age === null ? '' : `; this one is ${age === 0 ? 'in its first year' : `${age} years old`}`}.
-            Fuel, DEF and the oils are modelled from the category&apos;s norms and the emission
-            norm, not from receipts.
-          </Note>
-          <div className="px-4 pb-3 -mt-2 text-xs text-gray-400">
-            † Toll and other recorded spend are shown here but sit outside modelled running cost,
-            so the total above is larger than the running cost used in the verdict.
-          </div>
         </>
       )}
     </Card>
@@ -1218,7 +1187,7 @@ function FinanceCard({ finance, onEdit }: { finance: VehicleFinance | null; onEd
       {!finance ? (
         <Empty
           title="No finance recorded"
-          hint="Without an EMI and the annual costs, the verdict above only counts running cost."
+          hint="Add the loan and annual carrying costs for this truck."
         />
       ) : (
         <>
@@ -1252,7 +1221,10 @@ function FinanceCard({ finance, onEdit }: { finance: VehicleFinance | null; onEd
           </div>
 
           <div className="px-4 pb-4">
-            <p className="text-xs font-semibold text-gray-700 mb-2">Annual carrying costs</p>
+            <p className="text-xs font-semibold text-gray-700 mb-2 inline-flex items-center gap-1">
+              Annual carrying costs
+              <InfoDot text="Charged monthly, one-twelfth each, alongside the EMI" />
+            </p>
             <div className="grid grid-cols-3 gap-4">
               <Field label="Insurance" value={inr(finance.insurance_annual_inr)} />
               <Field label="Permit" value={inr(finance.permit_annual_inr)} />
@@ -1260,12 +1232,6 @@ function FinanceCard({ finance, onEdit }: { finance: VehicleFinance | null; onEd
             </div>
           </div>
 
-          <div className="mt-auto">
-            <Note>
-              These three are divided by twelve and charged to the truck each month alongside the
-              EMI. Saving the form replaces the whole finance record for this truck.
-            </Note>
-          </div>
         </>
       )}
     </Card>
@@ -1356,6 +1322,7 @@ function CorridorsCard({ lanes, onEdit }: { lanes: VehicleLane[]; onEdit: () => 
       <CardHead
         title="Corridors"
         sub="The lanes this truck actually runs"
+        info="Observed from permits and completed trips, not hardcoded"
         actions={
           <button type="button" className={BTN_LINK} onClick={onEdit}>
             <Pencil className="w-3.5 h-3.5" /> Edit corridors
@@ -1400,10 +1367,6 @@ function CorridorsCard({ lanes, onEdit }: { lanes: VehicleLane[]; onEdit: () => 
           </table>
         </div>
       )}
-      <Note>
-        A corridor is observed, not hardcoded — it follows from the permits and the trips the truck
-        has actually run, and you can change it here at any time.
-      </Note>
     </Card>
   )
 }

@@ -106,7 +106,7 @@ export default function MyTripsPage() {
         <Card>
           <Empty
             title="No trips assigned yet"
-            hint="Trips you win on the board, or that your fleet assigns to you, show up here when they're ready to drive. Check Find Work to bid on a load."
+            hint="Won or assigned trips appear here. Check Find Work to bid."
           />
         </Card>
       ) : (

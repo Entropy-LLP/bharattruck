@@ -71,11 +71,26 @@ export const NAV: NavItem[] = [
  * The rail for a given capability set. `null` capabilities means "not resolved yet"
  * — show only the always-on items so the shell renders something honest rather than
  * flashing surfaces the human may not have.
+ *
+ * `hasFleetProfile` is the ONE bootstrap exception (D-32 front door): a fleet owner who
+ * has created their fleet profile sees the fleet console — Trucks, Drivers, the boards —
+ * even before they own a single truck, because that console is the ONLY place they can
+ * add their first truck. Without this a declared fleet owner is stranded: `carry`/`operate`
+ * need assets, but the surface that adds those assets was itself asset-gated. The
+ * fleet-service reads are profile-authorized (de-roled, #109/#117), so these pages return
+ * an empty console, never a 403. Once the first truck lands, the real capabilities take
+ * over and this exception is a no-op.
  */
-export function visibleNav(capabilities: Capability[] | null): NavItem[] {
-  return NAV.filter(item =>
-    item.gate === 'always' || (capabilities?.includes(item.gate) ?? false),
-  )
+export function visibleNav(
+  capabilities: Capability[] | null,
+  opts?: { hasFleetProfile?: boolean },
+): NavItem[] {
+  const bootstrapFleet = opts?.hasFleetProfile ?? false
+  return NAV.filter(item => {
+    if (item.gate === 'always') return true
+    if (bootstrapFleet && (item.gate === 'carry' || item.gate === 'operate')) return true
+    return capabilities?.includes(item.gate) ?? false
+  })
 }
 
 /** Longest-prefix match, so /vehicles/<id> keeps "Trucks" lit. */

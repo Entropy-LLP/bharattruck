@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { PanelLeftClose, PanelLeftOpen, LogOut, Building2, Menu, X } from 'lucide-react'
 import { useAuth } from '@/lib/auth'
+import { InfoDot } from '@/components/stat'
 import { visibleNav, isActive } from '@/lib/nav'
 import { getMyFleet } from '@/lib/api'
 import type { FleetOwner } from '@/lib/types'
@@ -29,7 +30,7 @@ const RAIL_KEY = 'bt_app_rail_collapsed'
  * only the ship surfaces plus Home and Settings.
  */
 export function AppShell({ children }: { children: ReactNode }) {
-  const { token, isReady, logout, user, capabilities } = useAuth()
+  const { token, isReady, logout, user, capabilities, personas } = useAuth()
   const router = useRouter()
   const pathname = usePathname()
   const [collapsed, setCollapsed] = useState(false)
@@ -70,7 +71,10 @@ export function AppShell({ children }: { children: ReactNode }) {
   if (!token) return null
 
   const railWidth = collapsed ? 'w-16' : 'w-60'
-  const navItems = visibleNav(capabilities)
+  // A fleet owner who has created their profile sees the fleet console so they can add
+  // their first truck (D-32 bootstrap) — see visibleNav. Once assets exist, capabilities
+  // gate it on their own.
+  const navItems = visibleNav(capabilities, { hasFleetProfile: !!personas?.fleet_owner_id })
 
   const rail = (
     <nav className="flex flex-col h-full bg-white border-r border-gray-200">
@@ -193,14 +197,19 @@ export function AppShell({ children }: { children: ReactNode }) {
   )
 }
 
-/** Standard page header. Every screen uses this so titles line up across routes. */
+/** Standard page header. Every screen uses this so titles line up across routes.
+ *  `info` renders the one-phrase ⓘ hover hint beside the title — the only place a
+ *  page carries any explanatory text. */
 export function PageHeader({
-  title, subtitle, actions,
-}: { title: string; subtitle?: string; actions?: ReactNode }) {
+  title, subtitle, actions, info,
+}: { title: string; subtitle?: string; actions?: ReactNode; info?: string }) {
   return (
     <div className="flex items-start justify-between gap-4 mb-5">
       <div className="min-w-0">
-        <h1 className="text-xl font-bold text-gray-900 truncate">{title}</h1>
+        <h1 className="text-xl font-bold text-gray-900 flex items-center gap-1.5 min-w-0">
+          <span className="truncate">{title}</span>
+          {info && <InfoDot text={info} />}
+        </h1>
         {subtitle && <p className="text-sm text-gray-500 mt-0.5">{subtitle}</p>}
       </div>
       {actions && <div className="flex items-center gap-2 shrink-0">{actions}</div>}

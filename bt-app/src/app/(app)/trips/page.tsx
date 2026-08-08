@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import {
-  AlertTriangle, ArrowRight, Info, RefreshCw, Truck, UserRound, Users, X,
+  AlertTriangle, ArrowRight, RefreshCw, Truck, UserRound, Users, X,
 } from 'lucide-react'
 import { PageHeader } from '@/components/app-shell'
 import { Card, CardHead, Empty, ErrorNote, Loading, Stat } from '@/components/stat'
@@ -226,6 +226,7 @@ export default function TripsPage() {
     <div className="p-4 lg:p-6 max-w-7xl mx-auto">
       <PageHeader
         title="Trips"
+        info="A won load can't depart until you assign both a truck and a driver."
         subtitle={lists ? `${needs.length} waiting on a crew · ${inTransit.length} on the road` : undefined}
         actions={
           <button
@@ -239,14 +240,6 @@ export default function TripsPage() {
         }
       />
 
-      <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 mb-5 flex gap-2.5">
-        <Info className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
-        <p className="text-sm text-blue-900">
-          A trip cannot depart until <span className="font-semibold">both</span> a driver and a truck are
-          assigned — the booking service blocks accepted → in transit for a fleet-won load until this
-          pairing exists, so an un-crewed row here is a truck standing still.
-        </p>
-      </div>
 
       {loading ? (
         <Loading label="Loading trips" />
@@ -329,14 +322,11 @@ export default function TripsPage() {
           {tab === 'needs' ? (
             <>
               <Card>
-                <CardHead
-                  title="Awaiting crew"
-                  sub="Accepted by the shipper and going nowhere until a driver and a truck are bound to it."
-                />
+                <CardHead title="Awaiting crew" />
                 {needs.length === 0 ? (
                   <Empty
                     title="Nothing waiting on you"
-                    hint="Every accepted booking has a driver and a truck. Won loads land here the moment a shipper accepts your quote."
+                    hint="Every accepted booking already has a truck and driver."
                   />
                 ) : (
                   <BookingTable
@@ -352,7 +342,7 @@ export default function TripsPage() {
                 <Card>
                   <CardHead
                     title="Crewed — clear to depart"
-                    sub="Accepted, paired, and now waiting on the driver to start the trip from their own app."
+                    sub="Waiting on the driver to start"
                   />
                   <BookingTable rows={crewed} vehicleById={vehicleById} driverById={driverById} />
                 </Card>
@@ -384,9 +374,6 @@ export default function TripsPage() {
             </Card>
           )}
 
-          <p className="text-xs text-gray-400 px-1">
-            Each tab reads the {PAGE_LIMIT} most recent bookings in that status, newest first.
-          </p>
         </div>
       )}
 
@@ -686,7 +673,7 @@ function AssignDialog({
             <UserRound className="w-3.5 h-3.5 text-gray-400" />
             {roster.length === 0
               ? 'Nobody has accepted a fleet invitation yet — invite a driver from the Drivers page.'
-              : `${freeDrivers} of ${roster.length} active drivers are free. Pending and suspended drivers cannot be dispatched.`}
+              : `${freeDrivers} of ${roster.length} active drivers are free.`}
           </p>
         </div>
 
@@ -731,8 +718,7 @@ function AssignDialog({
         {err && <ErrorNote message={err} />}
 
         <p className="text-xs text-gray-500">
-          Assigning binds this truck and this driver to the booking and frees them again only when the
-          trip finishes. Mid-trip reassignment is not supported.
+          Binds this truck and driver until the trip finishes; no mid-trip reassignment.
         </p>
 
         <div className="flex justify-end gap-2 pt-1">

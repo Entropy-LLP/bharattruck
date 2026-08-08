@@ -287,13 +287,10 @@ function ShortfallTable({ vehicles }: { vehicles: VehicleAnalytics[] }) {
       {vehicles.length === 0 ? (
         <Empty
           title="No trucks on the books"
-          hint="Add a truck under Trucks to start scoring it against its EMI."
+          hint="Add a truck under Trucks to get started."
         />
       ) : short.length === 0 ? (
-        <Empty
-          title="Every truck cleared its EMI this period"
-          hint="Revenue covered running cost, the fixed-cost share and the EMI on all trucks."
-        />
+        <Empty title="Every truck cleared its EMI this period" />
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full min-w-[820px]">
@@ -392,7 +389,7 @@ function OnTheRoad({
       {bookings.length === 0 ? (
         <Empty
           title="No trips in transit"
-          hint="Trips appear here once a crewed booking leaves the pickup point."
+          hint="Trips appear here once a booking leaves pickup."
         />
       ) : (
         <div>
@@ -453,7 +450,7 @@ function CostMix({ breakdown }: { breakdown: CostBreakdown }) {
       {total <= 0 ? (
         <Empty
           title="No costs recorded this period"
-          hint="Cost lines appear once trips are completed and rolled up."
+          hint="Cost lines appear once trips are completed."
         />
       ) : (
         <div className="p-4">

@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 import { Building2, ArrowLeft } from 'lucide-react'
+import { InfoDot } from '@/components/stat'
 import {
   ApiError, loginWithEmail, registerWithEmail, verifyEmailOtp, resendEmailOtp,
   forgotPassword, googleSignIn, type PrimaryPersona,
@@ -158,7 +159,7 @@ export default function LoginPage() {
           {mode === 'register' && (
             <form onSubmit={doRegister} className="space-y-4">
               <div>
-                <span className={LABEL}>I am a…</span>
+                <span className={LABEL}>I am a… <InfoDot text="Shapes where you start — never limits what you can do." /></span>
                 <div className="grid grid-cols-1 gap-2">
                   {PERSONAS.map(p => (
                     <button key={p.value} type="button" onClick={() => setPersona(p.value)}
@@ -168,7 +169,6 @@ export default function LoginPage() {
                     </button>
                   ))}
                 </div>
-                <p className="mt-1.5 text-xs text-gray-400">This shapes where you start — it never limits what you can do.</p>
               </div>
               <Field id="full_name" label="Full name"><input id="full_name" type="text" required autoComplete="name" value={fullName} onChange={e => setFullName(e.target.value)} className={INPUT} placeholder="Rajesh Kumar" /></Field>
               <Field id="r-email" label="Email"><input id="r-email" type="email" required autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} className={INPUT} placeholder="you@company.in" /></Field>
