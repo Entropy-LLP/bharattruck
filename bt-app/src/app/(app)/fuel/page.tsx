@@ -31,7 +31,7 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import {
-  Calculator, ClipboardList, Fuel, Info, TrendingDown, TrendingUp, TriangleAlert,
+  Calculator, ClipboardList, Fuel, TrendingDown, TrendingUp, TriangleAlert,
 } from 'lucide-react'
 
 import { PageHeader } from '@/components/app-shell'
@@ -173,6 +173,7 @@ export default function FuelPage() {
           />
           <Stat
             label="Variance"
+            info="Actual − modelled diesel spend"
             value={covered ? inrSigned(data.variance_inr) : '—'}
             tone={covered ? varianceTone(data.variance_inr) : 'neutral'}
             sub={covered
@@ -193,21 +194,16 @@ export default function FuelPage() {
           />
         </div>
 
-        {/* 2 — the honest caveat, or the comparison itself. */}
+        {/* 2 — the caveat, or the comparison itself. */}
         <div className="mt-4">
           {covered
             ? <Comparison data={data} coveragePct={coveragePct} />
-            : <NoActuals trips={data.trips} days={days} />}
+            : <NoActuals days={days} />}
         </div>
 
         {/* 3 — per truck, worst gap first. */}
         <div className="mt-4">
           <ByVehicle rows={data.by_vehicle} covered={covered} />
-        </div>
-
-        {/* 4 — where the estimate comes from. */}
-        <div className="mt-4">
-          <HowTheEstimateWorks />
         </div>
       </div>
     </div>
@@ -216,38 +212,13 @@ export default function FuelPage() {
 
 // ── No actuals: the likely live state ─────────────────────────
 
-function NoActuals({ trips, days }: { trips: number; days: PeriodChoice }) {
+function NoActuals({ days }: { days: PeriodChoice }) {
   return (
-    <div className="bg-white rounded-xl border border-orange-200 shadow-sm p-4">
-      <div className="flex items-start gap-3">
-        <span className="shrink-0 mt-0.5 text-orange-500">
-          <TriangleAlert className="w-5 h-5" />
-        </span>
-        <div className="min-w-0">
-          <h2 className="text-sm font-semibold text-gray-900">
-            No fuel entries in the last {days} days — there is nothing to compare
-          </h2>
-          <p className="mt-1.5 text-sm text-gray-600">
-            Actual diesel spend is not metered from the truck. It comes from{' '}
-            <span className="font-medium text-gray-900">fuel entries the driver records against a trip</span>{' '}
-            in the driver app. Until a driver files one,{' '}
-            {trips === 0
-              ? 'and until a trip completes in this window,'
-              : `and ${trips} completed ${trips === 1 ? 'trip has' : 'trips have'} none,`}{' '}
-            the actual column is empty.
-          </p>
-          <p className="mt-2 text-sm text-gray-600">
-            The variance is <span className="font-medium text-gray-900">not zero — it is unmeasured</span>.
-            A ₹0 gap here would say the model was exactly right, which is a much
-            stronger claim than the data supports, so the tiles above are blank
-            instead.
-          </p>
-          <p className="mt-2 text-xs text-gray-500">
-            The modelled estimate still runs on every trip and is already priced
-            into each truck&apos;s running cost under Utilisation — this page only
-            needs the driver-side receipt to check it.
-          </p>
-        </div>
+    <div className="bg-white rounded-xl border border-orange-200 shadow-sm p-4 flex items-start gap-3">
+      <span className="shrink-0 mt-0.5 text-orange-500"><TriangleAlert className="w-5 h-5" /></span>
+      <div className="min-w-0">
+        <h2 className="text-sm font-semibold text-gray-900">No fuel entries in the last {days} days</h2>
+        <p className="mt-1 text-sm text-gray-600">Nothing to compare until a driver files a fuel entry against a completed trip.</p>
       </div>
     </div>
   )
@@ -292,19 +263,10 @@ function Comparison({ data, coveragePct }: { data: FuelComparison; coveragePct: 
           .
         </p>
 
-        <p className="mt-2 text-xs text-gray-500">
-          {over
-            ? 'A gap that persists on the same truck month after month is the pilferage or derate signal — not a one-off.'
-            : 'Spending under the model is not automatically good news: a missing fuel bill looks identical to genuinely better mileage.'}
-        </p>
-
         {coveragePct !== null && (
           <div className="mt-4 pt-4 border-t border-gray-100">
             <Meter pct={coveragePct} label="Trips with a driver fuel entry" />
-            <p className="mt-1.5 text-xs text-gray-500">
-              {data.trips_with_actuals} of {data.trips} completed trips.
-              {coveragePct < 100 && ' The rest are excluded from both columns above.'}
-            </p>
+            <p className="mt-1.5 text-xs text-gray-500">{data.trips_with_actuals} of {data.trips} trips.</p>
           </div>
         )}
       </div>
@@ -358,10 +320,7 @@ function ByVehicle({ rows, covered }: { rows: VehicleRow[]; covered: boolean }) 
       />
 
       {sorted.length === 0 ? (
-        <Empty
-          title={covered ? 'No truck-level gaps to show' : 'No truck has a fuel entry in this window'}
-          hint="A truck enters this table once a driver files a fuel entry against one of its trips. Trucks without one are absent, not shown at ₹0."
-        />
+        <Empty title={covered ? 'No truck-level gaps to show' : 'No truck has a fuel entry in this window'} />
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full min-w-[880px]">
@@ -433,14 +392,8 @@ function ByVehicle({ rows, covered }: { rows: VehicleRow[]; covered: boolean }) 
       )}
 
       <div className="px-4 py-3 border-t border-gray-100 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-500">
-        <span className="inline-flex items-center gap-1.5">
-          <span className="w-2.5 h-2.5 rounded-sm bg-red-500" />
-          Over model — filled more diesel than estimated
-        </span>
-        <span className="inline-flex items-center gap-1.5">
-          <span className="w-2.5 h-2.5 rounded-sm bg-emerald-500" />
-          Under model — or a fuel bill that never got filed
-        </span>
+        <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-red-500" /> Over model</span>
+        <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-emerald-500" /> Under model</span>
       </div>
     </Card>
   )
@@ -463,30 +416,3 @@ function GapBar({ value, max }: { value: number; max: number }) {
   )
 }
 
-// ── Provenance ────────────────────────────────────────────────
-
-function HowTheEstimateWorks() {
-  return (
-    <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4">
-      <div className="flex items-start gap-3">
-        <span className="shrink-0 mt-0.5 text-gray-300">
-          <Info className="w-5 h-5" />
-        </span>
-        <div className="min-w-0">
-          <h2 className="text-sm font-semibold text-gray-900">How the estimate is built</h2>
-          <p className="mt-1 text-sm text-gray-600">
-            The estimate is the corridor distance divided by the kmpl norm for that
-            truck&apos;s model category and emission norm, priced at the fleet&apos;s
-            diesel rate — the norms come from the founder&apos;s CV parc workbook, not
-            a flat per-km constant.
-          </p>
-          <p className="mt-2 text-xs text-gray-500">
-            Actuals are driver-side fuel entries against the trip. A trip only enters
-            this report once it has one, so the estimate is never compared against a
-            missing bill.
-          </p>
-        </div>
-      </div>
-    </div>
-  )
-}

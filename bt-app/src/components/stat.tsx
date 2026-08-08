@@ -1,7 +1,7 @@
 'use client'
 
 import type { ReactNode } from 'react'
-import { ArrowDownRight, ArrowUpRight } from 'lucide-react'
+import { ArrowDownRight, ArrowUpRight, Info } from 'lucide-react'
 
 /**
  * The stat tile. Deliberately plain: white card, 1px border, shadow-sm — the
@@ -9,13 +9,16 @@ import { ArrowDownRight, ArrowUpRight } from 'lucide-react'
  * not shadows).
  */
 export function Stat({
-  label, value, sub, tone = 'neutral', icon,
+  label, value, sub, tone = 'neutral', icon, info,
 }: {
   label: string
   value: ReactNode
   sub?: ReactNode
   tone?: 'neutral' | 'good' | 'bad' | 'warn'
   icon?: ReactNode
+  /** Optional one-phrase hover hint for a term that isn't self-explanatory (e.g. Variance).
+   *  Renders a small ⓘ next to the label — the only place explanatory text belongs. */
+  info?: string
 }) {
   const valueTone =
     tone === 'good' ? 'text-emerald-700'
@@ -26,7 +29,14 @@ export function Stat({
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4">
       <div className="flex items-start justify-between gap-2">
-        <span className="text-xs text-gray-400 uppercase tracking-wide">{label}</span>
+        <span className="text-xs text-gray-400 uppercase tracking-wide inline-flex items-center gap-1">
+          {label}
+          {info && (
+            <span title={info} aria-label={info} className="text-gray-300 cursor-help normal-case">
+              <Info className="w-3 h-3" />
+            </span>
+          )}
+        </span>
         {icon && <span className="text-gray-300 shrink-0">{icon}</span>}
       </div>
       <div className={`mt-1.5 text-2xl font-bold tabular-nums ${valueTone}`}>{value}</div>
