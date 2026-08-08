@@ -16,6 +16,7 @@ import { AlertTriangle, ArrowRight, Inbox } from 'lucide-react'
 
 import { PageHeader } from '@/components/app-shell'
 import { Card, Empty, ErrorNote, Loading } from '@/components/stat'
+import EmergenceCta from '@/components/emergence-cta'
 import { ApiError, getMyFeed } from '@/lib/api'
 import { timeAgo } from '@/lib/format'
 import type { FeedItem, FeedPage, FeedPersonaTag } from '@/lib/types'
@@ -103,6 +104,11 @@ export default function HomePage() {
   return (
     <div className="p-4 lg:p-6 max-w-3xl mx-auto">
       {header}
+
+      {/* Emergence CTA (D-32/33): the one growth-loop nudge the user's assets imply — e.g.
+          an owner-driver who runs trucks but hasn't set up fleet management. Renders nothing
+          when there's no relevant step. */}
+      <EmergenceCta />
 
       {/* Some sources errored and were skipped — the feed still rendered the rest.
           Name that plainly rather than showing a silently-partial list. */}
