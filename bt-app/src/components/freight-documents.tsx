@@ -19,7 +19,7 @@ import { toast } from 'sonner'
 import { FileText } from 'lucide-react'
 
 import { Card, CardHead, ErrorNote, Loading } from '@/components/stat'
-import { ApiError, getBookingDocuments, issueFreightInvoice, issueLorryReceipt } from '@/lib/api'
+import { ApiError, getBookingDocuments, issueFreightInvoice, issueLorryReceipt, recordEwayBill, setEwayBillStatus } from '@/lib/api'
 import { inr, dateTime } from '@/lib/format'
 import type { Booking, BookingDocuments, EwayBillRecord, FreightTerm, IssueInvoiceInput, IssueLorryReceiptInput } from '@/lib/types'
 
@@ -31,6 +31,14 @@ const FREIGHT_TERMS: { value: FreightTerm; label: string }[] = [
 
 function freightTermLabel(t: FreightTerm): string {
   return FREIGHT_TERMS.find((x) => x.value === t)?.label ?? t
+}
+
+// datetime-local inputs give 'YYYY-MM-DDTHH:mm' in LOCAL time; the API wants RFC3339 with a
+// zone. new Date(local) reads it as local and toISOString() emits the correct UTC 'Z' form.
+function toIso(local: string): string | null {
+  if (!local) return null
+  const d = new Date(local)
+  return Number.isNaN(d.getTime()) ? null : d.toISOString()
 }
 
 function ewayBadges(ewb: EwayBillRecord): { statusCls: string; statusLabel: string; expiryCls: string; expiryLabel: string } {
@@ -97,6 +105,16 @@ export default function FreightDocuments({ booking, onChanged }: { booking: Book
   const [taxableValue, setTaxableValue] = useState('')
   const [igst, setIgst] = useState('')
 
+  // E-way bill: record (either party) + file the portal's cancel/reject.
+  const [showEwayForm, setShowEwayForm] = useState(false)
+  const [recordingEway, setRecordingEway] = useState(false)
+  const [ewayErr, setEwayErr] = useState<string | null>(null)
+  const [ewbNumber, setEwbNumber] = useState('')
+  const [ewbGeneratedAt, setEwbGeneratedAt] = useState('')
+  const [ewbValidUpto, setEwbValidUpto] = useState('')
+  const [ewbPortal, setEwbPortal] = useState<'NIC1' | 'NIC2'>('NIC1')
+  const [statusBusy, setStatusBusy] = useState<string | null>(null)
+
   const load = useCallback(() => {
     setLoading(true)
     setError(null)
@@ -123,6 +141,10 @@ export default function FreightDocuments({ booking, onChanged }: { booking: Book
     isShipper &&
     ['pending', 'negotiating', 'accepted', 'in_transit', 'completed'].includes(booking.status) &&
     !!docs && !docs.invoice
+
+  // Either party records the externally-generated e-way bill (D-17). Offered when none
+  // currently stands (a cancelled/rejected one leaves the slot open for its replacement).
+  const canRecordEway = (isShipper || isCarrier) && !!docs && !docs.standing_eway_bill_number
 
   async function handleIssue(e: FormEvent) {
     e.preventDefault()
@@ -185,6 +207,49 @@ export default function FreightDocuments({ booking, onChanged }: { booking: Book
     }
   }
 
+  async function handleRecordEway(e: FormEvent) {
+    e.preventDefault()
+    if (!/^\d{12}$/.test(ewbNumber.trim())) { setEwayErr('The e-way bill number is 12 digits.'); return }
+    const genIso = toIso(ewbGeneratedAt)
+    const validIso = toIso(ewbValidUpto)
+    if (!genIso) { setEwayErr('Enter when the bill was generated.'); return }
+    if (!validIso) { setEwayErr('Enter the valid-upto date and time.'); return }
+    if (new Date(validIso).getTime() <= new Date(genIso).getTime()) { setEwayErr('Valid-upto must be after the generated time.'); return }
+    setRecordingEway(true)
+    setEwayErr(null)
+    try {
+      await recordEwayBill(booking.id, {
+        ewb_number: ewbNumber.trim(),
+        generated_at: genIso,
+        valid_upto: validIso,
+        issuing_portal: ewbPortal,
+      })
+      toast.success('E-way bill recorded')
+      setShowEwayForm(false)
+      setEwbNumber(''); setEwbGeneratedAt(''); setEwbValidUpto('')
+      load()
+      onChanged?.()
+    } catch (err) {
+      setEwayErr(err instanceof ApiError ? err.message : 'Could not record the e-way bill')
+    } finally {
+      setRecordingEway(false)
+    }
+  }
+
+  async function handleSetEwayStatus(ewb: string, status: 'cancelled' | 'rejected') {
+    setStatusBusy(ewb)
+    try {
+      await setEwayBillStatus(booking.id, ewb, { status })
+      toast.success(`E-way bill marked ${status}`)
+      load()
+      onChanged?.()
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : 'Could not update the e-way bill')
+    } finally {
+      setStatusBusy(null)
+    }
+  }
+
   const isEmpty = docs && !docs.lorry_receipt && !docs.invoice && docs.eway_bills.length === 0
 
   return (
@@ -235,6 +300,24 @@ export default function FreightDocuments({ booking, onChanged }: { booking: Book
                   <p className="text-xs text-gray-500 mt-1">
                     {ewb.issuing_portal} · generated {dateTime(ewb.generated_at)}{standing ? ' · currently standing' : ''}
                   </p>
+                  {ewb.status === 'active' && (isShipper || isCarrier) && (
+                    <div className="flex gap-3 mt-2">
+                      <button
+                        onClick={() => handleSetEwayStatus(ewb.ewb_number, 'cancelled')}
+                        disabled={statusBusy === ewb.ewb_number}
+                        className="text-xs font-medium text-gray-600 hover:text-gray-900 disabled:opacity-50"
+                      >
+                        Mark cancelled
+                      </button>
+                      <button
+                        onClick={() => handleSetEwayStatus(ewb.ewb_number, 'rejected')}
+                        disabled={statusBusy === ewb.ewb_number}
+                        className="text-xs font-medium text-gray-600 hover:text-gray-900 disabled:opacity-50"
+                      >
+                        Mark rejected
+                      </button>
+                    </div>
+                  )}
                 </div>
               )
             })}
@@ -333,6 +416,48 @@ export default function FreightDocuments({ booking, onChanged }: { booking: Book
                     <button type="submit" disabled={invoicing} className="flex-1 h-11 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm disabled:opacity-50 flex items-center justify-center gap-2">
                       {invoicing && <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />}
                       {invoicing ? 'Issuing…' : 'Issue invoice'}
+                    </button>
+                  </div>
+                </form>
+              )
+            )}
+
+            {canRecordEway && (
+              !showEwayForm ? (
+                <button onClick={() => setShowEwayForm(true)} className="text-sm font-medium text-gray-600 hover:text-gray-900">
+                  Record an e-way bill
+                </button>
+              ) : (
+                <form onSubmit={handleRecordEway} className="rounded-xl border border-gray-200 p-3 space-y-3">
+                  <div>
+                    <p className="text-sm font-semibold text-gray-900">Record e-way bill</p>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      Enter the bill generated on the NIC portal. We record it — we don&apos;t generate one.
+                    </p>
+                  </div>
+                  <Field label="E-way bill number (12 digits)">
+                    <input inputMode="numeric" value={ewbNumber} onChange={(e) => { setEwbNumber(e.target.value.replace(/\D/g, '').slice(0, 12)); setEwayErr(null) }} placeholder="123456789012" className={inputCls} />
+                  </Field>
+                  <div className="flex gap-2">
+                    <Field label="Generated at" className="flex-1">
+                      <input type="datetime-local" value={ewbGeneratedAt} onChange={(e) => { setEwbGeneratedAt(e.target.value); setEwayErr(null) }} className={inputCls} />
+                    </Field>
+                    <Field label="Valid upto" className="flex-1">
+                      <input type="datetime-local" value={ewbValidUpto} onChange={(e) => { setEwbValidUpto(e.target.value); setEwayErr(null) }} className={inputCls} />
+                    </Field>
+                  </div>
+                  <Field label="Portal">
+                    <select value={ewbPortal} onChange={(e) => setEwbPortal(e.target.value as 'NIC1' | 'NIC2')} className={inputCls}>
+                      <option value="NIC1">NIC1</option>
+                      <option value="NIC2">NIC2</option>
+                    </select>
+                  </Field>
+                  {ewayErr && <p className="text-xs text-red-600">{ewayErr}</p>}
+                  <div className="flex gap-2">
+                    <button type="button" onClick={() => { setShowEwayForm(false); setEwayErr(null) }} disabled={recordingEway} className="flex-1 h-11 rounded-xl border border-gray-200 text-gray-600 hover:bg-gray-50 font-medium text-sm disabled:opacity-50">Cancel</button>
+                    <button type="submit" disabled={recordingEway} className="flex-1 h-11 rounded-xl bg-gray-900 hover:bg-gray-800 text-white font-semibold text-sm disabled:opacity-50 flex items-center justify-center gap-2">
+                      {recordingEway && <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />}
+                      {recordingEway ? 'Recording…' : 'Record'}
                     </button>
                   </div>
                 </form>
