@@ -1207,3 +1207,18 @@ export type IssueLorryReceiptInput = {
   freight_charge_inr: number
   freight_term: FreightTerm
 }
+
+/**
+ * Issue the shipper's tax invoice (POST /bookings/:id/documents/invoice). This is the
+ * SHIPPER's document for the GOODS they sold — billed to the consignee — NOT a freight
+ * bill. Only `billed_to_name` and `taxable_value_inr` are required; the server computes
+ * the consignment value and grand total, and returns the e-way-bill requirement. `igst_inr`
+ * covers interstate movement (BharatTruck's focus); intra-state CGST+SGST is a follow-up.
+ */
+export type IssueInvoiceInput = {
+  billed_to_name: string
+  billed_to_gstin?: string
+  taxable_value_inr: number
+  igst_inr?: number
+  place_of_supply_state?: string
+}
