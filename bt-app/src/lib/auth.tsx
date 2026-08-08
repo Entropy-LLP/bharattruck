@@ -6,7 +6,7 @@ import {
   getRefreshToken, setRefreshToken as saveRefreshToken, clearRefreshToken,
   getMe, refreshAccessToken,
 } from './api'
-import type { AuthUser, Capability, MeResponse } from './types'
+import type { AuthUser, Capability, MeResponse, PersonaSnapshot } from './types'
 
 type AuthContextType = {
   token: string | null
@@ -18,13 +18,26 @@ type AuthContextType = {
    * an empty array is never a real answer because everyone has at least `ship`.
    */
   capabilities: Capability[] | null
+  /**
+   * The full persona snapshot from /auth/me — the asset counts + ids the emergence CTAs
+   * read (owned_vehicle_count, held_driver_count, fleet_owner_id). null until resolved, or
+   * when the server could not resolve personas (the capability fallback still gates the shell).
+   */
+  personas: PersonaSnapshot | null
   isReady: boolean
   login: (accessToken: string, refreshToken: string, user?: AuthUser) => void
   logout: () => void
+  /**
+   * Re-pull /auth/me so a persona change (e.g. the user JUST became a fleet owner via an
+   * emergence CTA) is reflected without a full reload — the counts and capabilities update
+   * and any surface reading them re-evaluates.
+   */
+  refresh: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextType>({
-  token: null, user: null, capabilities: null, isReady: false, login: () => {}, logout: () => {},
+  token: null, user: null, capabilities: null, personas: null, isReady: false,
+  login: () => {}, logout: () => {}, refresh: async () => {},
 })
 
 /**
@@ -56,6 +69,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setTokenState] = useState<string | null>(null)
   const [user, setUser] = useState<AuthUser | null>(null)
   const [capabilities, setCapabilities] = useState<Capability[] | null>(null)
+  const [personas, setPersonas] = useState<PersonaSnapshot | null>(null)
   const [isReady, setIsReady] = useState(false)
 
   // Pull the profile AND capabilities in one /auth/me call. Used both on cold load
@@ -65,6 +79,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const res = await getMe()
     setUser(res.user)
     setCapabilities(capabilitiesFrom(res))
+    setPersonas(res.personas)
   }
 
   useEffect(() => {
@@ -109,11 +124,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   function logout() {
     clearToken(); clearRefreshToken()
-    setTokenState(null); setUser(null); setCapabilities(null)
+    setTokenState(null); setUser(null); setCapabilities(null); setPersonas(null)
   }
 
   return (
-    <AuthContext.Provider value={{ token, user, capabilities, isReady, login, logout }}>
+    <AuthContext.Provider value={{ token, user, capabilities, personas, isReady, login, logout, refresh: loadProfile }}>
       {children}
     </AuthContext.Provider>
   )

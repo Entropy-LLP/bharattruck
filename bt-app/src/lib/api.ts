@@ -211,6 +211,28 @@ export function registerFleet(body: { company_name: string; gstin?: string; pan?
   return request<FleetOwner>('/fleet/owners', { method: 'POST', body: JSON.stringify(body) })
 }
 
+// ── Identity / emergence (D-32 — bt-auth-service, gateway /api/fleet-owners|drivers/me) ──
+//
+// Become a fleet owner / a driver in-app, from ANY persona. Both are idempotent
+// (create-if-absent; a repeat returns the existing row), act only on the CALLER'S own
+// identity (userId from the token, never the body), and are the transitions the emergence
+// CTAs perform. Creating the fleet profile is what makes the de-roled fleet surfaces open
+// to an owner-driver — the JWT role no longer gates them (feat/derole-fleet-service).
+
+/** Create the caller's fleet-owner profile if absent (idempotent). The "set up fleet
+ *  management" emergence transition. Refresh /auth/me after so fleet_owner_id appears. */
+export function becomeFleetOwner() {
+  return request<{ fleet_owner: FleetOwner; created: boolean }>(
+    '/fleet-owners/me', { method: 'POST', body: JSON.stringify({}) })
+}
+
+/** Create the caller's driver profile if absent (idempotent). "Register as a driver" — a
+ *  shipper who adds their first truck, or an invited employee, becomes a driver. */
+export function becomeDriver() {
+  return request<{ driver: { id: string }; created: boolean }>(
+    '/drivers/me', { method: 'POST', body: JSON.stringify({}) })
+}
+
 // ── Drivers ───────────────────────────────────────────────────
 
 export function listFleetDrivers() { return request<FleetDriver[]>('/fleet/drivers') }
