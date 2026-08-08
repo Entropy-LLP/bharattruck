@@ -91,7 +91,7 @@ export default function CompletenessSection() {
 
   return (
     <Card className="mb-5">
-      <CardHead title="Profile completeness" sub="What each of your roles still needs — prompts only, never a block." />
+      <CardHead title="Profile completeness" sub="What each of your roles still needs" />
       <div className="p-4">
         {loading && !report && <Loading label="Loading completeness" />}
         {error && !report && <ErrorNote message={error} />}
@@ -117,12 +117,9 @@ export default function CompletenessSection() {
                     const ackKind = item.acknowledgement_kind
                     return (
                       <li key={`${p.persona}-${item.key}`} className="flex items-start justify-between gap-3 rounded-xl border border-gray-100 bg-gray-50 p-2.5">
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span className="text-sm font-medium text-gray-900">{item.label}</span>
-                            <span className={`text-[11px] px-1.5 py-0.5 rounded-full font-medium ${s.cls}`}>{s.label}</span>
-                          </div>
-                          <p className="text-xs text-gray-500 mt-0.5">{item.note}</p>
+                        <div className="min-w-0 flex items-center gap-2">
+                          <span className="text-sm font-medium text-gray-900">{item.label}</span>
+                          <span className={`text-[11px] px-1.5 py-0.5 rounded-full font-medium ${s.cls}`}>{s.label}</span>
                         </div>
                         {item.status === 'missing' && ackKind && (
                           <AckButton kind={ackKind} busy={ackBusy === ackKind} onAck={acknowledge} />

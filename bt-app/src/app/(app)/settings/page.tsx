@@ -21,7 +21,7 @@
  */
 
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
-import { Building2, Calculator, Info, Wallet } from 'lucide-react'
+import { Building2, Wallet } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { PageHeader } from '@/components/app-shell'
@@ -150,7 +150,6 @@ export default function SettingsPage() {
             <OverheadCard owner={owner} onSaved={setOwner} />
           </div>
           <div className="space-y-5">
-            <CostModelCard />
             <AccountCard owner={owner} />
           </div>
         </div>
@@ -453,24 +452,6 @@ function OverheadCard({ owner, onSaved }: { owner: FleetOwner; onSaved: (o: Flee
             </div>
           </div>
 
-          <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 flex gap-2.5">
-            <Info className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
-            <div className="text-sm text-blue-900 space-y-1.5">
-              <p>
-                This is the money the business spends whether or not a truck moves — office rent,
-                admin and back-office salaries, yard rent, accounting. It cannot honestly be
-                attributed to one truck, so it is never charged to a trip.
-              </p>
-              <p>
-                In the P&amp;L it is spread evenly across the vehicles on your books: each truck
-                carries an equal share of it every month, on top of its own EMI and its insurance,
-                permit and fitness spread over twelve months. Raising this figure makes every truck
-                harder to clear, which is the point — it is real money the fleet has to earn.
-              </p>
-              <p>Do not put fuel, tyres, service or driver wages here; those are modelled per trip.</p>
-            </div>
-          </div>
-
           {err && <ErrorNote message={err} />}
         </div>
 
@@ -483,64 +464,6 @@ function OverheadCard({ owner, onSaved }: { owner: FleetOwner; onSaved: (o: Flee
           </button>
         </div>
       </form>
-    </Card>
-  )
-}
-
-// ── How costs are modelled (read-only) ────────────────────────
-
-const COST_NOTES: { title: string; body: string }[] = [
-  {
-    title: 'The norms behind every trip',
-    body:
-      'Fuel, DEF, engine oil, gear oil, service, tyres and driver wage all come from the CV parc '
-      + 'workbook norms. They are looked up per truck — by its model category, its emission norm '
-      + '(BS4, BS6, BS6 Phase 2) and its age — not from one flat rate applied to the whole fleet.',
-  },
-  {
-    title: 'Service cost bends with age',
-    body:
-      'The service line is that category’s annual figure at the truck’s current age, '
-      + 'pro-rated over the distance run. The curve is not a straight line: it climbs to a peak '
-      + 'around the third year and falls away after. A flat per-km maintenance rate is wrong at '
-      + 'both ends of a truck’s life.',
-  },
-  {
-    title: 'Driver wage is spread, not charged',
-    body:
-      'A driver’s monthly salary is divided across the trucks they actually ran that month, in '
-      + 'proportion to the distance run on each and weighted by vehicle type. A month with no '
-      + 'running allocates nothing to any trip — the salary shows up as unabsorbed fixed cost.',
-  },
-  {
-    title: 'EMI is monthly, never per trip',
-    body:
-      'No trip is ever charged an EMI instalment. The EMI is applied once a month, alongside the '
-      + 'annuals and this truck’s share of your overhead, and the report answers one question: '
-      + 'did the truck clear it, and by how much.',
-  },
-]
-
-function CostModelCard() {
-  return (
-    <Card>
-      <CardHead
-        title="How your costs are modelled"
-        sub="Read-only. This is the model behind every profit figure in the console."
-        actions={<Calculator className="w-4 h-4 text-gray-300" />}
-      />
-      <ul className="divide-y divide-gray-100">
-        {COST_NOTES.map(note => (
-          <li key={note.title} className="px-4 py-3">
-            <p className="text-sm font-medium text-gray-900">{note.title}</p>
-            <p className="text-xs text-gray-500 mt-1 leading-relaxed">{note.body}</p>
-          </li>
-        ))}
-      </ul>
-      <p className="px-4 py-3 text-xs text-gray-500 border-t border-gray-100 leading-relaxed">
-        Tolls and other spend a driver records stay against the trip but sit outside modelled
-        running cost, so one trip stays comparable with the next whether or not receipts came in.
-      </p>
     </Card>
   )
 }
