@@ -19,9 +19,14 @@ COPY . .
 ARG NEXT_PUBLIC_API_URL=https://bt-gateway-itcdoenefa-el.a.run.app
 ARG NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY
 ARG NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID
+# The Google OAuth WEB client id — the same credential bt-auth-service verifies against as
+# GOOGLE_CLIENT_ID. No default: unset hides the "Continue with Google" button rather than
+# rendering a dead one, so the button only appears once CI passes the value.
+ARG NEXT_PUBLIC_GOOGLE_CLIENT_ID
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 ENV NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY=$NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY
 ENV NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID=$NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID
+ENV NEXT_PUBLIC_GOOGLE_CLIENT_ID=$NEXT_PUBLIC_GOOGLE_CLIENT_ID
 # `bt-app/public` is currently EMPTY, and git does not track empty directories — so the CI
 # checkout has no public/ at all and the runner stage's `COPY /app/public` fails the build with
 # `"/app/public": not found`. Create it unconditionally rather than dropping the COPY, so the
