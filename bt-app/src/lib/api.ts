@@ -19,6 +19,7 @@ import type {
   PriceQuote, PriceQuoteInput, PriceQuoteVehicleType,
   TrackData, DriverLocation,
   LocationUpdate, PodContext, RequestOtpResult, VerifyOtpResult, RouteData, PumpsData, FuelData, AlertsData,
+  EvidenceCaptureInput, CaptureResult, AssertReason, AssertResult, DiscrepancyInput, DiscrepancyResult, PodRecord,
   BookingDocuments, LorryReceipt, IssueLorryReceiptInput,
 } from './types'
 
@@ -644,6 +645,58 @@ export function verifyPodOtp(bookingId: string, otp: string) {
   return request<VerifyOtpResult>('/cargo/pod/verify-otp', {
     method: 'POST', body: JSON.stringify({ booking_id: bookingId, otp }),
   })
+}
+
+// ── POD evidence capture (Phase 3b — bt-booking-service, migration 0025) ────────
+//
+// The hardened POD layer on top of the receiver-OTP flow above (§6.3). Evidence is
+// camera-only and hashed ON THE DEVICE — the app computes the SHA-256 over the photo's
+// own bytes and posts METADATA only; the bytes go to WORM storage separately (inert
+// until the bucket is wired), so this call never uploads a re-encoded image. Every one
+// is driver-only + assigned-driver gated server-side, exactly like getPodContext.
+
+/**
+ * Record a camera capture at the drop. `sha256_original` is the on-device hash of the
+ * photo's own bytes, stored verbatim and never recomputed server-side. Idempotent on
+ * (booking, hash): a retry returns the existing row with `created:false`. Capturable
+ * only while the trip is in_transit or delivery_asserted.
+ */
+export function capturePodEvidence(bookingId: string, body: EvidenceCaptureInput) {
+  return request<CaptureResult>(`/bookings/${bookingId}/pod-evidence`, {
+    method: 'POST', body: JSON.stringify(body),
+  })
+}
+
+/**
+ * Assert delivery when the receiver cannot confirm the code (no smartphone, night drop,
+ * warehouse hand-off). Moves the trip in_transit → delivery_asserted with
+ * pod_strength='asserted'; ops closes it later. REQUIRES ≥1 captured photo — the server
+ * 400s an assertion with no evidence, so the caller MUST gate the action on evidence.
+ */
+export function assertDelivery(bookingId: string, assert_reason: AssertReason) {
+  return request<AssertResult>(`/bookings/${bookingId}/assert-delivery`, {
+    method: 'POST', body: JSON.stringify({ assert_reason }),
+  })
+}
+
+/**
+ * Log a structured shortage/damage note. The driver reports ONLY the actual quantity;
+ * the expected side is server-held (§5.7). A captured `evidence_id` is required when the
+ * counts differ or for damage — capture a photo first.
+ */
+export function submitDiscrepancy(bookingId: string, body: DiscrepancyInput) {
+  return request<DiscrepancyResult>(`/bookings/${bookingId}/discrepancy`, {
+    method: 'POST', body: JSON.stringify(body),
+  })
+}
+
+/**
+ * The POD ledger for a trip: proof strength, the evidence list and the discrepancy.
+ * Relation-gated server-side (shipper / carrier / assigned driver / consignee / ops);
+ * degrades to "nothing recorded" on a pre-0025 database rather than failing.
+ */
+export function getPodRecord(bookingId: string) {
+  return request<PodRecord>(`/bookings/${bookingId}/pod`)
 }
 
 /**

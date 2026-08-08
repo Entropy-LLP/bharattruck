@@ -32,6 +32,7 @@ import { Card, CardHead, Empty, ErrorNote, Loading } from '@/components/stat'
 import { MapBoundary } from '@/components/map-guard'
 import LiveTrackMap from '@/components/maps/LiveTrackMap'
 import TripInsights from '@/components/trip-insights'
+import DeliveryEvidence from '@/components/delivery-evidence'
 import FreightDocuments from '@/components/freight-documents'
 import {
   ApiError,
@@ -296,16 +297,7 @@ function TripActionSection({
   }
 
   if (booking.status === 'delivery_asserted') {
-    return (
-      <Card>
-        <div className="p-6 text-center">
-          <p className="text-sm font-semibold text-amber-800">Delivery reported — awaiting confirmation</p>
-          <p className="text-xs text-gray-500 mt-1">
-            You captured delivery but the receiver hasn&apos;t confirmed the code yet. Our team closes the trip once it&apos;s verified.
-          </p>
-        </div>
-      </Card>
-    )
+    return <AssertedTripSection booking={booking} onRefresh={onRefresh} />
   }
 
   if (booking.status === 'completed') {
@@ -837,6 +829,11 @@ function ActiveTripSection({ booking, onRefresh }: { booking: Booking; onRefresh
         </div>
       </Card>
 
+      {/* Delivery evidence + assert/discrepancy (Phase 3b). Complements the OTP flow above:
+          the OTP is the confirmed tier; this captures the photo evidence and owns the
+          no-confirmation (asserted) branch. Its own card — it never blanks the controls above. */}
+      <DeliveryEvidence booking={booking} currentPos={selfPos} onChanged={onRefresh} />
+
       {/* The map always draws pickup + drop from the booking's own coords, so it is never
           blank even with no live fix or route; it degrades to the guard's note on a key
           problem. A booking without coordinates simply renders no map. */}
@@ -866,4 +863,16 @@ function ActiveTripSection({ booking, onRefresh }: { booking: Booking; onRefresh
       </MapBoundary>
     </div>
   )
+}
+
+// ── Delivery asserted: awaiting ops confirmation ──────────────
+//
+// The driver reported the delivery without a receiver-confirmed code (migration 0025).
+// The evidence card carries the awaiting-confirmation banner, shows the captured photos,
+// and still lets the driver add a photo or log a discrepancy if ops asks — the backend
+// keeps evidence capturable in this state. No GPS watch runs here, so the evidence card
+// takes its own one-shot fix at capture (currentPos is null).
+
+function AssertedTripSection({ booking, onRefresh }: { booking: Booking; onRefresh: () => void }) {
+  return <DeliveryEvidence booking={booking} currentPos={null} onChanged={onRefresh} />
 }
