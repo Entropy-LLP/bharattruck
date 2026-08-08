@@ -23,6 +23,7 @@ import type {
   BookingDocuments, LorryReceipt, IssueLorryReceiptInput, FreightInvoice, IssueInvoiceInput,
   EwayBillRecord, RecordEwayBillInput, SetEwayBillStatusInput,
   CompletenessReport,
+  PaymentMode, PaymentStatus, SettleResult,
 } from './types'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
@@ -892,5 +893,28 @@ export function recordEwayBill(bookingId: string, body: RecordEwayBillInput) {
 export function setEwayBillStatus(bookingId: string, ewbNumber: string, body: SetEwayBillStatusInput) {
   return request<EwayBillRecord>(`/bookings/${bookingId}/documents/eway-bill/${ewbNumber}`, {
     method: 'PATCH', body: JSON.stringify(body),
+  })
+}
+
+// ── Payment settlement (bt-payment-service — cash-recorded, D-7) ────────────────
+//
+// The closing step: record a cash/UPI/direct settlement against a COMPLETED trip and
+// flip the booking to paid. Authorized on relation-to-booking (the paying shipper, a
+// to-pay consignee, or ops), never the role string. Escrow is a later upgrade.
+
+/** GET /payments/status/:id — the recorded payment + payout(s), or nulls if unsettled. */
+export function getPaymentStatus(bookingId: string) {
+  return request<PaymentStatus>(`/payments/status/${bookingId}`)
+}
+
+/**
+ * POST /payments/settle — record the settlement; booking runs completed → paid. A
+ * shipper may only settle the AGREED price (the server refuses a self-discount), so the
+ * caller passes `final_price ?? quoted_price`, never a hand-typed figure. Idempotent.
+ */
+export function recordPayment(booking_id: string, amount: number, mode: PaymentMode, reference?: string) {
+  return request<SettleResult>('/payments/settle', {
+    method: 'POST',
+    body: JSON.stringify({ booking_id, amount, mode, ...(reference ? { reference } : {}) }),
   })
 }
