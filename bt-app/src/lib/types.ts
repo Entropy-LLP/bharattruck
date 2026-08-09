@@ -211,6 +211,37 @@ export type FleetDriver = {
   verification_badge?: string | null
 }
 
+// ── Driver-side fleet affiliation (bt-fleet-service /fleet/drivers/{invites/mine,me/affiliation}) ──
+//
+// The driver's OWN view of fleet membership — the consent seam. An owner invites by phone
+// (fleet_drivers row → 'pending'); ONLY the driver may accept, from here. `is_employed` is
+// the signal the app branches on: affiliated AND owning no truck — a salaried fleet driver
+// who sees the job, not the money. An owner-driver whose own truck rides with a fleet is
+// affiliated but NOT employed (they still hold the load board + their payout).
+
+/** One pending invitation, as the driver's inbox returns it (GET /invites/mine). */
+export type FleetInvite = {
+  id: string
+  fleet_owner_id: string
+  company_name: string | null
+  fleet_city: string | null
+  monthly_salary_inr: number | null
+  invited_at: string
+}
+
+/** The driver's commercial standing (GET /me/affiliation) — what product to show them. */
+export type DriverAffiliation = {
+  is_fleet_affiliated: boolean
+  /** Affiliated AND owns no truck → salaried employee: no prices, no load board. */
+  is_employed: boolean
+  owns_vehicles: boolean
+  owned_vehicle_count: number
+  fleet_owner_id: string | null
+  company_name: string | null
+  fleet_city: string | null
+  since: string | null
+}
+
 // ── Analytics (bt-fleet-service/src/lib/analytics.ts) ─────────
 
 export type Period = { from: string; to: string }

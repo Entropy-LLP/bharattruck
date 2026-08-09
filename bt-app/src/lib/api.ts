@@ -11,7 +11,7 @@
 
 import type {
   AuthUser, MeResponse, FeedPage, FleetOwner, Vehicle, VehicleFinance, VehiclePermit, VehicleLane,
-  FleetDriver, FleetSummary, VehicleAnalytics, DriverAnalytics, FuelComparison,
+  FleetDriver, FleetInvite, DriverAffiliation, FleetSummary, VehicleAnalytics, DriverAnalytics, FuelComparison,
   LivePosition, FleetBooking, ModelCategory, Period,
   FleetOverview, Geofence,
   OpenAuction, FleetBid, Quote, NegotiationEntry, QuoteStatus,
@@ -313,6 +313,24 @@ export function updateFleetDriver(id: string, body: { monthly_salary_inr?: numbe
 export function removeFleetDriver(id: string) {
   return request<{ id: string }>(`/fleet/drivers/${id}`, { method: 'DELETE' })
 }
+
+// ── Driver-side fleet invitations (the consent seam — driver-only routes) ──────
+//
+// An owner invites by phone; ONLY the driver may accept, from their own app. These
+// are the routes the owner's console deliberately cannot call.
+
+/** The driver's pending-invitation inbox. */
+export function getMyInvites() { return request<FleetInvite[]>('/fleet/drivers/invites/mine') }
+
+/** Accept or decline a fleet invitation — the driver's decision alone. */
+export function respondToInvite(id: string, action: 'accept' | 'reject') {
+  return request<FleetDriver>(`/fleet/drivers/invites/${id}/respond`, {
+    method: 'POST', body: JSON.stringify({ action }),
+  })
+}
+
+/** The driver's commercial standing — `is_employed` decides which product they see. */
+export function getMyAffiliation() { return request<DriverAffiliation>('/fleet/drivers/me/affiliation') }
 
 // ── Vehicles ──────────────────────────────────────────────────
 

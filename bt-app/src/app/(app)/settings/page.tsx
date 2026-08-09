@@ -27,7 +27,8 @@ import { toast } from 'sonner'
 import { PageHeader } from '@/components/app-shell'
 import { Card, CardHead, Empty, ErrorNote, Loading } from '@/components/stat'
 import CompletenessSection from '@/components/completeness-section'
-import { ApiError, getMyFleet, updateMyFleet } from '@/lib/api'
+import { ApiError, becomeFleetOwner, getMyFleet, updateMyFleet } from '@/lib/api'
+import { useAuth } from '@/lib/auth'
 import { dateTime, inr } from '@/lib/format'
 import type { FleetOwner } from '@/lib/types'
 
@@ -133,12 +134,7 @@ export default function SettingsPage() {
           <button onClick={retry} className={SECONDARY_BTN}>Try again</button>
         </div>
       ) : missing ? (
-        <Card>
-          <Empty
-            title="No fleet profile on this account"
-            hint="Register your fleet first to set up this profile."
-          />
-        </Card>
+        <SetUpFleetCard onDone={retry} />
       ) : !owner ? (
         <Card>
           <Empty title="Nothing to show" hint="The service returned no fleet profile." />
@@ -155,6 +151,48 @@ export default function SettingsPage() {
         </div>
       )}
     </div>
+  )
+}
+
+// ── Become a fleet owner ──────────────────────────────────────
+//
+// The self-serve path into the fleet persona for an account that has no profile yet
+// — a driver who buys a truck, or a shipper standing up a carrier arm. becomeFleetOwner
+// creates the profile; refreshing the auth snapshot opens the fleet console (the rail
+// gates on having a profile now), and the page reloads into the company-details form.
+
+function SetUpFleetCard({ onDone }: { onDone: () => void }) {
+  const { refresh } = useAuth()
+  const [busy, setBusy] = useState(false)
+
+  async function setUp() {
+    setBusy(true)
+    try {
+      await becomeFleetOwner()
+      await refresh()
+      toast.success('Fleet profile created — fill in your company details below')
+      onDone()
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : 'Could not create the fleet profile')
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Card>
+      <div className="text-center py-12 px-4">
+        <p className="text-sm font-medium text-gray-900">Run your own trucks?</p>
+        <p className="text-xs text-gray-500 mt-1 mb-4">Add trucks, invite drivers, and bid on loads.</p>
+        <button
+          onClick={setUp}
+          disabled={busy}
+          className="inline-flex items-center gap-2 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-semibold px-4 py-2.5 active:scale-[0.98] transition-transform"
+        >
+          {busy && <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />}
+          Set up fleet management
+        </button>
+      </div>
+    </Card>
   )
 }
 
