@@ -215,7 +215,15 @@ export function resendEmailOtp(email: string) {
 /** Enumeration-safe: always resolves with the same generic message whether or not the
  *  account exists. Emails a single-use reset link (30-min TTL) that lands on /auth/reset. */
 export function forgotPassword(email: string) {
-  return authRequest<{ message: string }>('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) })
+  // Send our OWN origin as the reset destination so the emailed link follows whatever
+  // domain this app is served from — localhost in dev, the run.app URL today, a custom
+  // domain later — with no hardcoded URL. The server allowlists it (its default + any
+  // PASSWORD_RESET_URL), and falls back to its own default if we can't supply one (SSR).
+  const callback_url = typeof window !== 'undefined' ? `${window.location.origin}/auth/reset` : undefined
+  return authRequest<{ message: string }>('/auth/forgot-password', {
+    method: 'POST',
+    body: JSON.stringify(callback_url ? { email, callback_url } : { email }),
+  })
 }
 
 /** Set a new password from a reset-link token (the `token` query param on /auth/reset). */
