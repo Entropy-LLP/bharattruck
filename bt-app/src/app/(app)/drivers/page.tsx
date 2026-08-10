@@ -43,6 +43,7 @@ type DriverIdentity = {
 type RosterRow = FleetDriver & { driver?: DriverIdentity | null }
 
 const PHONE_RE = /^[6-9]\d{9}$/
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const MAX_SALARY = 10_000_000
 
 const nameOf = (r: RosterRow) => r.driver?.full_name ?? r.full_name ?? null
@@ -503,23 +504,39 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
 // ── Invite ────────────────────────────────────────────────────
 
 function InviteDialog({ onClose, onInvited }: { onClose: () => void; onInvited: (r: RosterRow) => void }) {
+  // The owner invites by whichever channel they have for the driver — phone or email.
+  const [channel, setChannel] = useState<'phone' | 'email'>('phone')
   const [phone, setPhone] = useState('')
+  const [email, setEmail] = useState('')
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
   async function submit(e: FormEvent) {
     e.preventDefault()
-    if (!PHONE_RE.test(phone)) {
-      setErr('Enter a valid 10-digit Indian mobile number (starting 6, 7, 8 or 9).')
-      return
+    setErr(null)
+    // Phones are stored E.164 (+91…), so the lookup needs the country code prefixed.
+    let payload: { driver_phone: string } | { driver_email: string }
+    if (channel === 'phone') {
+      if (!PHONE_RE.test(phone)) {
+        setErr('Enter a valid 10-digit Indian mobile number (starting 6, 7, 8 or 9).')
+        return
+      }
+      payload = { driver_phone: `+91${phone}` }
+    } else {
+      if (!EMAIL_RE.test(email.trim())) {
+        setErr('Enter a valid email address.')
+        return
+      }
+      payload = { driver_email: email.trim() }
     }
     setBusy(true)
-    setErr(null)
     try {
-      onInvited(await inviteDriver(phone))
+      onInvited(await inviteDriver(payload))
     } catch (e2) {
       if (e2 instanceof ApiError && e2.code === 'NOT_FOUND') {
-        setErr('No driver account with that number — ask them to sign up first.')
+        setErr(channel === 'phone'
+          ? 'No driver account with that number — ask them to sign up first.'
+          : 'No driver account with that email — ask them to sign up first.')
       } else if (e2 instanceof ApiError && e2.code === 'CONFLICT') {
         // The shared client maps CONFLICT to a truck-centric message; on invite the
         // real cause is fleet_drivers_one_live_per_driver.
@@ -535,25 +552,60 @@ function InviteDialog({ onClose, onInvited }: { onClose: () => void; onInvited: 
   return (
     <Modal title="Invite a driver" onClose={onClose}>
       <form onSubmit={submit} className="space-y-4">
-        <div>
-          <label htmlFor="invite-phone" className="text-xs text-gray-400 uppercase tracking-wide">
-            Driver mobile number
-          </label>
-          <div className="mt-1.5 flex items-center rounded-xl border border-gray-200 focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-100 overflow-hidden">
-            <span className="pl-3 pr-2 text-sm text-gray-400 select-none">+91</span>
+        {/* Channel: phone or email — the owner's choice. */}
+        <div className="inline-flex rounded-xl border border-gray-200 bg-gray-50 p-0.5">
+          {(['phone', 'email'] as const).map((c) => (
+            <button
+              key={c}
+              type="button"
+              onClick={() => { setChannel(c); setErr(null) }}
+              className={`rounded-[10px] px-4 py-1.5 text-sm font-medium capitalize transition-colors ${
+                channel === c ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              {c}
+            </button>
+          ))}
+        </div>
+
+        {channel === 'phone' ? (
+          <div>
+            <label htmlFor="invite-phone" className="text-xs text-gray-400 uppercase tracking-wide">
+              Driver mobile number
+            </label>
+            <div className="mt-1.5 flex items-center rounded-xl border border-gray-200 focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-100 overflow-hidden">
+              <span className="pl-3 pr-2 text-sm text-gray-400 select-none">+91</span>
+              <input
+                id="invite-phone"
+                type="tel"
+                inputMode="numeric"
+                autoFocus
+                autoComplete="off"
+                placeholder="9876543210"
+                value={phone}
+                onChange={e => { setPhone(e.target.value.replace(/\D/g, '').slice(0, 10)); setErr(null) }}
+                className="flex-1 py-2.5 pr-3 text-sm tabular-nums outline-none"
+              />
+            </div>
+          </div>
+        ) : (
+          <div>
+            <label htmlFor="invite-email" className="text-xs text-gray-400 uppercase tracking-wide">
+              Driver email
+            </label>
             <input
-              id="invite-phone"
-              type="tel"
-              inputMode="numeric"
+              id="invite-email"
+              type="email"
               autoFocus
               autoComplete="off"
-              placeholder="9876543210"
-              value={phone}
-              onChange={e => setPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
-              className="flex-1 py-2.5 pr-3 text-sm tabular-nums outline-none"
+              placeholder="driver@example.com"
+              value={email}
+              onChange={e => { setEmail(e.target.value); setErr(null) }}
+              className="mt-1.5 w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
             />
           </div>
-        </div>
+        )}
+
         {err && <ErrorNote message={err} />}
         <div className="flex justify-end gap-2 pt-1">
           <button

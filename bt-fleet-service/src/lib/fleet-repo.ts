@@ -133,47 +133,55 @@ export type DriverIdentity = {
   total_trips: number | null
 }
 
-// findDriverByPhone — invites name an EXISTING driver account (locked model: we never
-// create driver identities on the owner's behalf), so this resolves phone -> users.id ->
-// drivers.id. D-27 DE-ROLE: a target IS a driver iff they hold a drivers row (completed
-// driver onboarding), NOT iff their JWT `role` string is 'driver' — a shipper-turned-driver
-// must be invitable. The drivers-row lookup below is the authoritative test and 404s a
-// phone that belongs to an account with no driver profile.
-export async function findDriverByPhone(phone: string): Promise<DriverIdentity> {
-  const supabase = getSupabase()
-  const { data: user, error: userErr } = await supabase
-    .from('users')
-    .select('id, full_name, phone_number, kyc_status')
-    .eq('phone_number', phone)
-    .maybeSingle()
-  if (userErr) throw new Error(`users select failed: ${userErr.message}`)
-  if (!user) {
-    throw new FleetError(
-      'No BharatTruck account exists for that phone number — the driver must sign up first',
-      'NOT_FOUND',
-      404,
-    )
-  }
+// findDriverByPhone / findDriverByEmail — an owner invites an EXISTING driver by ONE of two
+// channels they pick (D-…, dual-channel invites). Both resolve <channel> -> users row ->
+// drivers.id; a target IS a driver iff they hold a drivers row (D-27 de-role), never by a
+// role string. Only the way the user is found differs, so it is one shared projection.
 
-  const { data: driver, error: driverErr } = await supabase
+type UserLookupRow = { id: string; full_name: string | null; phone_number: string | null; kyc_status: string | null }
+const USER_LOOKUP_COLS = 'id, full_name, phone_number, kyc_status'
+
+async function driverIdentityForUser(user: UserLookupRow | null, noAccountMsg: string): Promise<DriverIdentity> {
+  if (!user) throw new FleetError(noAccountMsg, 'NOT_FOUND', 404)
+  const { data: driver, error: driverErr } = await getSupabase()
     .from('drivers')
     .select('id, average_rating, total_trips')
-    .eq('user_id', (user as { id: string }).id)
+    .eq('user_id', user.id)
     .maybeSingle()
   if (driverErr) throw new Error(`drivers select failed: ${driverErr.message}`)
   if (!driver) throw new FleetError('That driver has not completed driver onboarding yet', 'NOT_FOUND', 404)
-
-  const u = user as { id: string; full_name: string | null; phone_number: string | null; kyc_status: string | null }
   const d = driver as { id: string; average_rating: number | null; total_trips: number | null }
   return {
     driver_id: d.id,
-    user_id: u.id,
-    full_name: u.full_name,
-    phone_number: u.phone_number,
-    kyc_status: u.kyc_status,
+    user_id: user.id,
+    full_name: user.full_name,
+    phone_number: user.phone_number,
+    kyc_status: user.kyc_status,
     average_rating: d.average_rating,
     total_trips: d.total_trips,
   }
+}
+
+export async function findDriverByPhone(phone: string): Promise<DriverIdentity> {
+  const { data, error } = await getSupabase()
+    .from('users').select(USER_LOOKUP_COLS).eq('phone_number', phone).maybeSingle()
+  if (error) throw new Error(`users select failed: ${error.message}`)
+  return driverIdentityForUser(
+    data as UserLookupRow | null,
+    'No BharatTruck account exists for that phone number — the driver must sign up first',
+  )
+}
+
+export async function findDriverByEmail(email: string): Promise<DriverIdentity> {
+  // ilike with no wildcards is a case-insensitive exact match — an owner typing the email
+  // in any case still finds the driver whose stored address may differ in case.
+  const { data, error } = await getSupabase()
+    .from('users').select(USER_LOOKUP_COLS).ilike('email', email.trim()).maybeSingle()
+  if (error) throw new Error(`users select failed: ${error.message}`)
+  return driverIdentityForUser(
+    data as UserLookupRow | null,
+    'No BharatTruck account exists for that email — the driver must sign up first',
+  )
 }
 
 // hydrateDriverIdentities — batch drivers.id -> name/phone/KYC in two bounded
