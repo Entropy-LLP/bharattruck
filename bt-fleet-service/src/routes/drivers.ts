@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import {
   findDriverByPhone,
+  findDriverByEmail,
   getAffiliationForDriver,
   countVehiclesOwnedByDriver,
   getFleetDriverById,
@@ -29,8 +30,13 @@ import { emitNotification } from '../lib/notify-emit.js'
 // requireFleetOwner, so the roster is closed to drivers.
 // -----------------------------------------------------------
 
+// An owner invites by EITHER channel they choose — phone or email — so exactly one is
+// required. Both optional at the field level; the refine enforces "at least one".
 const InviteBody = z.object({
-  driver_phone: z.string().trim().min(8, 'driver_phone is required').max(20),
+  driver_phone: z.string().trim().min(8).max(20).optional(),
+  driver_email: z.string().trim().email('driver_email must be a valid email').optional(),
+}).refine((b) => Boolean(b.driver_phone) || Boolean(b.driver_email), {
+  message: 'driver_phone or driver_email is required',
 })
 
 const UpdateDriverBody = z.object({
@@ -60,7 +66,9 @@ export async function driverRoutes(app: FastifyInstance) {
     const owner = await requireFleetOwner(req.user)
     const body = parseOrThrow(InviteBody, req.body)
 
-    const driver = await findDriverByPhone(body.driver_phone)
+    const driver = body.driver_email
+      ? await findDriverByEmail(body.driver_email)
+      : await findDriverByPhone(body.driver_phone!)
     const affiliation = await inviteDriver(owner.id, driver.driver_id, req.user.userId)
 
     // The invite is only actionable if the driver hears about it — until now it was

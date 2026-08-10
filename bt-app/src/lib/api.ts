@@ -299,10 +299,13 @@ export function acknowledgePersona(kind: string) {
 
 export function listFleetDrivers() { return request<FleetDriver[]>('/fleet/drivers') }
 
-/** Invites an EXISTING driver account. We never create driver identities. */
-export function inviteDriver(driver_phone: string) {
+/**
+ * Invites an EXISTING driver account by the channel the owner chose — phone OR email.
+ * We never create driver identities; the driver must already have signed up.
+ */
+export function inviteDriver(channel: { driver_phone: string } | { driver_email: string }) {
   return request<FleetDriver>('/fleet/drivers/invite', {
-    method: 'POST', body: JSON.stringify({ driver_phone }),
+    method: 'POST', body: JSON.stringify(channel),
   })
 }
 
@@ -404,6 +407,15 @@ export function listFleetBookings(status?: string) {
 export function assignToBooking(bookingId: string, driver_id: string, vehicle_id: string) {
   return request<{ id: string; booking_id: string; driver_id: string; vehicle_id: string }>(
     `/fleet/bookings/${bookingId}/assign`, { method: 'POST', body: JSON.stringify({ driver_id, vehicle_id }) })
+}
+
+/**
+ * Direct-attach (D-10): the shipper moves their OWN load with their OWN fleet, skipping the
+ * auction. No body — the carrier is the caller's own resolved fleet. Moves pending -> accepted;
+ * a fleet booking then still needs a truck+driver paired via assignToBooking before it can start.
+ */
+export function directAttachBooking(bookingId: string) {
+  return request<Booking>(`/bookings/${bookingId}/direct-attach`, { method: 'PATCH' })
 }
 
 // ── Live map ──────────────────────────────────────────────────

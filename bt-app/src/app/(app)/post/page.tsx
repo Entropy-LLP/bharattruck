@@ -28,12 +28,16 @@ import { PageHeader } from '@/components/app-shell'
 import { Card, CardHead, ErrorNote } from '@/components/stat'
 import {
   ApiError,
+  assignToBooking,
   createBooking,
+  directAttachBooking,
   getPriceQuote,
   priceQuoteBasis,
   priceQuoteHeading,
   quoteKindOf,
 } from '@/lib/api'
+import { useAuth } from '@/lib/auth'
+import FleetPairPicker, { type FleetPair } from '@/components/fleet-pair-picker'
 import { inr } from '@/lib/format'
 import type {
   BookingType,
@@ -78,6 +82,12 @@ function toTenDigit(raw: string): string {
 
 export default function PostLoadPage() {
   const router = useRouter()
+  // A poster who holds a fleet profile is a DISTRIBUTOR — they can carry their own load with
+  // their own fleet (D-10). Only they see the truck+driver picker below; everyone else keeps
+  // the solo direct-attach by driver id.
+  const { personas } = useAuth()
+  const isDistributor = !!personas?.fleet_owner_id
+
   const [submitting, setSubmitting] = useState(false)
   const [quoting, setQuoting] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
@@ -108,6 +118,8 @@ export default function PostLoadPage() {
   const [pickupTimeSlot, setPickupTimeSlot] = useState('')
   const [specialInstructions, setSpecialInstructions] = useState('')
   const [targetDriverId, setTargetDriverId] = useState('')
+  // Distributor direct-attach: the truck + driver from the poster's own fleet.
+  const [fleetPair, setFleetPair] = useState<FleetPair>({ vehicleId: null, driverId: null })
   const [auctionDeadline, setAuctionDeadline] = useState('')
 
   const [quote, setQuote] = useState<PriceQuote | null>(null)
@@ -191,9 +203,17 @@ export default function PostLoadPage() {
       setFormError('Enter a valid 10-digit Indian mobile number for the consignee.')
       return
     }
-    if (bookingType === 'direct' && !targetDriverId.trim()) {
-      setFormError('A direct booking needs the target driver’s ID.')
-      return
+    const distributorDirect = isDistributor && bookingType === 'direct'
+    if (bookingType === 'direct') {
+      if (distributorDirect) {
+        if (!fleetPair.vehicleId || !fleetPair.driverId) {
+          setFormError('Pick both a truck and a driver from your fleet.')
+          return
+        }
+      } else if (!targetDriverId.trim()) {
+        setFormError('A direct booking needs the target driver’s ID.')
+        return
+      }
     }
 
     const consignee: ConsigneeInput = { name, phone }
@@ -217,13 +237,28 @@ export default function PostLoadPage() {
         consignee,
         receiver_email: receiverEmail.trim() || undefined,
         booking_type: bookingType,
-        target_driver_id: bookingType === 'direct' ? targetDriverId.trim() || undefined : undefined,
+        // A distributor attaches to their OWN fleet below (never a solo target driver).
+        target_driver_id: (!distributorDirect && bookingType === 'direct') ? targetDriverId.trim() || undefined : undefined,
         auction_deadline:
           bookingType === 'auction' && auctionDeadline
             ? new Date(auctionDeadline).toISOString()
             : undefined,
       })
-      toast.success('Load posted')
+
+      if (distributorDirect) {
+        // Create → attach to my fleet → pair my chosen truck + driver. If the pairing step
+        // trips (e.g. the truck is already on a trip), the load is still attached to the
+        // fleet and shows in Trips → Needs assignment, so nothing is lost.
+        await directAttachBooking(booking.id)
+        try {
+          await assignToBooking(booking.id, fleetPair.driverId!, fleetPair.vehicleId!)
+          toast.success('Load posted and assigned to your truck & driver')
+        } catch {
+          toast.success('Load posted and attached to your fleet — finish assigning it in Trips')
+        }
+      } else {
+        toast.success('Load posted')
+      }
       router.push(`/loads/${booking.id}`)
     } catch (err: unknown) {
       // An expired or already-used price-lock: drop it and make the shipper re-quote.
@@ -497,20 +532,27 @@ export default function PostLoadPage() {
                 active={bookingType === 'direct'}
                 onClick={() => changeBookingType('direct')}
                 title="Direct"
-                hint="Sent to one specific driver."
+                hint={isDistributor ? 'Carry it with your own fleet.' : 'Sent to one specific driver.'}
               />
             </div>
 
             {bookingType === 'direct' && (
-              <Field id="target_driver_id" label="Target driver ID">
-                <input
-                  id="target_driver_id"
-                  value={targetDriverId}
-                  onChange={(e) => setTargetDriverId(e.target.value)}
-                  placeholder="UUID of the driver"
-                  className={`${INPUT} font-mono`}
-                />
-              </Field>
+              isDistributor ? (
+                <div>
+                  <label className="block text-xs text-gray-400 uppercase tracking-wide mb-2">Carry it with your fleet</label>
+                  <FleetPairPicker value={fleetPair} onChange={setFleetPair} />
+                </div>
+              ) : (
+                <Field id="target_driver_id" label="Target driver ID">
+                  <input
+                    id="target_driver_id"
+                    value={targetDriverId}
+                    onChange={(e) => setTargetDriverId(e.target.value)}
+                    placeholder="UUID of the driver"
+                    className={`${INPUT} font-mono`}
+                  />
+                </Field>
+              )
             )}
 
             {bookingType === 'auction' && (
