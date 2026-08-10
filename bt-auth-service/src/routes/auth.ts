@@ -200,15 +200,27 @@ async function sendPasswordResetEmail(email: string, link: string) {
 const RESET_PATH = '/auth/reset'
 
 /**
+ * The deployed unified-app origin the reset page lives on. It is the DEFAULT reset
+ * destination and the seed of the callback allowlist, so it must be a real deployed
+ * origin — never localhost, which is what made a live reset link point at a dev port.
+ *
+ * The link is otherwise DYNAMIC: the front-end sends its own origin as `callback_url`
+ * (it knows what domain it is served from), so a reset link automatically follows the
+ * domain the app actually runs on. To move to a custom domain, set PASSWORD_RESET_URL to
+ * it — that both changes this default AND allowlists the origin, so the app served from
+ * the new domain wires up on its own with no second list to edit. Kept in code (like the
+ * Dockerfile's NEXT_PUBLIC_API_URL default) so a fresh deploy is never broken by a missing
+ * env; APP_RESET_URL overrides it without a per-role var.
+ */
+const DEFAULT_APP_RESET_URL = process.env.APP_RESET_URL ?? `https://bt-app-itcdoenefa-el.a.run.app${RESET_PATH}`
+
+/**
  * Where a password-reset link should land.
  *
  * PASSWORD_RESET_URL is the single production destination: one app, one reset page,
- * so every reset link goes to the same origin regardless of the account's role.
- *
- * When it is unset we keep the per-role behaviour that shipped before, so an
- * environment that has not set the new var yet is not broken by this change — an
- * explicit *_RESET_PASSWORD_URL for the account's role still wins, and otherwise a
- * visibly-broken dev localhost link (rather than a silently-wrong prod one) is used.
+ * so every reset link goes to the same origin regardless of the account's role. When it
+ * is unset an explicit *_RESET_PASSWORD_URL for the account's role still wins; otherwise
+ * the deployed-app default above is used (a real origin, so the link works out of the box).
  */
 function resetLinkBase(role: string | undefined): string {
   if (process.env.PASSWORD_RESET_URL) return process.env.PASSWORD_RESET_URL
@@ -216,7 +228,7 @@ function resetLinkBase(role: string | undefined): string {
   const explicit = role === 'driver'      ? process.env.DRIVER_RESET_PASSWORD_URL
                  : role === 'fleet_owner' ? process.env.FLEET_RESET_PASSWORD_URL
                  :                          process.env.SHIPPER_RESET_PASSWORD_URL
-  return explicit ?? `http://localhost:3000${RESET_PATH}`
+  return explicit ?? DEFAULT_APP_RESET_URL
 }
 
 /** Every role whose reset destination is configurable in the pre-config fallback. Feeds a set. */
