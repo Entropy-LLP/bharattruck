@@ -524,12 +524,24 @@ export async function issueFreightInvoice(
   // are added here and not inside consignmentValueInr.
   const grandTotal = roundInr(consignmentValue + (body.tcs_inr ?? 0) + (body.round_off_inr ?? 0))
 
-  // Prefill supplier GSTIN from shipper profile (FB-09) when the caller omits it.
+  // Prefill supplier GSTIN from the shipper profile (FB-09) when the caller omits it.
+  // Falls back to fleet_owners.gstin — the FB-04 post-gate accepts EITHER users.gstin OR
+  // fleet_owners.gstin, so a fleet-owner shipper who has only the latter must still get a
+  // supplier GSTIN here, or the pickup e-way gate can't derive fromStateCode and fails closed.
   const { data: supplier } = await supabase
     .from('users')
     .select('full_name, gstin')
     .eq('id', actor.userId)
     .maybeSingle()
+  let supplierGstin = (supplier?.gstin as string | null) ?? null
+  if (!supplierGstin) {
+    const { data: fleet } = await supabase
+      .from('fleet_owners')
+      .select('gstin')
+      .eq('user_id', actor.userId)
+      .maybeSingle()
+    supplierGstin = (fleet?.gstin as string | null) ?? null
+  }
 
   const lr = await docs.getLorryReceipt(bookingId)
   const ewbs = await docs.listEwayBills(bookingId)
@@ -540,7 +552,7 @@ export async function issueFreightInvoice(
     prefix: body.series_prefix ?? null,
     payload: {
       supplier_legal_name: body.supplier_legal_name ?? supplier?.full_name ?? 'Supplier',
-      supplier_gstin:      body.supplier_gstin ?? (supplier?.gstin as string | null) ?? null,
+      supplier_gstin:      body.supplier_gstin ?? supplierGstin,
       supplier_address:    body.supplier_address ?? null,
 
       billed_to_name:        body.billed_to_name,
@@ -705,6 +717,11 @@ export async function assertPickupDocumentsReady(bookingId: string): Promise<voi
   const missing: string[] = []
   if (!standing) missing.push('e-way bill record')
   else if (!standing.document_uri) missing.push('e-way bill upload (document_uri)')
+  // standingEwayBill deliberately ignores expiry (it answers "which bill stands"), so the
+  // pickup gate must check it here — a truck may not start on an EXPIRED e-way bill (s.129).
+  else if (ewayBillExpiry(standing.valid_upto).state === 'expired') {
+    missing.push('a valid (unexpired) e-way bill — the recorded one has expired')
+  }
 
   if (missing.length === 0) return
 
