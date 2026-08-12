@@ -1,36 +1,40 @@
 import type { Booking, BookingType, Quote, NegotiationEntry } from './types'
+import { storageKey } from './session-keys'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
-const TOKEN_KEY = 'bt_token'
-const REFRESH_KEY = 'bt_refresh_token'
+// FB-10: pass ?profile=<slug> to partition tokens for multi-account QA.
+const TOKEN_KEY_BASE = 'bt_token'
+const REFRESH_KEY_BASE = 'bt_refresh_token'
+const TOKEN_KEY = () => storageKey(TOKEN_KEY_BASE)
+const REFRESH_KEY = () => storageKey(REFRESH_KEY_BASE)
 
 // ── Token storage ─────────────────────────────────────────────
 
 export function getToken(): string | null {
   if (typeof window === 'undefined') return null
-  const raw = localStorage.getItem(TOKEN_KEY)
+  const raw = localStorage.getItem(TOKEN_KEY())
   return raw ? raw.trim().replace(/[\r\n]+/g, '') : null
 }
 
 export function setToken(token: string) {
-  localStorage.setItem(TOKEN_KEY, token)
+  localStorage.setItem(TOKEN_KEY(), token)
 }
 
 export function clearToken() {
-  localStorage.removeItem(TOKEN_KEY)
+  localStorage.removeItem(TOKEN_KEY())
 }
 
 export function getRefreshToken(): string | null {
   if (typeof window === 'undefined') return null
-  return localStorage.getItem(REFRESH_KEY)
+  return localStorage.getItem(REFRESH_KEY())
 }
 
 export function setRefreshToken(token: string) {
-  localStorage.setItem(REFRESH_KEY, token)
+  localStorage.setItem(REFRESH_KEY(), token)
 }
 
 export function clearRefreshToken() {
-  localStorage.removeItem(REFRESH_KEY)
+  localStorage.removeItem(REFRESH_KEY())
 }
 
 // ── Error handling ────────────────────────────────────────────
@@ -595,6 +599,8 @@ export interface AuthUser {
   full_name: string | null
   avatar_url: string | null
   role: string
+  /** users.gstin — required before posting a load (FB-04). */
+  gstin?: string | null
   email_verified?: boolean
   google_sub?: string | null
   created_at?: string
@@ -667,6 +673,14 @@ export function refreshAccessToken(refreshToken: string) {
 
 export function getMe() {
   return authRequest<{ user: AuthUser }>('/auth/me')
+}
+
+/** FB-04: save shipper GSTIN on users.gstin. */
+export function updateMyGstin(gstin: string | null) {
+  return authRequest<{ user: AuthUser }>('/auth/me/gstin', {
+    method: 'PATCH',
+    body: JSON.stringify({ gstin }),
+  })
 }
 
 export function registerProfile(body: { full_name: string; role: string; email?: string }) {

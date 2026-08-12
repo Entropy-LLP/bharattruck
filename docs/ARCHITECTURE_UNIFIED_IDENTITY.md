@@ -498,3 +498,21 @@ None of these is the frontend itself; all are its preconditions. Sequencing them
 | — | **Then** Phase 1 of `UNIFIED_APP_PLAN.md`: fork `fleet/` → `bt-app`, capability-gated shell, deploy | the app itself |
 
 Steps 1–5 are backend and independent of the UI signal. Phase 1 is the first frontend step and waits on the founder's go.
+
+---
+
+## Reversal notes (append-only)
+
+### 2026-08-12 — FB-04: GST hard-gates posting a load (overrides D-5 / D-31 for this action)
+
+**Product override.** D-5 (KYC does not gate use at MVP) and D-31 (KYC prompts, never gates) still
+stand for verification badges, persona completeness rings, and capability *visibility*. They no
+longer apply to **`POST /bookings`**: a shipper must have a GSTIN present on `users.gstin` **or**
+their `fleet_owners.gstin` before a load can be posted. A D-31 `gst_under_threshold`
+acknowledgement alone does **not** satisfy the gate.
+
+Rationale: Aditya product call during MVP feedback — interstate freight without a GSTIN on the
+posting party is not operable for invoice / e-way bill issuance. Settings path: `PATCH /auth/me/gstin`
+(and existing fleet owner settings for `fleet_owners.gstin`).
+
+Do not silently edit D-5/D-31 rows above; this dated note is the reversal.

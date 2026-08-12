@@ -169,9 +169,10 @@ async function main() {
   r = await get(`/location/driver/${DA}`, FB_USER, 'fleet_owner')
   check("fleet B cannot read fleet A's driver", r.statusCode === 403, `(got ${r.statusCode})`)
 
-  // The fail-open shape itself: a role nobody wrote a branch for must be refused, not served.
+  // FB-11: JWT role is not an authz axis. SHIPPER_A owns the live trip with DA —
+  // a non-canonical role claim must not strip that relation (strangers stay 403 above/below).
   r = await get(`/location/driver/${DA}`, SHIPPER_A, 'receiver')
-  check('an unmatched role gets 403 (not the fall-through)', r.statusCode === 403, `(got ${r.statusCode})`)
+  check('shipper relation still reads with a non-canonical JWT role', r.statusCode === 200, `(got ${r.statusCode})`)
 
   r = await get(`/location/driver/${DA}`, UX, 'driver')
   check("a driver cannot read another driver's position", r.statusCode === 403, `(got ${r.statusCode})`)
@@ -205,7 +206,7 @@ async function main() {
   r = await get(`/location/booking/${BA}`, FB_USER, 'fleet_owner')
   check("fleet B cannot read fleet A's booking", r.statusCode === 403, `(got ${r.statusCode})`)
   r = await get(`/location/booking/${BA}`, SHIPPER_A, 'receiver')
-  check('an unmatched role gets 403 on the booking route too', r.statusCode === 403, `(got ${r.statusCode})`)
+  check('shipper relation still reads booking with a non-canonical JWT role', r.statusCode === 200, `(got ${r.statusCode})`)
   r = await get(`/location/booking/${BA}`, SHIPPER_X, 'shipper')
   check("a shipper cannot read another shipper's trip", r.statusCode === 403, `(got ${r.statusCode})`)
   r = await get(`/location/booking/${BA}`, UX, 'driver')

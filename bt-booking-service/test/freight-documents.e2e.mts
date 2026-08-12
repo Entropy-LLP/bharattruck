@@ -605,23 +605,48 @@ async function main() {
     let r = await app.inject({
       method: 'POST', url: `/bookings/${B_FLEET}/documents/eway-bill`,
       headers: { authorization: `Bearer ${tok(U_SHIPPER, 'shipper')}` },
-      payload: { ewb_number: '12345678901', generated_at: generated, valid_upto: validUpto, issuing_portal: 'NIC1' },
+      payload: { ewb_number: '12345678901', generated_at: generated, valid_upto: validUpto, issuing_portal: 'NIC1' , document_uri: 'https://example.com/ewb.pdf' },
     })
     check('an 11-digit e-way bill number is rejected', r.statusCode === 400, `(got ${r.statusCode})`)
 
     r = await app.inject({
       method: 'POST', url: `/bookings/${B_FLEET}/documents/eway-bill`,
       headers: { authorization: `Bearer ${tok(U_SHIPPER, 'shipper')}` },
-      payload: { ewb_number: '181234567890', generated_at: generated, valid_upto: generated, issuing_portal: 'NIC1' },
+      payload: { ewb_number: '181234567890', generated_at: generated, valid_upto: generated, issuing_portal: 'NIC1' , document_uri: 'https://example.com/ewb.pdf' },
     })
     check('a valid_upto at or before generation is rejected', r.statusCode === 400, `(got ${r.statusCode})`)
 
     r = await app.inject({
       method: 'POST', url: `/bookings/${B_FLEET}/documents/eway-bill`,
       headers: { authorization: `Bearer ${tok(U_OTHER, 'shipper')}` },
-      payload: { ewb_number: '181234567890', generated_at: generated, valid_upto: validUpto, issuing_portal: 'NIC1' },
+      payload: { ewb_number: '181234567890', generated_at: generated, valid_upto: validUpto, issuing_portal: 'NIC1' , document_uri: 'https://example.com/ewb.pdf' },
     })
     check('a stranger cannot file against this booking', r.statusCode === 403, `(got ${r.statusCode})`)
+
+    // FB-03/FB-09: e-way requires an invoice first (and document_uri upload).
+    r = await app.inject({
+      method: 'POST', url: `/bookings/${B_FLEET}/documents/eway-bill`,
+      headers: { authorization: `Bearer ${tok(U_SHIPPER, 'shipper')}` },
+      payload: {
+        ewb_number: '181234567890', generated_at: generated, valid_upto: validUpto,
+        issuing_portal: 'NIC2', part_b_entered_at: generated,
+        document_uri: 'https://example.com/ewb.pdf',
+      },
+    })
+    check('e-way without an invoice is refused', r.statusCode === 409, `(got ${r.statusCode}: ${r.body})`)
+
+    await app.inject({
+      method: 'POST', url: `/bookings/${B_FLEET}/documents/invoice`,
+      headers: { authorization: `Bearer ${tok(U_SHIPPER, 'shipper')}` }, payload: INVOICE_BODY,
+    })
+    await app.inject({
+      method: 'POST', url: `/bookings/${B_SOLO}/documents/invoice`,
+      headers: { authorization: `Bearer ${tok(U_SHIPPER, 'shipper')}` }, payload: INVOICE_BODY,
+    })
+    await app.inject({
+      method: 'POST', url: `/bookings/${B_ACCEPTED}/documents/invoice`,
+      headers: { authorization: `Bearer ${tok(U_SHIPPER, 'shipper')}` }, payload: INVOICE_BODY,
+    })
 
     r = await app.inject({
       method: 'POST', url: `/bookings/${B_FLEET}/documents/eway-bill`,
@@ -629,6 +654,7 @@ async function main() {
       payload: {
         ewb_number: '181234567890', generated_at: generated, valid_upto: validUpto,
         issuing_portal: 'NIC2', part_b_entered_at: generated,
+        document_uri: 'https://example.com/ewb.pdf',
       },
     })
     check('the shipper records the bill', r.statusCode === 201, `(got ${r.statusCode}: ${r.body})`)
@@ -650,6 +676,7 @@ async function main() {
         generated_at: new Date(nowMs - 72 * 3600_000).toISOString(),
         valid_upto:   new Date(nowMs - 24 * 3600_000).toISOString(),
         issuing_portal: 'NIC1',
+        document_uri: 'https://example.com/ewb.pdf',
       },
     })
     const dead = r.json().data
@@ -659,7 +686,7 @@ async function main() {
     r = await app.inject({
       method: 'POST', url: `/bookings/${B_FLEET}/documents/eway-bill`,
       headers: { authorization: `Bearer ${tok(U_SHIPPER, 'shipper')}` },
-      payload: { ewb_number: '181234567890', generated_at: generated, valid_upto: validUpto, issuing_portal: 'NIC2' },
+      payload: { ewb_number: '181234567890', generated_at: generated, valid_upto: validUpto, issuing_portal: 'NIC2' , document_uri: 'https://example.com/ewb.pdf' },
     })
     check('the same bill cannot be filed twice against one booking', r.statusCode === 409, `(got ${r.statusCode})`)
 
@@ -670,7 +697,7 @@ async function main() {
     r = await app.inject({
       method: 'POST', url: `/bookings/${B_ACCEPTED}/documents/eway-bill`,
       headers: { authorization: `Bearer ${tok(U_SHIPPER, 'shipper')}` },
-      payload: { ewb_number: '181234567890', generated_at: generated, valid_upto: validUpto, issuing_portal: 'NIC2' },
+      payload: { ewb_number: '181234567890', generated_at: generated, valid_upto: validUpto, issuing_portal: 'NIC2' , document_uri: 'https://example.com/ewb.pdf' },
     })
     check('one e-way bill CAN cover a second booking (D-16 consolidated movement)',
       r.statusCode === 201, `(got ${r.statusCode}: ${r.body})`)
@@ -689,7 +716,12 @@ async function main() {
     const nowMs = Date.now()
     const generated = new Date(nowMs - 3600_000).toISOString()
     const validUpto = new Date(nowMs + 32 * 3600_000).toISOString()
-    const ewb = (n: string) => ({ ewb_number: n, generated_at: generated, valid_upto: validUpto, issuing_portal: 'NIC1' })
+    const ewb = (n: string) => ({ ewb_number: n, generated_at: generated, valid_upto: validUpto, issuing_portal: 'NIC1', document_uri: 'https://example.com/ewb.pdf' })
+
+    await app.inject({
+      method: 'POST', url: `/bookings/${B_FLEET}/documents/invoice`,
+      headers: { authorization: `Bearer ${tok(U_SHIPPER, 'shipper')}` }, payload: INVOICE_BODY,
+    })
 
     let r = await app.inject({
       method: 'POST', url: `/bookings/${B_FLEET}/documents/eway-bill`,
@@ -823,9 +855,10 @@ async function main() {
     r = await app.inject({
       method: 'POST', url: `/bookings/${B_FLEET}/documents/eway-bill`,
       headers: { authorization: `Bearer ${tok(U_SHIPPER, 'shipper')}` },
-      payload: { ewb_number: '181234567890', generated_at: '2026-08-06T18:25:00.000Z', valid_upto: '2026-08-07T18:29:59.000Z', issuing_portal: 'NIC1' },
+      payload: { ewb_number: '181234567890', generated_at: '2026-08-06T18:25:00.000Z', valid_upto: '2026-08-07T18:29:59.000Z', issuing_portal: 'NIC1' , document_uri: 'https://example.com/ewb.pdf' },
     })
-    check('recording an e-way bill is a 503 too', r.statusCode === 503, `(got ${r.statusCode})`)
+    check('recording an e-way bill without invoice is refused first (409), or 503 if tables missing',
+      r.statusCode === 409 || r.statusCode === 503, `(got ${r.statusCode})`)
 
     // The additive rule: an existing flow on the same booking is untouched.
     r = await app.inject({

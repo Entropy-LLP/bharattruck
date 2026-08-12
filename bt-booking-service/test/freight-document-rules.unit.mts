@@ -283,6 +283,10 @@ console.log('\n── every export earns its place')
     new URL('../src/lib/documents/service.ts', import.meta.url).pathname, 'utf8')
   check('the §4.1 threshold gate is called from the invoice issuance path',
     /ewayBillRequirement\s*\(/.test(serviceSrc) && /export async function issueFreightInvoice/.test(serviceSrc))
+  // FB-03 refinement: pickup gate consults the same helper (fail closed when null).
+  check('the pickup hard-gate consults ewayBillRequirement (not always-require)',
+    /export async function assertPickupDocumentsReady/.test(serviceSrc) &&
+    /ewayBillRequirement\s*\(/.test(serviceSrc.slice(serviceSrc.indexOf('assertPickupDocumentsReady'))))
 }
 
 console.log('\n── e-way bill expiry: STORED, never derived (§4.4)')

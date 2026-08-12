@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Building2 } from 'lucide-react'
-import { loginWithEmail, ApiError } from '@/lib/api'
+import { loginWithEmail, getMe, setToken, setRefreshToken, clearToken, clearRefreshToken, ApiError } from '@/lib/api'
 import { useAuth } from '@/lib/auth'
 
 export default function LoginPage() {
@@ -20,13 +20,26 @@ export default function LoginPage() {
     setBusy(true)
     try {
       const data = await loginWithEmail(email.trim(), password)
-      // A fleet owner console is useless to a shipper or a driver, and letting
-      // them in would only 403 on every fleet call. Say so plainly instead.
-      if (data.user.role !== 'fleet_owner') {
+      // Persist tokens before /auth/me so the capability check can authenticate.
+      setToken(data.access_token)
+      if (data.refresh_token) setRefreshToken(data.refresh_token)
+
+      // De-roled (FB-11): gate on operate / fleet profile, not JWT role.
+      // A distributor whose primary_persona is still 'shipper' but who owns a fleet
+      // must be able to open this console.
+      const me = await getMe().catch(() => null)
+      const caps = me?.personas
+      const canOperate =
+        !!caps?.fleet_owner_id ||
+        !!caps?.capabilities?.includes('operate') ||
+        data.user.role === 'fleet_owner'
+      if (!canOperate) {
+        clearToken()
+        clearRefreshToken()
         setError(
           data.user.role === 'driver'
             ? 'This is the fleet-owner console. Drivers should use the driver app.'
-            : 'This account is not a fleet owner.',
+            : 'This account has no fleet profile — register a fleet first, or use the shipper app.',
         )
         setBusy(false)
         return
@@ -34,6 +47,8 @@ export default function LoginPage() {
       login(data.access_token, data.refresh_token, data.user)
       router.replace('/dashboard')
     } catch (err) {
+      clearToken()
+      clearRefreshToken()
       setError(err instanceof ApiError ? err.message : 'Could not sign in')
       setBusy(false)
     }

@@ -524,9 +524,10 @@ export async function issueFreightInvoice(
   // are added here and not inside consignmentValueInr.
   const grandTotal = roundInr(consignmentValue + (body.tcs_inr ?? 0) + (body.round_off_inr ?? 0))
 
+  // Prefill supplier GSTIN from shipper profile (FB-09) when the caller omits it.
   const { data: supplier } = await supabase
     .from('users')
-    .select('full_name')
+    .select('full_name, gstin')
     .eq('id', actor.userId)
     .maybeSingle()
 
@@ -539,7 +540,7 @@ export async function issueFreightInvoice(
     prefix: body.series_prefix ?? null,
     payload: {
       supplier_legal_name: body.supplier_legal_name ?? supplier?.full_name ?? 'Supplier',
-      supplier_gstin:      body.supplier_gstin ?? null,
+      supplier_gstin:      body.supplier_gstin ?? (supplier?.gstin as string | null) ?? null,
       supplier_address:    body.supplier_address ?? null,
 
       billed_to_name:        body.billed_to_name,
@@ -633,6 +634,26 @@ export async function recordEwayBill(
   }
 
   const invoice = await docs.getFreightInvoice(bookingId)
+  // Pickup hard-gate (FB-03) always needs the tax invoice. E-way is required when
+  // ewayBillRequirement says so — see assertPickupDocumentsReady.
+  if (!invoice) {
+    throw new BookingError(
+      'Record the tax invoice for this booking before filing its e-way bill — ' +
+      'Part A needs the invoice number, and pickup will not start without both when an e-way is required',
+      'INVALID_TRANSITION',
+      409,
+    )
+  }
+
+  // D-17 is record + upload. A number alone is not enough for the pickup gate.
+  if (!body.document_uri) {
+    throw new BookingError(
+      'Upload the portal e-way bill file (document_uri) when recording — ' +
+      'D-17 is record + upload, and pickup requires the uploaded copy',
+      'VALIDATION_ERROR',
+      400,
+    )
+  }
 
   const record = await docs.recordEwayBill({
     bookingId,
@@ -641,15 +662,63 @@ export async function recordEwayBill(
     validUpto:     body.valid_upto,
     issuingPortal: body.issuing_portal,
     partBEnteredAt: body.part_b_entered_at ?? null,
-    documentNumber: body.document_number ?? invoice?.invoice_number ?? null,
-    // Our own invoice's GST-inclusive value beats anything typed in, for the
-    // same reason as the LR linkage above.
-    consignmentValueInr: invoice ? Number(invoice.consignment_value_inr) : (body.consignment_value_inr ?? null),
-    documentUri: body.document_uri ?? null,
+    documentNumber: body.document_number ?? invoice.invoice_number ?? null,
+    consignmentValueInr: Number(invoice.consignment_value_inr),
+    documentUri: body.document_uri,
     recordedBy:  actor.userId,
   })
 
   return withExpiry(record)
+}
+
+// FB-03 hard gate on accepted → in_transit: tax invoice always; e-way only when
+// ewayBillRequirement.required !== false. Fail closed when the helper declines
+// (required === null — unknown ends / intra-state): safer than letting a truck
+// move without a bill that may be legally required (D-17 still record+upload only).
+export async function assertPickupDocumentsReady(bookingId: string): Promise<void> {
+  const invoice = await docs.getFreightInvoice(bookingId)
+  if (!invoice) {
+    throw new BookingError(
+      'Cannot start trip — missing required freight documents before pickup: tax invoice. ' +
+      'The shipper must issue the invoice first.',
+      'INVALID_TRANSITION',
+      409,
+    )
+  }
+
+  const ewbNeed = ewayBillRequirement({
+    consignmentValueInr: Number(invoice.consignment_value_inr),
+    fromStateCode: stateCodeOfGstin(invoice.supplier_gstin),
+    toStateCode:
+      invoice.shipped_to_state_code ??
+      stateCodeOfGstin(invoice.shipped_to_gstin) ??
+      invoice.billed_to_state_code ??
+      stateCodeOfGstin(invoice.billed_to_gstin) ??
+      invoice.place_of_supply_code ??
+      null,
+  })
+
+  // required === false → inter-state under threshold; skip e-way. Otherwise require it.
+  if (ewbNeed.required === false) return
+
+  const standing = standingEwayBill(await docs.listEwayBills(bookingId))
+  const missing: string[] = []
+  if (!standing) missing.push('e-way bill record')
+  else if (!standing.document_uri) missing.push('e-way bill upload (document_uri)')
+
+  if (missing.length === 0) return
+
+  const why =
+    ewbNeed.required === null
+      ? `E-way requirement could not be determined (${ewbNeed.reason}) — failing closed.`
+      : ewbNeed.reason
+
+  throw new BookingError(
+    `Cannot start trip — missing required freight documents before pickup: ${missing.join(' and ')}. ` +
+    `${why} The shipper must record+upload the e-way bill first.`,
+    'INVALID_TRANSITION',
+    409,
+  )
 }
 
 // -----------------------------------------------------------

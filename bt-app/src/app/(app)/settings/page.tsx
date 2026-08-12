@@ -27,10 +27,13 @@ import { toast } from 'sonner'
 import { PageHeader } from '@/components/app-shell'
 import { Card, CardHead, Empty, ErrorNote, Loading } from '@/components/stat'
 import CompletenessSection from '@/components/completeness-section'
-import { ApiError, becomeFleetOwner, getMyFleet, updateMyFleet } from '@/lib/api'
+import { ApiError, becomeFleetOwner, getMyFleet, updateMyFleet, updateMyGstin } from '@/lib/api'
 import { useAuth } from '@/lib/auth'
 import { dateTime, inr } from '@/lib/format'
 import type { FleetOwner } from '@/lib/types'
+
+/** Indian GSTIN — same shape as users_gstin_format / PATCH /auth/me/gstin. */
+const GSTIN_PATTERN = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{2}[0-9A-Z]$/
 
 // Mirrors OwnerProfileBody in bt-fleet-service/src/routes/owners.ts exactly.
 const COMPANY_MIN = 2
@@ -119,12 +122,17 @@ export default function SettingsPage() {
     <div className="p-4 lg:p-6 max-w-7xl mx-auto">
       <PageHeader
         title="Settings"
-        subtitle="Your company profile and monthly overhead."
+        subtitle="Your tax identity, company profile, and monthly overhead."
       />
 
       {/* Persona completeness (D-33) — cross-persona, so it sits ABOVE the fleet-owner-gated
           content below and shows for every account (shipper / driver / fleet owner). */}
       <CompletenessSection />
+
+      {/* FB-04: shipper GSTIN on users.gstin — required before posting a load. Always shown. */}
+      <div className="mt-5 mb-5">
+        <ShipperGstinCard />
+      </div>
 
       {loading ? (
         <Loading label="Loading fleet profile" />
@@ -151,6 +159,93 @@ export default function SettingsPage() {
         </div>
       )}
     </div>
+  )
+}
+
+// ── Shipper GSTIN (users.gstin via PATCH /auth/me/gstin) ───────
+//
+// FB-04: posting a load hard-requires a GSTIN on the user profile or the fleet
+// owner row. Fleet owners already edit fleet_owners.gstin in Company profile
+// below; this card is the shipper-facing path for accounts without a fleet.
+
+function ShipperGstinCard() {
+  const { user, refresh } = useAuth()
+  const [value, setValue] = useState((user?.gstin ?? '').toUpperCase())
+  const [err, setErr] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    setValue((user?.gstin ?? '').toUpperCase())
+  }, [user?.gstin])
+
+  const saved = (user?.gstin ?? '').trim().toUpperCase()
+  const draft = value.trim().toUpperCase()
+  const dirty = draft !== saved
+
+  async function submit(e: FormEvent) {
+    e.preventDefault()
+    if (draft === '') {
+      setErr('Enter a 15-character GSTIN — clear is not allowed from here while post-load requires one.')
+      return
+    }
+    if (!GSTIN_PATTERN.test(draft)) {
+      setErr('GSTIN must be 15 characters in the Indian format (e.g. 29ABCDE1234F1Z5).')
+      return
+    }
+    if (draft === saved) return
+    setBusy(true)
+    setErr(null)
+    try {
+      await updateMyGstin(draft)
+      await refresh()
+      toast.success('GSTIN saved — you can post a load')
+    } catch (e2) {
+      setErr(errText(e2, 'Could not save GSTIN'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Card>
+      <CardHead
+        title="Your GSTIN"
+        sub="Required before you can post a load. Saved on your account (not only on a fleet profile)."
+      />
+      <form onSubmit={submit}>
+        <div className="p-4 space-y-4">
+          <Field
+            id="user_gstin"
+            label="GSTIN"
+            hint={`${GSTIN_LEN} characters. Same format as GST filings.`}
+          >
+            <input
+              id="user_gstin"
+              type="text"
+              autoComplete="off"
+              value={value}
+              onChange={e => setValue(alnum(e.target.value, GSTIN_LEN))}
+              placeholder="29ABCDE1234F1Z5"
+              className={`${INPUT} font-mono tracking-wide uppercase`}
+            />
+          </Field>
+          {saved ? (
+            <p className="text-xs text-emerald-700">On file: <span className="font-mono">{saved}</span></p>
+          ) : (
+            <p className="text-xs text-amber-700">No GSTIN on file — Post a Load will refuse until you save one.</p>
+          )}
+          {err && <ErrorNote message={err} />}
+        </div>
+        <div className="flex items-center justify-between gap-3 px-4 py-3 border-t border-gray-100">
+          <p className="text-xs text-gray-500">
+            {dirty ? 'Unsaved changes' : 'Saved'}
+          </p>
+          <button type="submit" disabled={busy || !dirty} className={PRIMARY_BTN}>
+            {busy ? 'Saving…' : 'Save GSTIN'}
+          </button>
+        </div>
+      </form>
+    </Card>
   )
 }
 

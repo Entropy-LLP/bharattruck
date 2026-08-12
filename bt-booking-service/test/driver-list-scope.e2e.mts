@@ -172,11 +172,14 @@ async function main() {
   check("second solo driver does NOT see the first's trips",
     !other.ids.includes(MINE_ACCEPTED) && !other.ids.includes(MINE_INTRANSIT), JSON.stringify(other.ids))
 
-  console.log('\n── driver account with no drivers row: original query, no 500 ──')
+  // FB-11 / D-27: JWT role='driver' alone is not authorization. Without a drivers
+  // row (no 'drive') and no truck assets (no 'carry'/'operate'), the marketplace
+  // board stays closed — empty list, not a 500.
+  console.log('\n── driver account with no drivers row: no marketplace, no 500 ──')
   const ghost = await listAs(U_GHOST, 'driver')
   check('ghost driver 200', ghost.code === 200, `(got ${ghost.code})`)
-  check('ghost driver sees the open board only',
-    ghost.ids.length === 3 && !ghost.ids.includes(MINE_ACCEPTED) && !ghost.ids.includes(THEIRS),
+  check('ghost without drivers row / carrier assets sees an empty list',
+    ghost.ids.length === 0,
     JSON.stringify(ghost.ids))
 
   await app.close()

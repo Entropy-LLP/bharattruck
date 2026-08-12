@@ -25,6 +25,8 @@ import * as podRepo from './pod/repository.js'
 import { evaluateOtpGate, type OtpGateResult } from './pod/service.js'
 import { resolveConsigneeParty } from './consignee/repository.js'
 import { attachConsignee, attachConsignees, type WithConsignee } from './consignee/service.js'
+import { assertPickupDocumentsReady } from './documents/service.js'
+import { emitAssignmentRelease } from './fleet-emit.js'
 
 // -----------------------------------------------------------
 // The per-object VIEWER block (D-27/D-38) — what the unified frontend reads to
@@ -109,6 +111,10 @@ export async function createBooking(
   // exactly the case the old `actor.role !== 'shipper'` check wrongly blocked. The
   // real gate is the quote-ownership check below: the price-lock is bound to the
   // human who was quoted, and a booking can only be created against your OWN lock.
+  //
+  // FB-04 (2026-08-12 product override of D-5/D-31): GSTIN must be present on the
+  // shipper profile (users.gstin) or their fleet_owners.gstin before a load posts.
+  await assertShipperGstPresent(actor.userId)
 
   // 1. Read the locked quote (internal call). A missing quote → NOT_FOUND (4xx).
   const quote = await pricing.getQuote(body.quote_id)
@@ -237,10 +243,42 @@ export async function createBooking(
 // -----------------------------------------------------------
 
 async function resolveDriverScope(actor: AuthenticatedUser): Promise<repo.DriverListScope | null> {
-  if (actor.role !== 'driver') return null
-  const driverRow = await repo.getDriverByUserId(actor.userId)
-  if (!driverRow) return null
-  return { driverId: driverRow.id, employed: await isEmployedDriver(driverRow.id) }
+  // De-roled (FB-11 / D-27): drivers row wins over JWT primary persona.
+  const snapshot = await resolvePersonas(supabase, actor.userId, actor.role)
+  if (!snapshot.driver_id) return null
+  return { driverId: snapshot.driver_id, employed: await isEmployedDriver(snapshot.driver_id) }
+}
+
+// FB-04 — GST hard rule before post load.
+async function assertShipperGstPresent(userId: string): Promise<void> {
+  const { data: user, error: userErr } = await supabase
+    .from('users')
+    .select('gstin')
+    .eq('id', userId)
+    .maybeSingle()
+  if (userErr) throw new Error(`users gstin lookup failed: ${userErr.message}`)
+  if (user?.gstin) return
+
+  const { data: fleet, error: fleetErr } = await supabase
+    .from('fleet_owners')
+    .select('gstin')
+    .eq('user_id', userId)
+    .maybeSingle()
+  if (fleetErr) {
+    const code = (fleetErr as { code?: string }).code
+    if (code !== '42P01' && code !== 'PGRST205' && code !== '42703') {
+      throw new Error(`fleet_owners gstin lookup failed: ${fleetErr.message}`)
+    }
+  } else if (fleet?.gstin) {
+    return
+  }
+
+  throw new BookingError(
+    'Add a GSTIN on your profile before posting a load — Settings → GSTIN ' +
+    '(required on every booking; acknowledgement alone is not enough)',
+    'VALIDATION_ERROR',
+    400,
+  )
 }
 
 // -----------------------------------------------------------
@@ -345,24 +383,27 @@ export async function getBooking(
 export async function listBookings(
   actor: AuthenticatedUser,
 ): Promise<WithViewer<WithConsignee<PriceMasked<DbBooking>>>[]> {
-  const scope = await resolveDriverScope(actor)
-  const bookings = await repo.listBookings(actor, scope ?? undefined)
-  const masked = scope?.employed ? bookings.map(stripCommercialFields) : bookings
-  // Attached LAST, and per-row: a solo driver's list is a UNION of their own
-  // trips and the open 'pending' load board, so the same response legitimately
-  // contains bookings they are a party to and bookings they are merely browsing.
-  // A whole-response decision would be wrong for one half of it either way.
-  const withConsignee = await attachConsignees(masked, actor)
-
-  // The per-object viewer block (D-27/D-38), added per row so each card renders
-  // its own view. `sees_commercials` follows the mask actually applied — the
-  // employed-driver list is stripped, everyone else's is not — so it is a
-  // response-level fact here, while `relations` is resolved per booking against
-  // the ONE snapshot. Ops hold no relation, matching their carve-out above.
+  // Capability-scoped list (FB-11 / D-27), not JWT role.
   if (actor.role === 'admin') {
+    const bookings = await repo.listBookingsForScope({ kind: 'admin' })
+    const withConsignee = await attachConsignees(bookings, actor)
     return withConsignee.map((b) => withViewer(b, [], true))
   }
+
   const snapshot = await resolvePersonas(supabase, actor.userId, actor.role)
+  const scope = await resolveDriverScope(actor)
+  const canBrowseMarketplace =
+    (!!scope && !scope.employed) || can(snapshot, 'carry') || can(snapshot, 'operate')
+
+  const bookings = await repo.listBookingsForScope({
+    kind: 'persona',
+    userId: actor.userId,
+    driverId: scope?.driverId ?? null,
+    employed: scope?.employed ?? false,
+    canBrowseMarketplace,
+  })
+  const masked = scope?.employed ? bookings.map(stripCommercialFields) : bookings
+  const withConsignee = await attachConsignees(masked, actor)
   const seesCommercials = !scope?.employed
   return withConsignee.map((b) => withViewer(b, relationsToBooking(b, snapshot), seesCommercials))
 }
@@ -687,6 +728,10 @@ async function transitionAssignedBooking(
     assertFleetAssignmentReady(await hasLiveVehicleAssignment(bookingId))
   }
 
+  // FB-03: tax invoice always; e-way when ewayBillRequirement says required (or
+  // declines — fail closed). See assertPickupDocumentsReady.
+  await assertPickupDocumentsReady(bookingId)
+
   const updated = await repo.transitionBookingStatus(bookingId, snapshot.driver_id, booking.status, to)
   if (!updated) {
     // Status changed between our read and write (concurrent transition).
@@ -965,6 +1010,7 @@ export async function completeBookingViaPod(bookingId: string, log?: Logger): Pr
   // learn the receiver's OTP landed. Idempotent on the booking, so the payout saga
   // replaying this internal call cannot double-mail anyone.
   await notify.emitTripCompleted(updated, log)
+  emitAssignmentRelease(bookingId, log)
   return updated
 }
 
@@ -1100,6 +1146,7 @@ export async function forceCompleteBooking(
   // sides are told — an unexplained override is how a support fix becomes a
   // support ticket.
   await notify.emitOpsOverride(updated, 'force_complete', log)
+  emitAssignmentRelease(bookingId, log)
   return { booking: updated, fromStatus }
 }
 
@@ -1148,15 +1195,19 @@ export async function cancelBooking(
     throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
   }
 
-  if (actor.role === 'shipper' && booking.shipper_id !== actor.userId) {
-    throw new BookingError('Forbidden', 'FORBIDDEN', 403)
-  }
-
-  if (actor.role === 'driver') {
-    const driverRow = await repo.getDriverByUserId(actor.userId)
-    if (!driverRow || booking.driver_id !== driverRow.id) {
+  let cancelledBy: 'driver' | 'shipper' = 'shipper'
+  if (actor.role !== 'admin') {
+    const snapshot = await resolvePersonas(supabase, actor.userId, actor.role)
+    const relations = relationsToBooking(booking, snapshot)
+    const isShipper = relations.includes('shipper')
+    const isAssignedDriver =
+      can(snapshot, 'drive') &&
+      !!snapshot.driver_id &&
+      booking.driver_id === snapshot.driver_id
+    if (!isShipper && !isAssignedDriver) {
       throw new BookingError('Forbidden', 'FORBIDDEN', 403)
     }
+    cancelledBy = isAssignedDriver && !isShipper ? 'driver' : 'shipper'
   }
 
   assertValidTransition(booking.status, 'cancelled')
@@ -1170,10 +1221,7 @@ export async function cancelBooking(
     )
   }
 
-  // Tell whoever did NOT cancel. `updated` has already been nulled of nothing here —
-  // driver_id survives the cancel — so the carrier is still resolvable. An admin
-  // cancelling is treated as the shipper side, since the carrier is the party who
-  // needs to stop planning for the load.
-  await notify.emitBookingCancelled(updated, actor.role === 'driver' ? 'driver' : 'shipper', log)
+  await notify.emitBookingCancelled(updated, cancelledBy, log)
+  emitAssignmentRelease(bookingId, log)
   return updated
 }

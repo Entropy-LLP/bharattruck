@@ -1,26 +1,30 @@
+import { storageKey } from './session-keys'
 // Ops-console API client. Talks to the backend ONLY through the gateway
 // (NEXT_PUBLIC_API_URL -> /api/*), same envelope + custom-HS256-JWT auth as the
 // shipper/driver apps. Ops uses an ops/admin-role JWT from /auth/email/login.
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
-const TOKEN_KEY = 'bt_ops_token'
-const REFRESH_KEY = 'bt_ops_refresh_token'
+// FB-10: pass ?profile=<slug> to partition tokens for multi-account QA.
+const TOKEN_KEY_BASE = 'bt_ops_token'
+const REFRESH_KEY_BASE = 'bt_ops_refresh_token'
+const TOKEN_KEY = () => storageKey(TOKEN_KEY_BASE)
+const REFRESH_KEY = () => storageKey(REFRESH_KEY_BASE)
 
 // ── Token storage ─────────────────────────────────────────────
 
 export function getToken(): string | null {
   if (typeof window === 'undefined') return null
-  const raw = localStorage.getItem(TOKEN_KEY)
+  const raw = localStorage.getItem(TOKEN_KEY())
   return raw ? raw.trim() : null
 }
-export function setToken(t: string) { localStorage.setItem(TOKEN_KEY, t) }
-export function clearToken() { localStorage.removeItem(TOKEN_KEY) }
+export function setToken(t: string) { localStorage.setItem(TOKEN_KEY(), t) }
+export function clearToken() { localStorage.removeItem(TOKEN_KEY()) }
 export function getRefreshToken(): string | null {
   if (typeof window === 'undefined') return null
-  return localStorage.getItem(REFRESH_KEY)
+  return localStorage.getItem(REFRESH_KEY())
 }
-export function setRefreshToken(t: string) { localStorage.setItem(REFRESH_KEY, t) }
-export function clearRefreshToken() { localStorage.removeItem(REFRESH_KEY) }
+export function setRefreshToken(t: string) { localStorage.setItem(REFRESH_KEY(), t) }
+export function clearRefreshToken() { localStorage.removeItem(REFRESH_KEY()) }
 
 export function clearSession() {
   clearToken()

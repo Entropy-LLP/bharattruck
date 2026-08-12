@@ -16,8 +16,9 @@
 // ============================================================
 
 import { z } from 'zod'
-import { relationsToBooking, resolvePersonas, type BookingRelation } from '@bharattruck/shared/personas'
+import { can, relationsToBooking, resolvePersonas, type BookingRelation } from '@bharattruck/shared/personas'
 import type { AuthenticatedUser, BookingStatus, BookingWithProfiles } from '../types.js'
+import { emitAssignmentRelease } from '../fleet-emit.js'
 import { BookingError } from '../types.js'
 import { assertValidTransition } from '../state.js'
 import * as repo from '../repository.js'
@@ -100,21 +101,18 @@ async function resolveAssignedDriver(
   bookingId: string,
   actor: AuthenticatedUser,
 ): Promise<{ booking: BookingWithProfiles; driverId: string }> {
-  if (actor.role !== 'driver') {
+  const snapshot = await resolvePersonas(supabase, actor.userId, actor.role)
+  if (!can(snapshot, 'drive') || !snapshot.driver_id) {
     throw new BookingError('Only the assigned driver can perform this POD action', 'FORBIDDEN', 403)
   }
   const booking = await repo.getBookingById(bookingId)
   if (!booking) {
     throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
   }
-  const driverRow = await repo.getDriverByUserId(actor.userId)
-  if (!driverRow) {
-    throw new BookingError('Driver profile not found', 'NOT_FOUND', 404)
-  }
-  if (booking.driver_id !== driverRow.id) {
+  if (booking.driver_id !== snapshot.driver_id) {
     throw new BookingError('You are not assigned to this booking', 'FORBIDDEN', 403)
   }
-  return { booking, driverId: driverRow.id }
+  return { booking, driverId: snapshot.driver_id }
 }
 
 // -----------------------------------------------------------
@@ -583,6 +581,9 @@ export async function assertDelivery(
     log,
   )
 
+  // FB-01: free truck at delivery_asserted (trip end), not only at paid.
+  emitAssignmentRelease(bookingId, log)
+
   return {
     booking_id: bookingId,
     status: 'delivery_asserted',
@@ -834,16 +835,17 @@ export async function setExpectedQuantity(
     throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
   }
 
-  if (actor.role === 'shipper') {
-    if (booking.shipper_id !== actor.userId) {
-      throw new BookingError('Forbidden', 'FORBIDDEN', 403)
+  // WHO: owning shipper relation or ops — never JWT role (D-27). A distributor
+  // holding a fleet_owner-role token who POSTED this load passes; the driver never does.
+  if (actor.role !== 'admin') {
+    const snapshot = await resolvePersonas(supabase, actor.userId, actor.role)
+    if (!relationsToBooking(booking, snapshot).includes('shipper')) {
+      throw new BookingError(
+        'Only the shipper who owns this booking (or ops) can set the expected quantity — never the driver',
+        'FORBIDDEN',
+        403,
+      )
     }
-  } else if (actor.role !== 'admin') {
-    throw new BookingError(
-      'Only the shipper who owns this booking (or ops) can set the expected quantity — never the driver',
-      'FORBIDDEN',
-      403,
-    )
   }
 
   if (!EXPECTED_QTY_EDITABLE.includes(booking.status)) {

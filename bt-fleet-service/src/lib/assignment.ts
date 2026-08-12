@@ -1,3 +1,4 @@
+import { bookingFreesTruck, TRIP_END_FREE_STATUSES } from './booking-status.js'
 import { getSupabase } from './supabase.js'
 import { getActiveAffiliation } from './fleet-repo.js'
 import { getFleetVehicle } from './vehicles-repo.js'
@@ -45,7 +46,8 @@ const ASSIGNMENT_COLUMNS =
 const ASSIGNABLE_STATUSES = ['accepted']
 
 // Once a booking reaches one of these, its truck and driver are free again.
-const TERMINAL_BOOKING_STATUSES = ['completed', 'paid', 'cancelled']
+// Shared with vehicle-schedule.ts via booking-status.ts (FB-01).
+const TERMINAL_BOOKING_STATUSES = TRIP_END_FREE_STATUSES
 
 export async function getFleetBooking(fleetOwnerId: string, bookingId: string): Promise<BookingRow | null> {
   const { data, error } = await getSupabase()
@@ -239,10 +241,10 @@ async function insertAssignment(input: AssignInput): Promise<VehicleAssignmentRo
 }
 
 // releaseFinishedAssignments — a truck is physically free the moment its trip ends,
-// but released_at is only stamped when the roll-up hook fires on completed->paid.
-// This closes the gap: any live assignment of this booking/truck/driver whose own
-// booking has reached a terminal state is released here. Without it a single
-// missed hook would take a truck out of service permanently.
+// but released_at is normally stamped by the trip-end emit (completed /
+// delivery_asserted) or the paid roll-up hook. This closes the gap when either
+// hook was missed: any live assignment whose booking has reached a trip-end
+// status is released here.
 // Returns true if anything was released.
 async function releaseFinishedAssignments(input: AssignInput): Promise<boolean> {
   const supabase = getSupabase()
@@ -279,16 +281,44 @@ export async function releaseAssignment(assignmentId: string): Promise<void> {
   if (error) throw new Error(`vehicle_assignments release failed: ${error.message}`)
 }
 
-// listLiveAssignments — every un-released assignment for one fleet. One query,
-// used to decorate the vehicle list and the live map; never called per vehicle.
+/**
+ * Pure filter used by listLiveAssignments (and unit-tested): drop live assignment
+ * rows whose booking has already reached a trip-end status.
+ */
+export function liveAssignmentsAfterTripEndSweep<T extends { booking_id: string }>(
+  live: T[],
+  bookings: Array<{ id: string; status: string }>,
+): T[] {
+  const free = new Set(bookings.filter(b => bookingFreesTruck(b.status)).map(b => b.id))
+  return live.filter(a => !free.has(a.booking_id))
+}
+
+// listLiveAssignments — every un-released assignment for one fleet. Sweeps
+// finished trips first (FB-01) so the fleet UI shows trucks free even when the
+// trip-end emit or paid roll-up was missed.
 export async function listLiveAssignments(fleetOwnerId: string): Promise<VehicleAssignmentRow[]> {
-  const { data, error } = await getSupabase()
+  const supabase = getSupabase()
+  const { data, error } = await supabase
     .from('vehicle_assignments')
     .select(ASSIGNMENT_COLUMNS)
     .eq('fleet_owner_id', fleetOwnerId)
     .is('released_at', null)
   if (error) throw new Error(`vehicle_assignments select failed: ${error.message}`)
-  return asRows<VehicleAssignmentRow>(data)
+
+  const live = asRows<VehicleAssignmentRow>(data)
+  if (live.length === 0) return live
+
+  const { data: bookings, error: bookingErr } = await supabase
+    .from('bookings')
+    .select('id, status')
+    .in('id', live.map(a => a.booking_id))
+  if (bookingErr) throw new Error(`bookings select failed: ${bookingErr.message}`)
+
+  const rows = asRows<{ id: string; status: string }>(bookings)
+  for (const b of rows) {
+    if (bookingFreesTruck(b.status)) await releaseAssignmentForBooking(b.id)
+  }
+  return liveAssignmentsAfterTripEndSweep(live, rows)
 }
 
 export async function hasLiveAssignmentForDriver(fleetOwnerId: string, driverId: string): Promise<boolean> {

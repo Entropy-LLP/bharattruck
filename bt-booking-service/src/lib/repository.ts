@@ -186,8 +186,9 @@ export async function getActiveBookingsForDriver(driverId: string): Promise<DbBo
 // drivers row, and it decides which slice of the board that driver gets:
 //   fleet-employed → their assignments ONLY (they have no load board, Q14)
 //   solo           → the open 'pending' pool PLUS the trips already theirs
-// Absent — a driver account with no drivers row — the query is the original
-// pending-only one.
+// Absent driverId + canBrowseMarketplace → pending board only (fleet/ops
+// carriers browsing without being the assigned driver). Absent both → only
+// shipper_id=self (FB-11: a JWT 'driver' with no drivers row sees nothing).
 //
 // driverId is drivers.id, NOT the JWT's users.id: bookings.driver_id
 // references drivers(id) (see the auth/identity gotcha in CLAUDE.md).
@@ -206,60 +207,70 @@ export type DriverListScope = {
   employed:        boolean
 }
 
-export async function listBookings(
-  actor: AuthenticatedUser,
-  driver?: DriverListScope,
-): Promise<DbBooking[]> {
+export type BookingListScope =
+  | { kind: 'admin' }
+  | {
+      kind: 'persona'
+      userId: string
+      driverId: string | null
+      employed: boolean
+      canBrowseMarketplace: boolean
+    }
+
+export async function listBookingsForScope(scope: BookingListScope): Promise<DbBooking[]> {
   let query = supabase
     .from('bookings')
     .select('*')
     .order('created_at', { ascending: false })
 
-  if (actor.role === 'shipper') {
-    query = query.eq('shipper_id', actor.userId)
-  } else if (actor.role === 'driver') {
-    if (!driver) {
-      query = query.eq('status', 'pending')
-    } else if (driver.employed) {
-      query = query.eq('driver_id', driver.driverId)
-    } else {
-      // A solo driver — or an OWNER-DRIVER attached to a fleet, who is not an
-      // employee — is BOTH a bidder and the haulier, so their list is a
-      // UNION, not one slice: the open pool they can still take work from, plus
-      // every booking that is already theirs — a direct booking targeted at
-      // them, or an auction they won that has since moved past 'pending' to
-      // accepted / in_transit / completed / paid.
-      //
-      // The second arm is the fix for BIBLE §5.4 item 3: a pending-only filter
-      // dropped a booking the moment it became this driver's, so the trip
-      // existed and its detail screen rendered correctly, but no list they
-      // could see ever linked to it.
-      //
-      // driverId is interpolated into PostgREST's filter grammar, which is safe
-      // here precisely because it is NOT client input: it is the uuid PK read
-      // out of drivers.id, which getDriverByUserId exchanged for the JWT's
-      // users.id.
-      query = query.or(`status.eq.pending,driver_id.eq.${driver.driverId}`)
-    }
-  } else if (actor.role === 'fleet_owner') {
-    // A fleet owner is a BIDDER, so they see the open load board — the same slice a
-    // solo driver gets — and nothing else. Their own won loads come from
-    // bt-fleet-service's /fleet/bookings, which is scoped to fleet_owner_id.
-    //
-    // This branch is a SECURITY FIX, not a feature. `fleet_owner` matched neither of
-    // the branches above, so it fell through to the unfiltered `admin` path below and
-    // GET /bookings returned EVERY booking on the platform to any fleet account —
-    // other shippers' loads, other fleets' trips, prices and addresses included. The
-    // role was added in migration 0014 and this function was never widened with it.
-    query = query.eq('status', 'pending')
+  if (scope.kind === 'admin') {
+    const { data, error } = await query
+    if (error) throw new Error(`DB list failed: ${error.message}`)
+    return (data ?? []) as DbBooking[]
   }
-  // admin: no additional filter. Reached ONLY by role === 'admin' now that every
-  // other role above is handled explicitly — a new role must add its own branch
-  // rather than silently inheriting a full-table read.
 
+  const parts: string[] = [`shipper_id.eq.${scope.userId}`]
+  if (scope.driverId) {
+    parts.push(`driver_id.eq.${scope.driverId}`)
+    if (!scope.employed && scope.canBrowseMarketplace) parts.push('status.eq.pending')
+  } else if (scope.canBrowseMarketplace) {
+    parts.push('status.eq.pending')
+  }
+
+  query = query.or(parts.join(','))
   const { data, error } = await query
   if (error) throw new Error(`DB list failed: ${error.message}`)
   return (data ?? []) as DbBooking[]
+}
+
+/** @deprecated Prefer listBookingsForScope — kept for older e2e suites.
+ *  Scopes from capabilities when possible; JWT role is only the admin carve-out
+ *  and a last-resort fallback for suites that do not resolve personas. */
+export async function listBookings(
+  actor: AuthenticatedUser,
+  driver?: DriverListScope,
+): Promise<DbBooking[]> {
+  if (actor.role === 'admin') return listBookingsForScope({ kind: 'admin' })
+  // Fallback for deprecated callers: treat role as a coarse persona hint.
+  // New code must go through service.listBookings → listBookingsForScope.
+  if (actor.role === 'shipper') {
+    return listBookingsForScope({
+      kind: 'persona', userId: actor.userId, driverId: null, employed: false, canBrowseMarketplace: false,
+    })
+  }
+  if (actor.role === 'driver') {
+    return listBookingsForScope({
+      kind: 'persona', userId: actor.userId,
+      driverId: driver?.driverId ?? null, employed: driver?.employed ?? false,
+      canBrowseMarketplace: !driver?.employed,
+    })
+  }
+  if (actor.role === 'fleet_owner') {
+    return listBookingsForScope({
+      kind: 'persona', userId: actor.userId, driverId: null, employed: false, canBrowseMarketplace: true,
+    })
+  }
+  throw new Error(`listBookings: unhandled role ${actor.role}`)
 }
 
 // -----------------------------------------------------------

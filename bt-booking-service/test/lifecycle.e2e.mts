@@ -35,6 +35,13 @@ const store: Record<string, Row[]> = {
   bookings: [{ id: B1, driver_id: D1, shipper_id: S1, status: 'accepted' }],
   drivers: [{ id: D1, user_id: U1 }, { id: D2, user_id: U2 }],
   location_history: [],
+  // FB-03 pickup gate: tax invoice required. Inter-state under ₹50k → e-way not required.
+  freight_invoices: [{
+    id: 'inv-1', booking_id: B1, invoice_number: 'INV/26-27/1',
+    supplier_gstin: '27AAAAA0000A1Z5', shipped_to_gstin: '29BBBBB0000B1Z5',
+    shipped_to_state_code: '29', consignment_value_inr: 10000,
+  }],
+  eway_bill_records: [],
 }
 
 // ---- minimal in-memory Supabase query-builder fake ------------------------

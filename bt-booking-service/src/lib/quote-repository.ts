@@ -46,7 +46,6 @@
 
 import { supabase } from './supabase.js'
 import type {
-  AuthenticatedUser,
   DbBooking,
   DbNegotiation,
   DbQuote,
@@ -162,16 +161,14 @@ export async function listLosingQuotes(
 
 // -----------------------------------------------------------
 // listQuotesForBooking
-// Role-scoped: a bidder only sees its own quote (blind auction),
-// shippers and admins see all quotes for the booking. `bidder` is the
-// resolved identity of a driver/fleet-owner caller — absent for
-// shippers and admins.
+// Blind-auction scoped by `seeAllQuotes` (shipper relation / ops), never by JWT
+// role. A bidder only sees its own quote; shippers and admins see all.
+// `bidder` is the resolved identity of a carrier caller — absent when seeAllQuotes.
 // -----------------------------------------------------------
 
 export async function listQuotesForBooking(
   bookingId: string,
-  actor: AuthenticatedUser,
-  bidder?: Bidder,
+  opts: { seeAllQuotes: boolean; bidder?: Bidder },
 ): Promise<QuoteWithCarrier[]> {
   let query = supabase
     .from('quotes')
@@ -179,16 +176,15 @@ export async function listQuotesForBooking(
     .eq('booking_id', bookingId)
     .order('submitted_at', { ascending: false })
 
-  if (actor.role !== 'shipper' && actor.role !== 'admin') {
+  if (!opts.seeAllQuotes) {
     // Blind auction: a bidder we could not resolve to a party sees nothing.
-    if (!bidder) {
+    if (!opts.bidder) {
       return []
     }
-    query = bidder.kind === 'fleet'
-      ? query.eq('fleet_owner_id', bidder.fleetOwnerId)
-      : query.eq('driver_id', bidder.driverId)
+    query = opts.bidder.kind === 'fleet'
+      ? query.eq('fleet_owner_id', opts.bidder.fleetOwnerId)
+      : query.eq('driver_id', opts.bidder.driverId)
   }
-  // shipper and admin: no additional filter
 
   const { data, error } = await query
   if (error) throw new Error(`DB list quotes failed: ${error.message}`)

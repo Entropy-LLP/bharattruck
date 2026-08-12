@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { rollUpTripEconomics } from '../lib/economics.js'
+import { releaseAssignmentForBooking } from '../lib/assignment.js'
 import { parseOrThrow } from '../lib/types.js'
 
 // -----------------------------------------------------------
@@ -18,6 +19,13 @@ const BookingIdParam = z.object({
 })
 
 export async function internalFleetRoutes(app: FastifyInstance) {
+  // POST /internal/assignments/release/:bookingId — FB-01 trip-end free (before paid)
+  app.post('/assignments/release/:bookingId', async (req, reply) => {
+    const params = parseOrThrow(BookingIdParam, req.params)
+    await releaseAssignmentForBooking(params.bookingId)
+    return reply.send({ success: true })
+  })
+
   // POST /internal/trip-economics/:bookingId
   app.post('/trip-economics/:bookingId', async (req, reply) => {
     const params = parseOrThrow(BookingIdParam, req.params)
