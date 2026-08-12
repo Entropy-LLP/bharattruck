@@ -75,15 +75,22 @@ export async function getFleetOwnerByUserId(userId: string): Promise<{ id: strin
 // to a driver bidder, and a 'fleet_owner'-role human who owns none resolves to
 // null (nothing to bid with). null means "cannot carry", the FORBIDDEN case.
 //
-// Fleet takes precedence when the human is both, matching the capability ladder:
-// 'operate' is the larger business and is where their trucks and drivers are.
+// Fleet takes precedence when the human is both. The gate is marketplace access
+// (`carry` = owns ≥1 truck) OR fleet-business access (`operate` = 2+ trucks or
+// held drivers) — NOT `operate` alone. Bidding is a `carry` act in the locked
+// capability model (ARCHITECTURE_UNIFIED_IDENTITY §3 / UNIFIED_APP_PLAN); gating
+// on `operate` locked one-truck fleets and distributors out of auctions they can
+// already see on the board (Deepak: 1 truck → carry, no operate → FORBIDDEN).
+// `operate` without `carry` still qualifies so an attached-vehicle fleet that
+// holds drivers but owns no truck can bid and assign.
+//
 // This is the same rule directAttachCarrier applies to a shipper attaching their
 // own load, and the two MUST agree — service.ts's directAttachCarrier delegates
 // here so there is one implementation of "which of my carriers acts".
 // -----------------------------------------------------------
 
 export function bidderFromSnapshot(snapshot: PersonaSnapshot): Bidder | null {
-  if (snapshot.fleet_owner_id && can(snapshot, 'operate')) {
+  if (snapshot.fleet_owner_id && (can(snapshot, 'carry') || can(snapshot, 'operate'))) {
     return { kind: 'fleet', fleetOwnerId: snapshot.fleet_owner_id }
   }
   if (snapshot.driver_id && can(snapshot, 'carry')) {
