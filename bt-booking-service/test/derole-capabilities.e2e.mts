@@ -49,10 +49,10 @@ const store: Record<string, Row[]> = {}
 
 function reset() {
   store.users = [
-    { id: U_OWNDRV, full_name: 'Owner Driver', phone_number: '9111111111', email: 'own@drv.in' },
-    { id: U_DIST,   full_name: 'Bharat Distributors', phone_number: '9222222222', email: 'dist@ex.in' },
-    { id: U_BARE,   full_name: 'Bare Shipper', phone_number: '9333333333', email: 'bare@ex.in' },
-    { id: U_POSTER, full_name: 'Poster Shipper', phone_number: '9444444444', email: 'post@ex.in' },
+    { id: U_OWNDRV, full_name: 'Owner Driver', phone_number: '9111111111', email: 'own@drv.in', gstin: '27AABCU9603R1ZM' },
+    { id: U_DIST,   full_name: 'Bharat Distributors', phone_number: '9222222222', email: 'dist@ex.in', gstin: '27AABCU9603R1ZN' },
+    { id: U_BARE,   full_name: 'Bare Shipper', phone_number: '9333333333', email: 'bare@ex.in', gstin: '27AABCU9603R1ZO' },
+    { id: U_POSTER, full_name: 'Poster Shipper', phone_number: '9444444444', email: 'post@ex.in', gstin: '27AABCU9603R1ZP' },
   ]
   store.bookings = [
     { id: B_OPEN, shipper_id: U_POSTER, driver_id: null, fleet_owner_id: null, vehicle_id: null,

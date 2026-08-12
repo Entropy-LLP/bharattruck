@@ -1,5 +1,6 @@
 import { getSupabase } from './supabase.js'
 import { asRows, FleetError, type BookingRow } from './types.js'
+import { TRIP_END_FREE_STATUSES } from './booking-status.js'
 
 // -----------------------------------------------------------
 // vehicle-schedule — D-19's read side: is this truck busy, and UNTIL WHEN.
@@ -87,7 +88,7 @@ export type ScheduleEntry = {
 // Once a booking reaches one of these the truck is free again. Same list
 // assignment.ts sweeps on, kept in step deliberately: a status that frees the truck
 // there but not here would make the two guards disagree about the same trip.
-const TERMINAL_BOOKING_STATUSES = ['completed', 'paid', 'cancelled']
+const TERMINAL_BOOKING_STATUSES = TRIP_END_FREE_STATUSES as unknown as string[]
 
 const SCHEDULE_BOOKING_COLUMNS =
   'id, vehicle_id, source_address, source_lat, source_lng, destination_address, ' +

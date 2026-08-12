@@ -358,6 +358,9 @@ function userProfile(row: Record<string, unknown>) {
     full_name:      row.full_name ?? null,
     avatar_url:     row.avatar_url ?? null,
     role:           row.role,
+    // FB-04: clients need GSTIN to know whether post-load is allowed.
+    gstin:          row.gstin ?? null,
+    primary_persona: row.primary_persona ?? row.role ?? null,
     email_verified: row.email_verified ?? false,
     google_sub:     row.google_sub ?? null,
     created_at:     row.created_at,
@@ -995,6 +998,30 @@ export async function authRoutes(app: FastifyInstance) {
       success: true,
       data: { user: userProfile(user), ...(await resolveViewerPersonas(app, user)) },
     })
+  })
+
+  // PATCH /auth/me/gstin — FB-04 settings path for the post-load GST hard rule.
+  // Format matches users_gstin_format CHECK (and fleet settings). Null clears it.
+  app.patch('/me/gstin', { preHandler: authenticate }, async (req, reply) => {
+    const body = z.object({
+      gstin: z.union([
+        z.string().regex(/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{2}[0-9A-Z]$/, 'Invalid GSTIN'),
+        z.null(),
+      ]),
+    }).safeParse(req.body)
+    if (!body.success) {
+      return reply.status(400).send({ success: false, error: body.error.errors[0].message })
+    }
+    const { data: user, error } = await app.supabase
+      .from('users')
+      .update({ gstin: body.data.gstin })
+      .eq('id', req.user.userId)
+      .select('*')
+      .single()
+    if (error || !user) {
+      return reply.status(500).send({ success: false, error: 'Failed to update GSTIN' })
+    }
+    return reply.send({ success: true, data: { user: userProfile(user) } })
   })
 
   // ── POST /auth/register ──────────────────────────────────────────────────────

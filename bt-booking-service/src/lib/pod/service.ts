@@ -16,8 +16,9 @@
 // ============================================================
 
 import { z } from 'zod'
-import { relationsToBooking, resolvePersonas, type BookingRelation } from '@bharattruck/shared/personas'
+import { can, relationsToBooking, resolvePersonas, type BookingRelation } from '@bharattruck/shared/personas'
 import type { AuthenticatedUser, BookingStatus, BookingWithProfiles } from '../types.js'
+import { emitAssignmentRelease } from '../fleet-emit.js'
 import { BookingError } from '../types.js'
 import { assertValidTransition } from '../state.js'
 import * as repo from '../repository.js'
@@ -100,21 +101,18 @@ async function resolveAssignedDriver(
   bookingId: string,
   actor: AuthenticatedUser,
 ): Promise<{ booking: BookingWithProfiles; driverId: string }> {
-  if (actor.role !== 'driver') {
+  const snapshot = await resolvePersonas(supabase, actor.userId, actor.role)
+  if (!can(snapshot, 'drive') || !snapshot.driver_id) {
     throw new BookingError('Only the assigned driver can perform this POD action', 'FORBIDDEN', 403)
   }
   const booking = await repo.getBookingById(bookingId)
   if (!booking) {
     throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
   }
-  const driverRow = await repo.getDriverByUserId(actor.userId)
-  if (!driverRow) {
-    throw new BookingError('Driver profile not found', 'NOT_FOUND', 404)
-  }
-  if (booking.driver_id !== driverRow.id) {
+  if (booking.driver_id !== snapshot.driver_id) {
     throw new BookingError('You are not assigned to this booking', 'FORBIDDEN', 403)
   }
-  return { booking, driverId: driverRow.id }
+  return { booking, driverId: snapshot.driver_id }
 }
 
 // -----------------------------------------------------------
@@ -582,6 +580,9 @@ export async function assertDelivery(
     },
     log,
   )
+
+  // FB-01: free truck at delivery_asserted (trip end), not only at paid.
+  emitAssignmentRelease(bookingId, log)
 
   return {
     booking_id: bookingId,

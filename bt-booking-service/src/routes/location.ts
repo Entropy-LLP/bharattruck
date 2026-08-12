@@ -1,3 +1,4 @@
+import { can, relationsToBooking, resolvePersonas } from '@bharattruck/shared/personas'
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { canFleetAccessBooking, resolveFleetOwnerByUserId } from '@bharattruck/shared/fleet'
@@ -68,29 +69,12 @@ async function getLocation(driverId: string): Promise<LocationData | null> {
 
 async function assertCanAccessBooking(booking: DbBooking, user: AuthenticatedUser): Promise<void> {
   if (user.role === 'admin') return
-  if (user.role === 'shipper') {
-    if (booking.shipper_id !== user.userId) throw new BookingError('Forbidden', 'FORBIDDEN', 403)
-    return
-  }
-  if (user.role === 'driver') {
-    const driverRow = await repo.getDriverByUserId(user.userId)
-    if (!driverRow || booking.driver_id !== driverRow.id) {
-      throw new BookingError('Forbidden', 'FORBIDDEN', 403)
-    }
-    return
-  }
-  if (user.role === 'fleet_owner') {
-    // A fleet_owner token with no fleet_owners row means registration never
-    // completed — that is "no fleet", never "all fleets".
-    const fleet = await resolveFleetOwnerByUserId(supabase, user.userId)
-    if (!fleet) throw new BookingError('Forbidden', 'FORBIDDEN', 403)
-    // getBookingById selects `*`, so fleet_owner_id / vehicle_id are already on the
-    // row — the reach test needs no extra read here.
-    if (!(await canFleetAccessBooking(supabase, fleet.id, booking))) {
-      throw new BookingError('Forbidden', 'FORBIDDEN', 403)
-    }
-    return
-  }
+  const snapshot = await resolvePersonas(supabase, user.userId, user.role)
+  const relations = relationsToBooking(booking, snapshot)
+  if (relations.includes('shipper') || relations.includes('driver') || relations.includes('carrier')) return
+  // Fleet reach beyond direct carrier relation (affiliated assets on this trip).
+  const fleet = await resolveFleetOwnerByUserId(supabase, user.userId)
+  if (fleet && await canFleetAccessBooking(supabase, fleet.id, booking)) return
   throw new BookingError('Forbidden', 'FORBIDDEN', 403)
 }
 
@@ -216,7 +200,8 @@ export async function locationRoutes(app: FastifyInstance) {
 
   // POST /location/update
   app.post('/update', async (req, reply) => {
-    if (req.user.role !== 'driver') {
+    const snapshot = await resolvePersonas(supabase, req.user.userId, req.user.role)
+    if (!can(snapshot, 'drive')) {
       throw new BookingError('Only drivers can update location', 'FORBIDDEN', 403)
     }
 

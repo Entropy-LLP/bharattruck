@@ -431,15 +431,16 @@ export async function listQuotes(
     throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
   }
 
-  if (actor.role === 'shipper' && booking.shipper_id !== actor.userId) {
-    throw new BookingError('Forbidden', 'FORBIDDEN', 403)
+  // De-roled (FB-11): shipper relation sees all bids; others see only their own.
+  if (actor.role === 'admin') {
+    return quoteRepo.listQuotesForBooking(bookingId, actor, undefined)
   }
-
-  let bidder: Bidder | undefined
-  if (actor.role !== 'shipper' && actor.role !== 'admin') {
-    bidder = (await resolveBidderOrNull(actor)) ?? undefined
+  const snapshot = await resolvePersonas(supabase, actor.userId, actor.role)
+  const isShipper = relationsToBooking(booking, snapshot).includes('shipper')
+  if (isShipper) {
+    return quoteRepo.listQuotesForBooking(bookingId, { ...actor, role: 'shipper' }, undefined)
   }
-
+  const bidder = (await resolveBidderOrNull(actor)) ?? undefined
   return quoteRepo.listQuotesForBooking(bookingId, actor, bidder)
 }
 
@@ -459,19 +460,19 @@ export async function getQuoteHistory(
     throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
   }
 
-  if (actor.role === 'shipper' && booking.shipper_id !== actor.userId) {
-    throw new BookingError('Forbidden', 'FORBIDDEN', 403)
-  }
-
   const quote = await quoteRepo.getQuoteById(quoteId)
   if (!quote || quote.booking_id !== bookingId) {
     throw new BookingError(`Quote ${quoteId} not found`, 'QUOTE_NOT_FOUND', 404)
   }
 
-  if (actor.role !== 'shipper' && actor.role !== 'admin') {
-    const bidder = await resolveBidderOrNull(actor)
-    if (!bidder || !quoteBelongsTo(quote, bidder)) {
-      throw new BookingError('Forbidden', 'FORBIDDEN', 403)
+  if (actor.role !== 'admin') {
+    const snapshot = await resolvePersonas(supabase, actor.userId, actor.role)
+    const isShipper = relationsToBooking(booking, snapshot).includes('shipper')
+    if (!isShipper) {
+      const bidder = await resolveBidderOrNull(actor)
+      if (!bidder || !quoteBelongsTo(quote, bidder)) {
+        throw new BookingError('Forbidden', 'FORBIDDEN', 403)
+      }
     }
   }
 

@@ -8,6 +8,7 @@
 // bt_token) so all three can be open in one browser without clobbering each
 // other's session. This app owns bt_fleet_*.
 
+import { storageKey } from './session-keys'
 import type {
   AuthUser, FleetOwner, Vehicle, VehicleFinance, VehiclePermit, VehicleLane,
   FleetDriver, FleetSummary, VehicleAnalytics, DriverAnalytics, FuelComparison,
@@ -17,28 +18,31 @@ import type {
 } from './types'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
-const TOKEN_KEY = 'bt_fleet_token'
-const REFRESH_KEY = 'bt_fleet_refresh_token'
+// FB-10: pass ?profile=<slug> to partition tokens for multi-account QA.
+const TOKEN_KEY_BASE = 'bt_fleet_token'
+const REFRESH_KEY_BASE = 'bt_fleet_refresh_token'
+const TOKEN_KEY = () => storageKey(TOKEN_KEY_BASE)
+const REFRESH_KEY = () => storageKey(REFRESH_KEY_BASE)
 
 // ── Token storage ─────────────────────────────────────────────
 
 export function getToken(): string | null {
   if (typeof window === 'undefined') return null
-  const raw = localStorage.getItem(TOKEN_KEY)
+  const raw = localStorage.getItem(TOKEN_KEY())
   // Tokens are sometimes pasted by hand during QA; strip stray newlines the way
   // the shipper client does, otherwise the Authorization header is malformed.
   return raw ? raw.trim().replace(/[\r\n]+/g, '') : null
 }
 
-export function setToken(token: string) { localStorage.setItem(TOKEN_KEY, token) }
-export function clearToken() { localStorage.removeItem(TOKEN_KEY) }
+export function setToken(token: string) { localStorage.setItem(TOKEN_KEY(), token) }
+export function clearToken() { localStorage.removeItem(TOKEN_KEY()) }
 
 export function getRefreshToken(): string | null {
   if (typeof window === 'undefined') return null
-  return localStorage.getItem(REFRESH_KEY)
+  return localStorage.getItem(REFRESH_KEY())
 }
-export function setRefreshToken(token: string) { localStorage.setItem(REFRESH_KEY, token) }
-export function clearRefreshToken() { localStorage.removeItem(REFRESH_KEY) }
+export function setRefreshToken(token: string) { localStorage.setItem(REFRESH_KEY(), token) }
+export function clearRefreshToken() { localStorage.removeItem(REFRESH_KEY()) }
 
 // ── Errors ────────────────────────────────────────────────────
 
