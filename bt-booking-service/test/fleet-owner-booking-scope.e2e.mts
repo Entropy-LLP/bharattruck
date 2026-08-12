@@ -1,5 +1,5 @@
 /**
- * Tenant isolation for GET /bookings, pinned per role.
+ * Tenant isolation for GET /bookings, pinned per persona/capability (FB-11 / D-27).
  *
  * THE BUG THIS EXISTS FOR: repository.listBookings() branched on 'shipper' and 'driver'.
  * `fleet_owner` — added to the role enum in migration 0014 — matched NEITHER, so it fell
@@ -7,7 +7,11 @@
  * returned EVERY booking on the platform to any fleet account: other shippers' loads,
  * addresses, and prices. No test covered the role, which is why it survived.
  *
- * These checks are deliberately about what each role must NOT see. A test that only
+ * Under FB-11 the board is gated on capabilities (carry/operate), not the JWT role
+ * string: a fleet owner who owns trucks browses pending; a bare shipper only sees
+ * their own posts; a driver with a drivers row sees the open board.
+ *
+ * These checks are deliberately about what each actor must NOT see. A test that only
  * asserts "the fleet sees the open load" would have passed against the broken code too.
  *
  * Exercises the REAL route via app.inject() with the in-memory fake Supabase seam.
@@ -32,6 +36,9 @@ const FLEET_USER = '77777777-7777-4777-8777-777777777777'
 const DRIVER_USER = '88888888-8888-4888-8888-888888888888'
 const ADMIN_USER = '99999999-9999-4999-8999-999999999999'
 
+const FO1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+const D_SOLO = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+
 type Row = Record<string, any>
 const store: Record<string, Row[]> = {
   bookings: [
@@ -40,24 +47,57 @@ const store: Record<string, Row[]> = {
     { id: PRIVATE_INTRANSIT, shipper_id: SHIPPER_2, driver_id: 'd1', status: 'in_transit', quoted_price: 90000, created_at: '2026-07-28T00:00:00Z' },
     { id: PRIVATE_PAID, shipper_id: SHIPPER_2, driver_id: 'd1', status: 'paid', quoted_price: 83500, created_at: '2026-07-27T00:00:00Z' },
   ],
-  // No fleet_drivers row for this user: the actor is a fleet OWNER, not a fleet driver.
+  // Fleet OWNER (not employed driver): two trucks → operate → marketplace browse.
+  fleet_owners: [{ id: FO1, user_id: FLEET_USER, company_name: 'Scope Fleet', is_active: true }],
+  vehicles: [
+    { id: 'v1', driver_id: null, fleet_owner_id: FO1 },
+    { id: 'v2', driver_id: null, fleet_owner_id: FO1 },
+  ],
+  drivers: [{ id: D_SOLO, user_id: DRIVER_USER }],
   fleet_drivers: [],
-  drivers: [],
+  users: [],
 }
 
 class FakeQuery {
-  private filters: Array<['eq' | 'in', string, any]> = []
+  private filters: Array<['eq' | 'in' | 'or', string, any]> = []
+  private headOnly = false
   constructor(private table: string) {}
-  select() { return this }
+  select(_cols?: string, opts?: { count?: string; head?: boolean }) {
+    if (opts?.head) this.headOnly = true
+    return this
+  }
   eq(c: string, v: any) { this.filters.push(['eq', c, v]); return this }
   in(c: string, v: any[]) { this.filters.push(['in', c, v]); return this }
+  or(expr: string) { this.filters.push(['or', expr, null]); return this }
   order() { return this }
   limit() { return this }
-  private match(r: Row) {
-    return this.filters.every(([o, c, v]) => (o === 'eq' ? r[c] === v : v.includes(r[c])))
+  private orMatch(r: Row, expr: string) {
+    return expr.split(',').some((term) => {
+      const first = term.indexOf('.')
+      const second = term.indexOf('.', first + 1)
+      if (first < 0 || second < 0) throw new Error(`fake .or(): cannot parse "${term}"`)
+      const op = term.slice(first + 1, second)
+      if (op !== 'eq') throw new Error(`fake .or(): unsupported operator "${op}"`)
+      return String(r[term.slice(0, first)] ?? '') === term.slice(second + 1)
+    })
   }
-  private run() { return { data: (store[this.table] ?? []).filter(r => this.match(r)), error: null } }
-  maybeSingle() { const { data, error } = this.run(); return Promise.resolve({ data: data.length ? data[0] : null, error }) }
+  private match(r: Row) {
+    return this.filters.every(([op, col, val]) => {
+      if (op === 'eq') return r[col] === val
+      if (op === 'in') return (val as any[]).includes(r[col])
+      return this.orMatch(r, col)
+    })
+  }
+  private run() {
+    const rows = store[this.table] ?? []
+    const hit = rows.filter((r) => this.match(r))
+    if (this.headOnly) return { data: null, error: null, count: hit.length }
+    return { data: hit, error: null }
+  }
+  maybeSingle() {
+    const { data, error } = this.run()
+    return Promise.resolve({ data: data?.length ? data[0] : null, error })
+  }
   single() { return this.maybeSingle() }
   then(f: (v: any) => any, r?: (e: any) => any) { return Promise.resolve(this.run()).then(f, r) }
 }
@@ -92,7 +132,7 @@ async function main() {
     return { code: r.statusCode, ids: (r.json().data ?? []).map((b: Row) => b.id) as string[] }
   }
 
-  console.log('\n── fleet_owner sees the open load board and nothing else ──')
+  console.log('\n── fleet owner with trucks sees the open load board and nothing else ──')
   const fleet = await listAs(FLEET_USER, 'fleet_owner')
   check('fleet_owner 200', fleet.code === 200, `(got ${fleet.code})`)
   check('fleet_owner sees both open loads', fleet.ids.includes(OPEN_A) && fleet.ids.includes(OPEN_B), JSON.stringify(fleet.ids))
@@ -101,7 +141,7 @@ async function main() {
   check("fleet_owner does NOT see another shipper's paid booking", !fleet.ids.includes(PRIVATE_PAID), JSON.stringify(fleet.ids))
   check('fleet_owner sees exactly the 2 pending loads', fleet.ids.length === 2, `(got ${fleet.ids.length})`)
 
-  console.log('\n── the other roles are unchanged ──')
+  console.log('\n── the other personas are unchanged ──')
   const shipper1 = await listAs(SHIPPER_1, 'shipper')
   check('shipper sees only their own booking', shipper1.ids.length === 1 && shipper1.ids[0] === OPEN_A, JSON.stringify(shipper1.ids))
   check("shipper does NOT see the other shipper's loads", !shipper1.ids.includes(OPEN_B) && !shipper1.ids.includes(PRIVATE_PAID), JSON.stringify(shipper1.ids))

@@ -186,8 +186,9 @@ export async function getActiveBookingsForDriver(driverId: string): Promise<DbBo
 // drivers row, and it decides which slice of the board that driver gets:
 //   fleet-employed → their assignments ONLY (they have no load board, Q14)
 //   solo           → the open 'pending' pool PLUS the trips already theirs
-// Absent — a driver account with no drivers row — the query is the original
-// pending-only one.
+// Absent driverId + canBrowseMarketplace → pending board only (fleet/ops
+// carriers browsing without being the assigned driver). Absent both → only
+// shipper_id=self (FB-11: a JWT 'driver' with no drivers row sees nothing).
 //
 // driverId is drivers.id, NOT the JWT's users.id: bookings.driver_id
 // references drivers(id) (see the auth/identity gotcha in CLAUDE.md).
