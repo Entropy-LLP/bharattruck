@@ -79,6 +79,8 @@ function reset() {
     users: [
       { id: U_SHIPPER, full_name: 'Destinio Clothing Co.', phone_number: '9111111111',
         email: 'ops@destinio.in', city: 'Mumbai', role: 'shipper', claimed_at: CLAIMED_AT,
+        // FB-04: post-load requires shipper (or fleet) GSTIN.
+        gstin: '27AAAAA0000A1Z5',
         password_hash: 'bcrypt$existing', created_at: CLAIMED_AT },
       { id: U_CONSIGNEE, full_name: EXISTING_NAME, phone_number: EXISTING_PHONE,
         email: EXISTING_EMAIL, gstin: EXISTING_GSTIN, city: EXISTING_CITY, address: '14 MIDC Road',

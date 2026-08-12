@@ -1,5 +1,5 @@
-import type {
 import { storageKey } from './session-keys'
+import type {
   Booking,
   Quote,
   NegotiationEntry,
