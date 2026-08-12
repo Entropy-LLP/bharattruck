@@ -599,6 +599,8 @@ export interface AuthUser {
   full_name: string | null
   avatar_url: string | null
   role: string
+  /** users.gstin — required before posting a load (FB-04). */
+  gstin?: string | null
   email_verified?: boolean
   google_sub?: string | null
   created_at?: string
@@ -671,6 +673,14 @@ export function refreshAccessToken(refreshToken: string) {
 
 export function getMe() {
   return authRequest<{ user: AuthUser }>('/auth/me')
+}
+
+/** FB-04: save shipper GSTIN on users.gstin. */
+export function updateMyGstin(gstin: string | null) {
+  return authRequest<{ user: AuthUser }>('/auth/me/gstin', {
+    method: 'PATCH',
+    body: JSON.stringify({ gstin }),
+  })
 }
 
 export function registerProfile(body: { full_name: string; role: string; email?: string }) {

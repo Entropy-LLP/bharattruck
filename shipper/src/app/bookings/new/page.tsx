@@ -173,9 +173,17 @@ export default function NewBookingPage() {
       toast.success('Booking created!')
       router.push(`/bookings/${booking.id}`)
     } catch (err: unknown) {
-      // Expired (VALIDATION_ERROR) or already-used (INVALID_TRANSITION) lock:
-      // drop it and make the shipper re-fetch a fresh quote.
-      if (err instanceof ApiError && (err.code === 'VALIDATION_ERROR' || err.code === 'INVALID_TRANSITION')) {
+      // FB-04: GSTIN missing — send them to Settings instead of a dead-end toast.
+      if (err instanceof ApiError && /GSTIN/i.test(err.message)) {
+        toast.error(err.message, {
+          action: {
+            label: 'Open Settings',
+            onClick: () => router.push('/settings'),
+          },
+        })
+      } else if (err instanceof ApiError && (err.code === 'VALIDATION_ERROR' || err.code === 'INVALID_TRANSITION')) {
+        // Expired (VALIDATION_ERROR) or already-used (INVALID_TRANSITION) lock:
+        // drop it and make the shipper re-fetch a fresh quote.
         setQuote(null)
         toast.error('Your locked price is no longer valid — please get a new quote')
       } else {

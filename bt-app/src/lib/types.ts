@@ -27,6 +27,8 @@ export type AuthUser = {
   full_name: string | null
   avatar_url: string | null
   role: 'shipper' | 'driver' | 'admin' | 'fleet_owner'
+  /** users.gstin — required before posting a load (FB-04). */
+  gstin: string | null
   email_verified: boolean
   created_at: string
 }

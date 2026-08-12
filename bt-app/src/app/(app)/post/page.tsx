@@ -21,6 +21,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 import { toast } from 'sonner'
 import { PackagePlus } from 'lucide-react'
 
@@ -91,6 +92,7 @@ export default function PostLoadPage() {
   const [submitting, setSubmitting] = useState(false)
   const [quoting, setQuoting] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
+  const [gstinBlocked, setGstinBlocked] = useState(false)
   const [quoteError, setQuoteError] = useState<string | null>(null)
 
   const [bookingType, setBookingType] = useState<BookingType>('auction')
@@ -261,12 +263,21 @@ export default function PostLoadPage() {
       }
       router.push(`/loads/${booking.id}`)
     } catch (err: unknown) {
+      // GSTIN missing (FB-04): point at Settings rather than a dead-end message.
+      if (err instanceof ApiError && /GSTIN/i.test(err.message)) {
+        setFormError(err.message)
+        setGstinBlocked(true)
+        setSubmitting(false)
+        return
+      }
       // An expired or already-used price-lock: drop it and make the shipper re-quote.
       if (err instanceof ApiError && (err.code === 'VALIDATION_ERROR' || err.code === 'INVALID_TRANSITION')) {
         setQuote(null)
         setFormError('Your quoted price is no longer valid — please get a new quote and try again.')
+        setGstinBlocked(false)
       } else {
         setFormError(err instanceof ApiError ? err.message : 'Could not post the load — please try again.')
+        setGstinBlocked(false)
       }
       setSubmitting(false)
     }
@@ -569,7 +580,19 @@ export default function PostLoadPage() {
           </div>
         </Card>
 
-        {formError && <ErrorNote message={formError} />}
+        {formError && (
+          <div className="space-y-2">
+            <ErrorNote message={formError} />
+            {gstinBlocked && (
+              <p className="text-sm text-gray-700">
+                <Link href="/settings" className="font-semibold text-blue-600 hover:underline">
+                  Open Settings → Your GSTIN
+                </Link>
+                {' '}to add it, then try posting again.
+              </p>
+            )}
+          </div>
+        )}
 
         <button type="submit" disabled={submitting || !quote} className={`${PRIMARY_BTN} w-full`}>
           {submitting ? 'Posting…' : quote ? 'Post load' : 'Get a quote to continue'}

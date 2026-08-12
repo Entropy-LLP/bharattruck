@@ -417,7 +417,7 @@ export async function withdrawQuote(
 
 // -----------------------------------------------------------
 // listQuotes
-// Returns quotes for a booking, scoped by the actor's role.
+// Returns quotes for a booking, scoped by shipper relation / ops — never JWT role.
 // A bidder — solo driver or fleet owner — only sees its own quote
 // (blind auction enforcement).
 // -----------------------------------------------------------
@@ -431,17 +431,18 @@ export async function listQuotes(
     throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
   }
 
-  // De-roled (FB-11): shipper relation sees all bids; others see only their own.
+  // De-roled (FB-11): shipper relation (or ops) sees all bids; others see only their own.
+  // No role-spoof: seeAllQuotes is an explicit flag, not actor.role === 'shipper'.
   if (actor.role === 'admin') {
-    return quoteRepo.listQuotesForBooking(bookingId, actor, undefined)
+    return quoteRepo.listQuotesForBooking(bookingId, { seeAllQuotes: true })
   }
   const snapshot = await resolvePersonas(supabase, actor.userId, actor.role)
   const isShipper = relationsToBooking(booking, snapshot).includes('shipper')
   if (isShipper) {
-    return quoteRepo.listQuotesForBooking(bookingId, { ...actor, role: 'shipper' }, undefined)
+    return quoteRepo.listQuotesForBooking(bookingId, { seeAllQuotes: true })
   }
   const bidder = (await resolveBidderOrNull(actor)) ?? undefined
-  return quoteRepo.listQuotesForBooking(bookingId, actor, bidder)
+  return quoteRepo.listQuotesForBooking(bookingId, { seeAllQuotes: false, bidder })
 }
 
 // -----------------------------------------------------------

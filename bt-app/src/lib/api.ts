@@ -185,6 +185,14 @@ export function getMe() {
   return authRequest<MeResponse>('/auth/me')
 }
 
+/** FB-04: save shipper GSTIN on users.gstin (format matches users_gstin_format CHECK). */
+export function updateMyGstin(gstin: string | null) {
+  return authRequest<{ user: AuthUser }>('/auth/me/gstin', {
+    method: 'PATCH',
+    body: JSON.stringify({ gstin }),
+  })
+}
+
 export function refreshAccessToken(refresh_token: string) {
   return authRequest<{ access_token: string }>(
     '/auth/refresh', { method: 'POST', body: JSON.stringify({ refresh_token }) })

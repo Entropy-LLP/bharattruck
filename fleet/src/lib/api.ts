@@ -167,7 +167,13 @@ export function loginWithEmail(email: string, password: string) {
 }
 
 export function getMe() {
-  return authRequest<{ user: AuthUser }>('/auth/me')
+  return authRequest<{
+    user: AuthUser
+    personas?: {
+      capabilities?: Array<'ship' | 'drive' | 'carry' | 'operate'>
+      fleet_owner_id?: string | null
+    } | null
+  }>('/auth/me')
 }
 
 export function refreshAccessToken(refresh_token: string) {

@@ -728,7 +728,8 @@ async function transitionAssignedBooking(
     assertFleetAssignmentReady(await hasLiveVehicleAssignment(bookingId))
   }
 
-  // FB-03: invoice + recorded/uploaded e-way bill before pickup.
+  // FB-03: tax invoice always; e-way when ewayBillRequirement says required (or
+  // declines — fail closed). See assertPickupDocumentsReady.
   await assertPickupDocumentsReady(bookingId)
 
   const updated = await repo.transitionBookingStatus(bookingId, snapshot.driver_id, booking.status, to)

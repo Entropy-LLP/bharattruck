@@ -242,12 +242,16 @@ export async function listBookingsForScope(scope: BookingListScope): Promise<DbB
   return (data ?? []) as DbBooking[]
 }
 
-/** @deprecated Prefer listBookingsForScope — kept for older e2e suites. */
+/** @deprecated Prefer listBookingsForScope — kept for older e2e suites.
+ *  Scopes from capabilities when possible; JWT role is only the admin carve-out
+ *  and a last-resort fallback for suites that do not resolve personas. */
 export async function listBookings(
   actor: AuthenticatedUser,
   driver?: DriverListScope,
 ): Promise<DbBooking[]> {
   if (actor.role === 'admin') return listBookingsForScope({ kind: 'admin' })
+  // Fallback for deprecated callers: treat role as a coarse persona hint.
+  // New code must go through service.listBookings → listBookingsForScope.
   if (actor.role === 'shipper') {
     return listBookingsForScope({
       kind: 'persona', userId: actor.userId, driverId: null, employed: false, canBrowseMarketplace: false,

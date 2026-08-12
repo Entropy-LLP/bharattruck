@@ -835,16 +835,17 @@ export async function setExpectedQuantity(
     throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
   }
 
-  if (actor.role === 'shipper') {
-    if (booking.shipper_id !== actor.userId) {
-      throw new BookingError('Forbidden', 'FORBIDDEN', 403)
+  // WHO: owning shipper relation or ops — never JWT role (D-27). A distributor
+  // holding a fleet_owner-role token who POSTED this load passes; the driver never does.
+  if (actor.role !== 'admin') {
+    const snapshot = await resolvePersonas(supabase, actor.userId, actor.role)
+    if (!relationsToBooking(booking, snapshot).includes('shipper')) {
+      throw new BookingError(
+        'Only the shipper who owns this booking (or ops) can set the expected quantity — never the driver',
+        'FORBIDDEN',
+        403,
+      )
     }
-  } else if (actor.role !== 'admin') {
-    throw new BookingError(
-      'Only the shipper who owns this booking (or ops) can set the expected quantity — never the driver',
-      'FORBIDDEN',
-      403,
-    )
   }
 
   if (!EXPECTED_QTY_EDITABLE.includes(booking.status)) {

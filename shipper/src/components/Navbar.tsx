@@ -77,6 +77,19 @@ export default function Navbar() {
                 )}
                 <span className="relative">New Booking</span>
               </Link>
+              <Link
+                href="/settings"
+                className={`relative px-4 py-2 rounded-xl text-sm font-semibold transition-all ${
+                  isActive('/settings')
+                    ? 'text-blue-400'
+                    : 'text-white/40 hover:text-white hover:bg-card/5'
+                }`}
+              >
+                {isActive('/settings') && (
+                  <span className="absolute inset-0 rounded-xl bg-blue-600/12 border border-blue-500/20" />
+                )}
+                <span className="relative">Settings</span>
+              </Link>
             </div>
           </div>
 

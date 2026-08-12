@@ -634,12 +634,12 @@ export async function recordEwayBill(
   }
 
   const invoice = await docs.getFreightInvoice(bookingId)
-  // Pickup hard-gate (FB-03) needs invoice + recorded e-way. Filing an e-way with
-  // no invoice number to hang Part A on leaves the trip unable to start.
+  // Pickup hard-gate (FB-03) always needs the tax invoice. E-way is required when
+  // ewayBillRequirement says so — see assertPickupDocumentsReady.
   if (!invoice) {
     throw new BookingError(
       'Record the tax invoice for this booking before filing its e-way bill — ' +
-      'Part A needs the invoice number, and pickup will not start without both',
+      'Part A needs the invoice number, and pickup will not start without both when an e-way is required',
       'INVALID_TRANSITION',
       409,
     )
@@ -671,21 +671,51 @@ export async function recordEwayBill(
   return withExpiry(record)
 }
 
-// FB-03 hard gate on accepted → in_transit: invoice + standing uploaded e-way.
+// FB-03 hard gate on accepted → in_transit: tax invoice always; e-way only when
+// ewayBillRequirement.required !== false. Fail closed when the helper declines
+// (required === null — unknown ends / intra-state): safer than letting a truck
+// move without a bill that may be legally required (D-17 still record+upload only).
 export async function assertPickupDocumentsReady(bookingId: string): Promise<void> {
   const invoice = await docs.getFreightInvoice(bookingId)
-  const standing = standingEwayBill(await docs.listEwayBills(bookingId))
+  if (!invoice) {
+    throw new BookingError(
+      'Cannot start trip — missing required freight documents before pickup: tax invoice. ' +
+      'The shipper must issue the invoice first.',
+      'INVALID_TRANSITION',
+      409,
+    )
+  }
 
+  const ewbNeed = ewayBillRequirement({
+    consignmentValueInr: Number(invoice.consignment_value_inr),
+    fromStateCode: stateCodeOfGstin(invoice.supplier_gstin),
+    toStateCode:
+      invoice.shipped_to_state_code ??
+      stateCodeOfGstin(invoice.shipped_to_gstin) ??
+      invoice.billed_to_state_code ??
+      stateCodeOfGstin(invoice.billed_to_gstin) ??
+      invoice.place_of_supply_code ??
+      null,
+  })
+
+  // required === false → inter-state under threshold; skip e-way. Otherwise require it.
+  if (ewbNeed.required === false) return
+
+  const standing = standingEwayBill(await docs.listEwayBills(bookingId))
   const missing: string[] = []
-  if (!invoice) missing.push('tax invoice')
   if (!standing) missing.push('e-way bill record')
   else if (!standing.document_uri) missing.push('e-way bill upload (document_uri)')
 
   if (missing.length === 0) return
 
+  const why =
+    ewbNeed.required === null
+      ? `E-way requirement could not be determined (${ewbNeed.reason}) — failing closed.`
+      : ewbNeed.reason
+
   throw new BookingError(
     `Cannot start trip — missing required freight documents before pickup: ${missing.join(' and ')}. ` +
-    `The shipper must issue the invoice and record+upload the e-way bill first.`,
+    `${why} The shipper must record+upload the e-way bill first.`,
     'INVALID_TRANSITION',
     409,
   )

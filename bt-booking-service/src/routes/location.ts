@@ -60,11 +60,9 @@ async function getLocation(driverId: string): Promise<LocationData | null> {
 // (live since migration 0014) could read ANY driver's current coordinates by
 // uuid — a cross-tenant leak of a person's position, not just of a trip.
 //
-// The shape deliberately mirrors bt-tracking-service's assertCanAccess: both
-// services serve the same live fix, so they must answer "may this caller see it?"
-// the same way, and the fleet reach test itself is the SHARED one
-// (@bharattruck/shared/fleet) so neither can drift from the other. Each relation
-// gets its own branch and returns; an unmatched role reaches the throw.
+// Now keyed on capabilities + relations (FB-11), mirroring bt-tracking-service's
+// assertCanAccess. Fleet reach stays in @bharattruck/shared/fleet so neither
+// service can drift. Closed by default — no match reaches the throw.
 // -----------------------------------------------------------
 
 async function assertCanAccessBooking(booking: DbBooking, user: AuthenticatedUser): Promise<void> {
@@ -79,34 +77,31 @@ async function assertCanAccessBooking(booking: DbBooking, user: AuthenticatedUse
 }
 
 async function assertCanAccessDriverLocation(driverId: string, user: AuthenticatedUser): Promise<void> {
+  // Ops carve-out (no 'admin' capability). Everything else is capability + relation.
   if (user.role === 'admin') return
-  if (user.role === 'driver') {
-    const driverRow = await repo.getDriverByUserId(user.userId)
-    if (!driverRow || driverRow.id !== driverId) {
-      throw new BookingError('You can only view your own location', 'FORBIDDEN', 403)
-    }
-    return
-  }
-  if (user.role === 'shipper') {
-    if (!(await shipperHasActiveBookingWithDriver(user.userId, driverId))) {
-      throw new BookingError('You can only view location for drivers assigned to your active bookings', 'FORBIDDEN', 403)
-    }
-    return
-  }
-  if (user.role === 'fleet_owner') {
-    // This route names a PERSON, not a trip, and a fleet has no standing reach over a
-    // person — only over the trips it runs. So the grant is exactly "this driver is
-    // running a trip this fleet may see right now", which the active-trip lookup
-    // answers directly: employing the driver is not on its own enough, and the grant
-    // ends when the trip does. At most two rows (see ACTIVE_TRIP_STATUSES), so the
-    // sequential reach tests cost the same as the single one on the booking route.
-    const fleet = await resolveFleetOwnerByUserId(supabase, user.userId)
-    if (!fleet) throw new BookingError('Forbidden', 'FORBIDDEN', 403)
+
+  const snapshot = await resolvePersonas(supabase, user.userId, user.role)
+
+  // Own live fix: 'drive' capability == drivers row; multi-persona humans keep this
+  // even when their JWT role string is shipper/fleet_owner.
+  if (snapshot.driver_id === driverId) return
+
+  // Shipper of an active trip this driver is on (userId match, not JWT role).
+  if (await shipperHasActiveBookingWithDriver(user.userId, driverId)) return
+
+  // Fleet operate: this route names a PERSON, not a trip — grant is only "this driver
+  // is running a trip this fleet may see right now". Employment alone is not enough.
+  if (snapshot.fleet_owner_id) {
     for (const booking of await repo.getActiveBookingsForDriver(driverId)) {
-      if (await canFleetAccessBooking(supabase, fleet.id, booking)) return
+      if (await canFleetAccessBooking(supabase, snapshot.fleet_owner_id, booking)) return
     }
-    throw new BookingError('You can only view location for drivers currently running a trip for your fleet', 'FORBIDDEN', 403)
+    throw new BookingError(
+      'You can only view location for drivers currently running a trip for your fleet',
+      'FORBIDDEN',
+      403,
+    )
   }
+
   throw new BookingError('Forbidden', 'FORBIDDEN', 403)
 }
 
