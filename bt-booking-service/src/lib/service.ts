@@ -273,10 +273,12 @@ async function assertShipperGstPresent(userId: string): Promise<void> {
     return
   }
 
+  // Dedicated code (not the generic VALIDATION_ERROR shared with an expired quote-lock) so
+  // the client can tell "add a GSTIN" apart from "re-quote" by CODE, never by message text.
   throw new BookingError(
     'Add a GSTIN on your profile before posting a load — Settings → GSTIN ' +
     '(required on every booking; acknowledgement alone is not enough)',
-    'VALIDATION_ERROR',
+    'GST_REQUIRED',
     400,
   )
 }
@@ -402,10 +404,16 @@ export async function listBookings(
     employed: scope?.employed ?? false,
     canBrowseMarketplace,
   })
-  const masked = scope?.employed ? bookings.map(stripCommercialFields) : bookings
-  const withConsignee = await attachConsignees(masked, actor)
-  const seesCommercials = !scope?.employed
-  return withConsignee.map((b) => withViewer(b, relationsToBooking(b, snapshot), seesCommercials))
+  const withConsignee = await attachConsignees(bookings, actor)
+  // Commercials follow the RELATION, per row. An employed driver "sees the job, not the
+  // money" on loads they DRIVE — but a load they POSTED themselves is their own shipper
+  // load, and hiding its price from the shipper who set it makes no sense. So a row's
+  // money is masked only when the viewer is employed AND is not that row's shipper.
+  return withConsignee.map((b) => {
+    const relations = relationsToBooking(b, snapshot)
+    const sees = !scope?.employed || relations.includes('shipper')
+    return withViewer(sees ? b : stripCommercialFields(b), relations, sees)
+  })
 }
 
 // -----------------------------------------------------------

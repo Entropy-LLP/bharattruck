@@ -217,6 +217,16 @@ export type BookingListScope =
       canBrowseMarketplace: boolean
     }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** Guards an id destined for an interpolated PostgREST .or() term. See listBookingsForScope. */
+function scopeUuid(value: string, field: string): string {
+  if (!UUID_RE.test(value)) {
+    throw new Error(`refusing to build booking scope filter with a non-uuid ${field}`)
+  }
+  return value
+}
+
 export async function listBookingsForScope(scope: BookingListScope): Promise<DbBooking[]> {
   let query = supabase
     .from('bookings')
@@ -229,9 +239,14 @@ export async function listBookingsForScope(scope: BookingListScope): Promise<DbB
     return (data ?? []) as DbBooking[]
   }
 
-  const parts: string[] = [`shipper_id.eq.${scope.userId}`]
+  // The .or() grammar is string-interpolated and supabase-js does NOT escape its contents,
+  // so on this tenant-isolation filter the ids must be hard-guarded as UUIDs — not merely
+  // assumed to be. bookings.shipper_id/driver_id are uuid columns and userId is the JWT
+  // subject, so a non-uuid here means a malformed token, never legitimate input; refuse it
+  // rather than let a PostgREST metacharacter inject an extra OR-term into the scope.
+  const parts: string[] = [`shipper_id.eq.${scopeUuid(scope.userId, 'userId')}`]
   if (scope.driverId) {
-    parts.push(`driver_id.eq.${scope.driverId}`)
+    parts.push(`driver_id.eq.${scopeUuid(scope.driverId, 'driverId')}`)
     if (!scope.employed && scope.canBrowseMarketplace) parts.push('status.eq.pending')
   } else if (scope.canBrowseMarketplace) {
     parts.push('status.eq.pending')
@@ -262,7 +277,9 @@ export async function listBookings(
     return listBookingsForScope({
       kind: 'persona', userId: actor.userId,
       driverId: driver?.driverId ?? null, employed: driver?.employed ?? false,
-      canBrowseMarketplace: !driver?.employed,
+      // Only a resolved (non-employed) driver browses the board; a 'driver' token with no
+      // drivers row sees nothing but their own posts (matches the header contract).
+      canBrowseMarketplace: driver ? !driver.employed : false,
     })
   }
   if (actor.role === 'fleet_owner') {

@@ -263,8 +263,10 @@ export default function PostLoadPage() {
       }
       router.push(`/loads/${booking.id}`)
     } catch (err: unknown) {
-      // GSTIN missing (FB-04): point at Settings rather than a dead-end message.
-      if (err instanceof ApiError && /GSTIN/i.test(err.message)) {
+      // GSTIN missing (FB-04): point at Settings rather than a dead-end message. Keyed on
+      // the dedicated GST_REQUIRED code, not message text (which shares VALIDATION_ERROR with
+      // an expired quote-lock and could be reworded/localized).
+      if (err instanceof ApiError && err.code === 'GST_REQUIRED') {
         setFormError(err.message)
         setGstinBlocked(true)
         setSubmitting(false)

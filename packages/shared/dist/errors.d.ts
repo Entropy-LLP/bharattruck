@@ -6,7 +6,7 @@
  * (and the frontend/gateway that consume it) sees one consistent shape everywhere.
  */
 /** Machine-readable error code. Extend the union as real codes are added — keep it a closed set. */
-export type ErrorCode = 'VALIDATION_ERROR' | 'UNAUTHENTICATED' | 'FORBIDDEN' | 'NOT_FOUND' | 'CONFLICT' | 'INVALID_TRANSITION' | 'RATE_LIMITED' | 'UPSTREAM_ERROR' | 'INTERNAL' | 'AUCTION_CLOSED' | 'DUPLICATE_QUOTE' | 'QUOTE_NOT_FOUND' | 'ALREADY_AWARDED' | 'NEGOTIATION_CAP_REACHED';
+export type ErrorCode = 'VALIDATION_ERROR' | 'UNAUTHENTICATED' | 'FORBIDDEN' | 'NOT_FOUND' | 'CONFLICT' | 'INVALID_TRANSITION' | 'RATE_LIMITED' | 'UPSTREAM_ERROR' | 'INTERNAL' | 'AUCTION_CLOSED' | 'DUPLICATE_QUOTE' | 'QUOTE_NOT_FOUND' | 'ALREADY_AWARDED' | 'NEGOTIATION_CAP_REACHED' | 'GST_REQUIRED';
 /** The single error envelope every service returns on failure. snake_case-friendly + stable. */
 export interface ErrorEnvelope {
     success: false;

@@ -27,6 +27,10 @@ export type ErrorCode =
   // used all your rounds on this quote" rather than showing a generic clash the
   // user would reasonably retry.
   | 'NEGOTIATION_CAP_REACHED'
+  // FB-04: a shipper must add a GSTIN before posting a load. Its own code so a client
+  // can route to Settings rather than confuse it with an expired quote-lock (both were
+  // VALIDATION_ERROR, which is only distinguishable by message text otherwise).
+  | 'GST_REQUIRED'
 
 /** The single error envelope every service returns on failure. snake_case-friendly + stable. */
 export interface ErrorEnvelope {
