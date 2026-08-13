@@ -37,6 +37,8 @@ services:
       PRICING_SERVICE_URL: "http://bt-pricing-service:3003"
       PAYMENT_SERVICE_URL: "http://bt-payment-service:3004"
       CARGO_SERVICE_URL: "http://bt-cargo-ledger:3005"
+      TRACKING_SERVICE_URL: "http://bt-tracking-service:3006"
+      FLEET_SERVICE_URL: "http://bt-fleet-service:3007"
       CORS_ALLOWED_ORIGINS: "*"
     depends_on:
       bt-auth-service:
@@ -48,6 +50,10 @@ services:
       bt-payment-service:
         condition: service_started
       bt-cargo-ledger:
+        condition: service_started
+      bt-tracking-service:
+        condition: service_started
+      bt-fleet-service:
         condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:80/health || exit 1"]
@@ -196,6 +202,67 @@ services:
       - ./bt-cargo-ledger/src:/app/src
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:3005/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # The gateway routes /api/tracking and /api/fleet to these; without their service blocks the
+  # local stack 502'd both the live-tracking map and the fleet console (review F30).
+  bt-tracking-service:
+    build:
+      context: ./bt-tracking-service
+      dockerfile: Dockerfile
+      target: development
+    image: bharattruck/bt-tracking-service:dev
+    restart: unless-stopped
+    ports:
+      - "3006:3006"
+    environment:
+      NODE_ENV: development
+      PORT: "3006"
+      REDIS_URL: redis://redis:6379
+      SUPABASE_URL: ${SUPABASE_URL:-http://host.docker.internal:54321}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-dev-stub-key}
+      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-long-enough-for-local}
+      GOOGLE_MAPS_SERVER_KEY: ${GOOGLE_MAPS_SERVER_KEY:-}
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./bt-tracking-service/src:/app/src
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3006/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  bt-fleet-service:
+    build:
+      context: ./bt-fleet-service
+      dockerfile: Dockerfile
+      target: development
+    image: bharattruck/bt-fleet-service:dev
+    restart: unless-stopped
+    ports:
+      - "3007:3007"
+    environment:
+      NODE_ENV: development
+      PORT: "3007"
+      REDIS_URL: redis://redis:6379
+      SUPABASE_URL: ${SUPABASE_URL:-http://host.docker.internal:54321}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-dev-stub-key}
+      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-long-enough-for-local}
+      INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET:-dev-internal-secret}
+      BOOKING_SERVICE_URL: http://bt-booking-service:3002
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./bt-fleet-service/src:/app/src
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3007/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 3
