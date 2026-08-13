@@ -8,7 +8,7 @@ import {
 } from '@bharattruck/shared/personas'
 import type { AuthenticatedUser, BookingStatus, BookingWithProfiles, CreateBookingBody, DbBooking } from './types.js'
 import { BookingError } from './types.js'
-import { assertFleetAssignmentReady, assertValidTransition } from './state.js'
+import { assertFleetAssignmentReady, assertValidTransition, CANCELLABLE_BOOKING_STATUSES } from './state.js'
 import * as repo from './repository.js'
 import * as quoteRepo from './quote-repository.js'
 import { supabase } from './supabase.js'
@@ -1136,6 +1136,12 @@ export async function markBookingPaid(
 // the source is inert on a pre-0025 database, where no booking can be in this state.
 const OPS_FORCE_COMPLETE_SOURCES: BookingStatus[] = ['accepted', 'in_transit', 'delivery_asserted']
 
+// Ops may swap the driver only while the trip is IN FLIGHT — a crew change is meaningless once the
+// goods are delivered/asserted, and rewriting the carrier of record on a completed/paid trip
+// desyncs it from the settled payout. Reassigning a 'pending' booking is also wrong: it has no
+// driver yet and gets one via accept/award, not an ops override (review F17).
+const OPS_REASSIGN_SOURCES: BookingStatus[] = ['accepted', 'in_transit']
+
 function assertOps(actor: AuthenticatedUser): void {
   if (actor.role !== 'admin') {
     throw new BookingError('Ops override requires an ops/admin role', 'FORBIDDEN', 403)
@@ -1204,6 +1210,16 @@ export async function reassignBooking(
   if (!booking) {
     throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
   }
+  // A reassign is an in-flight crew swap. Without this guard ops could rewrite the driver on a
+  // completed/paid trip (desyncing the carrier of record from the settled payout) or on a
+  // delivery_asserted/pending booking (review F17).
+  if (!OPS_REASSIGN_SOURCES.includes(booking.status)) {
+    throw new BookingError(
+      `Cannot reassign a booking in '${booking.status}' status (only accepted or in_transit)`,
+      'INVALID_TRANSITION',
+      409,
+    )
+  }
 
   const driver = await repo.getDriverById(driverId)
   if (!driver) {
@@ -1211,11 +1227,20 @@ export async function reassignBooking(
   }
 
   const fromDriverId = booking.driver_id
-  const updated = await repo.reassignDriver(bookingId, driverId)
+  // Status-scoped so a concurrent transition between the read above and this write cannot land the
+  // reassign on a booking that has since completed/cancelled.
+  const updated = await repo.reassignDriver(bookingId, driverId, OPS_REASSIGN_SOURCES)
   if (!updated) {
-    throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
+    throw new BookingError(
+      'Booking could not be reassigned — its status changed concurrently',
+      'INVALID_TRANSITION',
+      409,
+    )
   }
 
+  // Free the DISPLACED driver's assignment (vehicle_assignment / active-trip association), or its
+  // truck stays bound to a trip it is no longer running. Best-effort, mirroring force-complete.
+  emitAssignmentRelease(bookingId, log)
   await notify.emitOpsOverride(updated, 'reassign', log)
   return { booking: updated, fromDriverId }
 }
@@ -1237,8 +1262,9 @@ export async function cancelBooking(
     throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
   }
 
+  const isOps = actor.role === 'admin'
   let cancelledBy: 'driver' | 'shipper' = 'shipper'
-  if (actor.role !== 'admin') {
+  if (!isOps) {
     const snapshot = await resolvePersonas(supabase, actor.userId, actor.role)
     const relations = relationsToBooking(booking, snapshot)
     const isShipper = relations.includes('shipper')
@@ -1254,7 +1280,14 @@ export async function cancelBooking(
 
   assertValidTransition(booking.status, 'cancelled')
 
-  const updated = await repo.cancelBooking(bookingId, ['pending', 'accepted'])
+  // WHO may cancel from WHICH status: ops may void any legally-cancellable status — including a
+  // bad 'delivery_asserted' assertion, which the state.ts note reserves for ops — while a
+  // shipper/driver may only cancel BEFORE the goods move (pending/accepted); letting them cancel a
+  // delivery_asserted trip would let a shipper void a delivered load to dodge payment. The old
+  // hardcoded ['pending','accepted'] applied to EVERYONE, so a delivery_asserted booking passed
+  // assertValidTransition then matched no row here and 409'd — uncancellable by anyone (review F14).
+  const cancellableStatuses: BookingStatus[] = isOps ? CANCELLABLE_BOOKING_STATUSES : ['pending', 'accepted']
+  const updated = await repo.cancelBooking(bookingId, cancellableStatuses)
   if (!updated) {
     throw new BookingError(
       'Booking could not be cancelled — status may have changed',

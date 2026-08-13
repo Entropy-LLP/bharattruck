@@ -513,12 +513,15 @@ export async function forceTransitionByStatus(
 
 // -----------------------------------------------------------
 // reassignDriver
-// Ops override: set bookings.driver_id, keeping the current status.
+// Ops override: set bookings.driver_id, keeping the current status. Status-scoped by the caller
+// (`allowedStatuses`) so the swap lands ONLY on an in-flight booking — a booking that transitioned
+// out of an allowed status between the service read and this write matches no row and returns null.
 // -----------------------------------------------------------
 
 export async function reassignDriver(
   bookingId: string,
   driverId: string,
+  allowedStatuses: BookingStatus[],
 ): Promise<DbBooking | null> {
   const { data, error } = await supabase
     .from('bookings')
@@ -527,6 +530,7 @@ export async function reassignDriver(
       updated_at: new Date().toISOString(),
     })
     .eq('id', bookingId)
+    .in('status', allowedStatuses)
     .select('*')
     .maybeSingle()
 
