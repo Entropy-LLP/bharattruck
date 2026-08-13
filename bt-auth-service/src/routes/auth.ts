@@ -50,6 +50,10 @@ const EMAIL_SEND_WINDOW_S = envInt('EMAIL_SEND_WINDOW_S', 3600)
  * actually binds, regardless of how the attacker distributes the load.
  */
 const SMTP_DAILY_BUDGET = envInt('SMTP_DAILY_BUDGET', 500)
+// Service-wide daily ceiling on outbound OTP SMS — the SMS twin of SMTP_DAILY_BUDGET. The per-phone
+// otp_rate counter is bypassed by spreading sends across many distinct valid numbers, so a global
+// budget is the ceiling that actually binds against a provider-balance drain (review F10).
+const SMS_DAILY_BUDGET = envInt('SMS_DAILY_BUDGET', 500)
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -421,6 +425,16 @@ export async function authRoutes(app: FastifyInstance) {
       return reply.status(429).send({ success: false, error: 'Too many OTP requests. Try again in 1 hour.' })
     }
 
+    // Global daily SMS ceiling (F10): the per-phone counter above is bypassed by spreading sends
+    // across many distinct numbers, draining the provider balance so no real user gets a code.
+    // Charged AFTER the per-phone check so one abuser's retries don't eat the shared budget first.
+    const smsDay = new Date().toISOString().slice(0, 10)
+    const smsBudget = await consume(app.redis, `sms_budget:${smsDay}`, SMS_DAILY_BUDGET, 25 * 3600)
+    if (!smsBudget.allowed) {
+      app.log.error({ spent: smsBudget.count, budget: SMS_DAILY_BUDGET }, 'daily SMS budget exhausted — outbound OTP suspended')
+      return reply.status(429).send({ success: false, error: 'Too many OTP requests right now. Please try again later.' })
+    }
+
     const otp = randomOtp()
     await app.redis.set(`phone_otp:${phone}`, otp, 'EX', OTP_TTL_S)
 
@@ -733,7 +747,10 @@ export async function authRoutes(app: FastifyInstance) {
     }
 
     if (user.email_verified) {
-      return reply.status(400).send({ success: false, error: 'Email is already verified' })
+      // Already verified: nothing to resend. Return the SAME generic success as the unknown-address
+      // branch above so a 400-vs-200 split cannot be used to probe which addresses are verified
+      // BharatTruck accounts (review F9).
+      return reply.send({ success: true, data: { message: 'If that email is registered, a code was sent.', expires_in: OTP_TTL_S } })
     }
 
     // Absorbed silently, matching the unknown-address branch above: a 429 that
@@ -876,7 +893,11 @@ export async function authRoutes(app: FastifyInstance) {
       const ticket = await client.verifyIdToken({ idToken: id_token, audience: process.env.GOOGLE_CLIENT_ID })
       const p = ticket.getPayload()
       if (!p) throw new Error('Empty payload')
-      googlePayload = { sub: p.sub, email: p.email, name: p.name, picture: p.picture }
+      // Use the email ONLY when Google says it is verified. Account-linking below matches an
+      // existing local account by email, so an unverified email (possible in some Workspace /
+      // federated setups) must NOT be treated as proof of ownership — otherwise it could link the
+      // Google identity to, and issue a session for, a victim's pre-existing account (review F11).
+      googlePayload = { sub: p.sub, email: p.email_verified ? p.email : undefined, name: p.name, picture: p.picture }
     } catch {
       return reply.status(401).send({ success: false, error: 'Invalid Google token' })
     }
