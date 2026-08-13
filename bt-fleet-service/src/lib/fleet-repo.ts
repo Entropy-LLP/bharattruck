@@ -162,9 +162,42 @@ async function driverIdentityForUser(user: UserLookupRow | null, noAccountMsg: s
   }
 }
 
+/**
+ * Canonicalise an Indian mobile to the bare 10-digit form bt-auth-service STORES it in
+ * (verify-otp inserts `phone_number` matching /^[6-9]\d{9}$/). An owner may type the number with
+ * a +91 / 91 country code, a domestic '0' trunk prefix, or spaces/dashes — every spelling must
+ * resolve to the SAME account. Returns null for anything that is not a valid Indian mobile.
+ * Exported (and pure) so the exact rule can be unit-tested without a database. Review F23.
+ */
+export function toCanonicalPhone(raw: string): string | null {
+  const digits = raw.replace(/\D/g, '')
+  const local =
+    digits.length === 12 && digits.startsWith('91') ? digits.slice(2)
+    : digits.length === 11 && digits.startsWith('0') ? digits.slice(1)
+    : digits
+  return /^[6-9]\d{9}$/.test(local) ? local : null
+}
+
+/**
+ * Escape PostgREST ILIKE metacharacters so a lookup value matches LITERALLY. Without it a driver's
+ * real email containing an underscore ('ravi_kumar@…', very common) is a LIKE single-char wildcard
+ * that can match a look-alike account or return multiple rows. Review F24.
+ */
+export function escapeLikePattern(value: string): string {
+  return value.replace(/([\\%_])/g, '\\$1')
+}
+
 export async function findDriverByPhone(phone: string): Promise<DriverIdentity> {
+  const canonical = toCanonicalPhone(phone)
+  if (!canonical) {
+    throw new FleetError(
+      "That is not a valid Indian mobile number — enter the driver's 10-digit number",
+      'VALIDATION_ERROR',
+      400,
+    )
+  }
   const { data, error } = await getSupabase()
-    .from('users').select(USER_LOOKUP_COLS).eq('phone_number', phone).maybeSingle()
+    .from('users').select(USER_LOOKUP_COLS).eq('phone_number', canonical).maybeSingle()
   if (error) throw new Error(`users select failed: ${error.message}`)
   return driverIdentityForUser(
     data as UserLookupRow | null,
@@ -173,10 +206,11 @@ export async function findDriverByPhone(phone: string): Promise<DriverIdentity> 
 }
 
 export async function findDriverByEmail(email: string): Promise<DriverIdentity> {
-  // ilike with no wildcards is a case-insensitive exact match — an owner typing the email
-  // in any case still finds the driver whose stored address may differ in case.
+  // ilike gives the case-insensitivity an owner expects; escapeLikePattern keeps %/_ LITERAL so an
+  // underscore in the local part is a real character, not a wildcard — a case-insensitive EXACT
+  // match (review F24). The old "no wildcards" comment was untrue for the common underscore email.
   const { data, error } = await getSupabase()
-    .from('users').select(USER_LOOKUP_COLS).ilike('email', email.trim()).maybeSingle()
+    .from('users').select(USER_LOOKUP_COLS).ilike('email', escapeLikePattern(email.trim())).maybeSingle()
   if (error) throw new Error(`users select failed: ${error.message}`)
   return driverIdentityForUser(
     data as UserLookupRow | null,
