@@ -85,8 +85,9 @@ async function handleVerify(
 ): Promise<void> {
   const { type } = request.params
   void type
-  // TODO: implement verify handler
-  reply.code(501).send({ error: 'handleVerify: not implemented' })
+  // Not built yet — but return the SHARED {success,error,code} envelope every other endpoint uses,
+  // not a bare { error } a client cannot discriminate (review F13).
+  reply.code(501).send({ success: false, error: 'KYC verification is not yet available', code: 'NOT_IMPLEMENTED' })
 }
 
 /**
@@ -103,11 +104,15 @@ async function handleStatus(
   reply: FastifyReply,
 ): Promise<void> {
   const { userId } = request.params
-  void userId
+  // Ownership guard enforced even while stubbed, so implementing the handler later cannot
+  // accidentally ship an IDOR: a caller may read only their OWN KYC status (admin excepted). F13.
+  if (request.user.userId !== userId && request.user.role !== 'admin') {
+    reply.code(403).send({ success: false, error: 'Forbidden', code: 'FORBIDDEN' })
+    return
+  }
   void getKYCRecord
   void getCurrentLevel
-  // TODO: implement status handler
-  reply.code(501).send({ error: 'handleStatus: not implemented' })
+  reply.code(501).send({ success: false, error: 'KYC status is not yet available', code: 'NOT_IMPLEMENTED' })
 }
 
 // ---------------------------------------------------------------------------

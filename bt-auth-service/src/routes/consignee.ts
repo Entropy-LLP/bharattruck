@@ -50,11 +50,13 @@ function signClaimToken(userId: string): string {
 
 /**
  * Where the claim link lands: a standalone form origin, NOT the app's authenticated surface (D-35).
- * Falls back to a visibly-broken dev localhost link when CONSIGNEE_CLAIM_URL is unset, so a
- * misconfigured environment produces an obviously-wrong link rather than a silently-wrong prod one.
+ * Defaults to the DEPLOYED origin (like DEFAULT_APP_RESET_URL in routes/auth.ts) so a fresh deploy
+ * that forgot to set CONSIGNEE_CLAIM_URL still emails a WORKING link, rather than a localhost one
+ * that silently dead-ends on the external recipient's device; CONSIGNEE_CLAIM_URL overrides it
+ * (review F12).
  */
 function claimLinkFor(token: string): string {
-  const base = process.env.CONSIGNEE_CLAIM_URL ?? 'http://localhost:3000/consignee/claim'
+  const base = process.env.CONSIGNEE_CLAIM_URL ?? 'https://bt-app-itcdoenefa-el.a.run.app/consignee/claim'
   return `${base}?token=${encodeURIComponent(token)}`
 }
 
