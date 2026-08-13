@@ -425,8 +425,12 @@ export function listFleetBookings(status?: string) {
 
 /** The pairing step. Until this exists, accepted -> in_transit is blocked. */
 export function assignToBooking(bookingId: string, driver_id: string, vehicle_id: string) {
-  return request<{ id: string; booking_id: string; driver_id: string; vehicle_id: string }>(
-    `/fleet/bookings/${bookingId}/assign`, { method: 'POST', body: JSON.stringify({ driver_id, vehicle_id }) })
+  // Route returns { assignment, booking } (bt-fleet-service assignment.ts), NOT a bare assignment
+  // row — the old return type read undefined on assignment.* fields (review F5).
+  return request<{
+    assignment: { id: string; booking_id: string; driver_id: string; vehicle_id: string }
+    booking: Booking
+  }>(`/fleet/bookings/${bookingId}/assign`, { method: 'POST', body: JSON.stringify({ driver_id, vehicle_id }) })
 }
 
 /**
@@ -445,7 +449,17 @@ export function directAttachBooking(bookingId: string) {
  * SMEMBERS + MGET — never poll per-vehicle endpoints from here, that is 100 req/s
  * at 1000 trucks on a 10s interval.
  */
-export function getLivePositions() { return request<LivePosition[]>('/fleet/live') }
+export function getLivePositions() {
+  // GET /fleet/live returns an ENVELOPE, not a bare array (bt-fleet-service assignment.ts) — the
+  // old LivePosition[] return type crashed any caller that iterated it directly (review F4).
+  return request<{
+    fleet_owner_id: string
+    driver_count: number
+    online_count: number
+    on_trip_count: number
+    positions: LivePosition[]
+  }>('/fleet/live')
+}
 
 // ── Analytics ─────────────────────────────────────────────────
 
@@ -559,7 +573,9 @@ export function listOpenAuctions(opts?: { include_expired?: boolean }) {
 }
 
 /** Every bid this fleet has placed, newest first, with its load attached. */
-export function listMyBids(status?: QuoteStatus) {
+// GET /fleet/bids validates a 5-status enum that OMITS 'expired' (bt-fleet-service auctions.ts), so
+// the filter type must exclude it — otherwise the client offers a value the server 400s (review F6).
+export function listMyBids(status?: Exclude<QuoteStatus, 'expired'>) {
   const qs = status ? `?status=${encodeURIComponent(status)}` : ''
   return request<{ fleet_owner_id: string; count: number; bids: FleetBid[] }>(`/fleet/bids${qs}`)
 }
