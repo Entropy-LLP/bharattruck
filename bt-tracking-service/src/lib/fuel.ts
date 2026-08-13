@@ -20,12 +20,13 @@
 // a guess with the same confidence as measured data.
 
 import { supabase } from './supabase.js'
+import { positiveIntEnv } from './env.js'
 
 export type FuelBasis = 'vehicle_norms' | 'vehicle_class' | 'default'
 export type VehicleClass = 'SCV' | 'LCV' | 'MCV' | 'HCV'
 
 /** Editable diesel price (D-009). Env is the default; callers may override per request. */
-export const DEFAULT_DIESEL_PRICE_INR = Number(process.env.DIESEL_PRICE_INR ?? 90)
+export const DEFAULT_DIESEL_PRICE_INR = positiveIntEnv('DIESEL_PRICE_INR', 90)
 
 /**
  * Last-resort mileage when even the class average is unavailable. Deliberately pessimistic

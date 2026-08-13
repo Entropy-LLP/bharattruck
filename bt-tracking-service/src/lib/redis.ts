@@ -1,4 +1,5 @@
 import { Redis } from 'ioredis'
+import { positiveIntEnv } from './env.js'
 
 const url = process.env.REDIS_URL
 if (!url) throw new Error('REDIS_URL must be set')
@@ -29,7 +30,7 @@ export const fleetOverviewKey = (fleetOwnerId: string) => `trk:fleet:${fleetOwne
  */
 export const fenceStateKey = (bookingId: string) => `trk:fence:${bookingId}`
 
-export const ROUTE_TTL_SECONDS = Number(process.env.ROUTE_CACHE_TTL_SECONDS ?? 21600) // 6h
+export const ROUTE_TTL_SECONDS = positiveIntEnv('ROUTE_CACHE_TTL_SECONDS', 21600) // 6h
 export const ETA_TTL_SECONDS = 45
 export const PUMPS_TTL_SECONDS = 21600
 export const LOCK_TTL_SECONDS = 10

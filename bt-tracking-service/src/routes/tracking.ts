@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { canFleetAccessBooking } from '@bharattruck/shared/fleet'
 import { resolvePersonas, relationsToBooking } from '@bharattruck/shared/personas'
 import { supabase } from '../lib/supabase.js'
+import { liveFixForBooking } from '../lib/live-fix.js'
 import {
   redis,
   driverLocationKey,
@@ -132,9 +133,10 @@ async function assertCanAccess(booking: TrackingBooking, user: AuthenticatedUser
 }
 
 // READ-ONLY: live fix written by bt-booking-service into loc:driver:{id}.
-async function getLiveLocation(driverId: string): Promise<LiveLocation | null> {
-  const raw = await redis.get(driverLocationKey(driverId))
-  return raw ? (JSON.parse(raw) as LiveLocation) : null
+async function getLiveLocation(driverId: string, bookingId: string): Promise<LiveLocation | null> {
+  // Booking-scoped: the per-driver key is shared across a driver's concurrent trips, so a fix
+  // pushed for a DIFFERENT booking must not be returned here (review F26).
+  return liveFixForBooking(bookingId, await redis.get(driverLocationKey(driverId)))
 }
 
 function fmtDuration(seconds: number): string {
@@ -220,7 +222,7 @@ export async function trackingRoutes(app: FastifyInstance) {
     const booking = await loadBookingOrThrow(bookingId)
     await assertCanAccess(booking, req.user)
 
-    const live = booking.driver_id ? await getLiveLocation(booking.driver_id) : null
+    const live = booking.driver_id ? await getLiveLocation(booking.driver_id, bookingId) : null
     if (live) {
       return reply.send({ success: true, data: await freshEta(booking, live) })
     }
@@ -238,7 +240,7 @@ export async function trackingRoutes(app: FastifyInstance) {
     const booking = await loadBookingOrThrow(bookingId)
     await assertCanAccess(booking, req.user)
 
-    const live = booking.driver_id ? await getLiveLocation(booking.driver_id) : null
+    const live = booking.driver_id ? await getLiveLocation(booking.driver_id, bookingId) : null
     const { value: route } = await getOrCompute(routeKey(bookingId), ROUTE_TTL_SECONDS, () =>
       computeRouteFor(booking),
     )
@@ -407,7 +409,7 @@ export async function trackingRoutes(app: FastifyInstance) {
 
     const [stored, live, telemetry] = await Promise.all([
       getAlerts(bookingId),
-      booking.driver_id ? getLiveLocation(booking.driver_id) : Promise.resolve(null),
+      booking.driver_id ? getLiveLocation(booking.driver_id, bookingId) : Promise.resolve(null),
       getTelemetry(bookingId),
     ])
 
@@ -563,7 +565,7 @@ async function loadCachedRoutePath(bookingId: string) {
  */
 async function resolvePumpAnchor(booking: TrackingBooking) {
   if (booking.driver_id) {
-    const live = await getLiveLocation(booking.driver_id)
+    const live = await getLiveLocation(booking.driver_id, booking.id)
     if (live) return { point: { lat: live.lat, lng: live.lng }, source: 'live_position' as const }
   }
   const recent = await getLocationHistory(booking.id, { limit: 1 })
