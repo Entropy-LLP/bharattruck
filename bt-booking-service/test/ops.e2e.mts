@@ -101,6 +101,15 @@ async function main() {
   check('booking B4 status unchanged (in_transit)', b(B4).status === 'in_transit')
   check('audit row written (reassign, D1→D2)', auditRecords.some(a => a.action === 'reassign' && a.booking_id === B4 && a.from_driver_id === D1 && a.to_driver_id === D2))
 
+  console.log('\n── reassign is refused outside an in-flight trip (review F17) ──')
+  // B2 was force-completed above: its carrier of record is settled and must be immutable.
+  r = await post(`/bookings/${B2}/reassign`, tok('admin'), { driver_id: D2 })
+  check('🔴 reassign a completed booking 409 (F17)', r.statusCode === 409, `(got ${r.statusCode})`)
+  check('the completed booking keeps its original driver', b(B2).driver_id === D1, `(got ${b(B2).driver_id})`)
+  // B3 is pending — it has no driver yet; a crew is bound via accept/award, not an ops override.
+  r = await post(`/bookings/${B3}/reassign`, tok('admin'), { driver_id: D2 })
+  check('🔴 reassign a pending booking 409 (F17)', r.statusCode === 409, `(got ${r.statusCode})`)
+
   await app.close()
   console.log(`\n${failures.length ? 'RESULT: FAIL' : 'RESULT: PASS'} — ${passed} checks passed, ${failures.length} failed`)
   if (failures.length) { failures.forEach(f => console.log('  ✗ ' + f)); process.exit(1) }

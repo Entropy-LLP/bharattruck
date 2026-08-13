@@ -53,6 +53,23 @@ export function isTerminalBookingStatus(status: BookingStatus): boolean {
 }
 
 // -----------------------------------------------------------
+// CANCELLABLE_BOOKING_STATUSES
+//
+// Every status the state machine allows a booking to be cancelled FROM — derived from
+// VALID_TRANSITIONS (like TERMINAL_BOOKING_STATUSES) so a second hand-written list cannot drift
+// from the lifecycle. This is the LEGAL set; WHO may cancel from each is an authorization rule
+// the service applies on top (a shipper/driver may cancel before the goods move; voiding a
+// 'delivery_asserted' trip is an OPS action only — see cancelBooking + the state.ts note on
+// delivery_asserted). The service must not carry its own narrower copy of this list, which is the
+// bug review F14 fixed: a hardcoded ['pending','accepted'] silently made a legally-cancellable
+// 'delivery_asserted' booking uncancellable by anyone, ops included.
+// -----------------------------------------------------------
+
+export const CANCELLABLE_BOOKING_STATUSES: BookingStatus[] =
+  (Object.keys(VALID_TRANSITIONS) as BookingStatus[])
+    .filter(status => VALID_TRANSITIONS[status].includes('cancelled'))
+
+// -----------------------------------------------------------
 // assertValidTransition
 // Pure synchronous guard — throws BookingError on illegal moves.
 // The repository executes the actual DB UPDATE after this passes.

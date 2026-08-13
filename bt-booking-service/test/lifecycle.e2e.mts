@@ -29,10 +29,14 @@ const D2 = '33333333-3333-4333-8333-333333333333'
 const U1 = '44444444-4444-4444-8444-444444444444' // driver 1 (assigned) user
 const U2 = '55555555-5555-4555-8555-555555555555' // driver 2 (not assigned) user
 const S1 = '66666666-6666-4666-8666-666666666666' // shipper user
+const B_ASSERTED = '77777777-7777-4777-8777-777777777777' // a driver-asserted delivery ops must be able to void
 
 type Row = Record<string, any>
 const store: Record<string, Row[]> = {
-  bookings: [{ id: B1, driver_id: D1, shipper_id: S1, status: 'accepted' }],
+  bookings: [
+    { id: B1, driver_id: D1, shipper_id: S1, status: 'accepted' },
+    { id: B_ASSERTED, driver_id: D1, shipper_id: S1, status: 'delivery_asserted' },
+  ],
   drivers: [{ id: D1, user_id: U1 }, { id: D2, user_id: U2 }],
   location_history: [],
   // FB-03 pickup gate: tax invoice required. Inter-state under ₹50k → e-way not required.
@@ -181,6 +185,15 @@ async function main() {
   const p2 = await post() // within the 12s window
   check('C5 second update within window still 200', p2.statusCode === 200, `(got ${p2.statusCode})`)
   check('C5 throttle gate blocks second insert (still 1 row)', store.location_history.length === 1, `(got ${store.location_history.length})`)
+
+  console.log('\n── ops can void a bad delivery_asserted assertion; a terminal trip stays frozen (F14) ──')
+  const asserted = (id: string) => store.bookings.find(b => b.id === id)!.status
+  r = await patch(`/bookings/${B_ASSERTED}/cancel`, tok('ops-user', 'admin'))
+  check('🔴 ops cancels a delivery_asserted booking 200 (F14)', r.statusCode === 200, `(got ${r.statusCode}) ${r.body.slice(0, 120)}`)
+  check('the delivery_asserted booking is now cancelled', asserted(B_ASSERTED) === 'cancelled', `(got ${asserted(B_ASSERTED)})`)
+  // B_ASSERTED is now 'cancelled' (terminal) — re-cancelling is refused for everyone, ops included.
+  r = await patch(`/bookings/${B_ASSERTED}/cancel`, tok('ops-user', 'admin'))
+  check('ops cannot cancel an already-terminal (cancelled) booking 409', r.statusCode === 409, `(got ${r.statusCode})`)
 
   await app.close()
   await redis.del(breadcrumbGateKey(B1), driverLocationKey(D1))
