@@ -482,6 +482,15 @@ async function main() {
   res = await get(B_CONSIGNED, tok(U_CONSIGNEE, 'shipper'))
   check('the claimed consignee sees their own inbound shipment',
     JSON.parse(res.body).data?.consignee?.name === EXISTING_NAME, res.body.slice(0, 200))
+  // 🔴 …but a consignee is a party to the SHIPMENT, never to the carriage economics
+  // (personas.seesCommercialsOnBooking → false). The read must be commercially masked (review F18).
+  {
+    const cData = JSON.parse(res.body).data
+    check('🔴 consignee read masks the money — viewer.sees_commercials is false (F18)',
+      cData?.viewer?.sees_commercials === false, JSON.stringify(cData?.viewer))
+    check('🔴 consignee read has the price stripped (F18)',
+      cData?.quoted_price === undefined, `quoted_price=${cData?.quoted_price}`)
+  }
 
   // …and the guard that read widened is otherwise unchanged: a shipper who is
   // NEITHER the poster nor the consignee is still refused the booking outright.

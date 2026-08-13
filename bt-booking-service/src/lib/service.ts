@@ -2,6 +2,7 @@ import {
   can,
   relationsToBooking,
   resolvePersonas,
+  seesCommercialsOnBooking,
   type BookingRelation,
   type PersonaSnapshot,
 } from '@bharattruck/shared/personas'
@@ -356,14 +357,28 @@ export async function getBooking(
   // No driver profile. A caller who is a PARTY to this booking — they posted it
   // (D-22 also lets the claimed CONSIGNEE read the trip they are waiting on),
   // their fleet won it — reads it, and so does a marketplace carrier browsing the
-  // board (a truck owner 'carry', a fleet operator 'operate'; a fleet_owner was
-  // unscoped here in the role era and its assets keep it unscoped now). A
-  // ship-only poster with NO relation to this booking is forbidden — the role-era
-  // shipper gate, answered 403 (they already know their own ids, so there is
-  // nothing to protect by hiding existence). assigned_to_me is a driver-facing
-  // field and is absent here, exactly as it was for the old non-driver path.
-  if (relations.length > 0 || can(snapshot, 'carry') || can(snapshot, 'operate')) {
-    return withViewer(await attachConsignee(booking, actor), relations, true)
+  // board. But a marketplace capability is a licence to browse the OPEN BOARD, not
+  // to read any trip by id: without the status clamp a truck owner who no longer
+  // holds a relation could fetch an awarded/in-transit/completed booking and read
+  // its final_price, the shipper's floor and the parties' contacts (review F19).
+  // This mirrors the list scope (repository.listBookingsForScope), which only ever
+  // returns a non-party carrier their own posts plus PENDING loads.
+  const browsesOpenBoard =
+    relations.length === 0 &&
+    booking.status === 'pending' &&
+    (can(snapshot, 'carry') || can(snapshot, 'operate'))
+
+  if (relations.length > 0 || browsesOpenBoard) {
+    // Commercial visibility follows the STRONGEST relation (asset ownership), not the
+    // mere holding of one: a shipper/carrier sees the money, but a claimed CONSIGNEE is
+    // a party to the SHIPMENT and never to the carriage economics, so it is masked
+    // (review F18). No 'driver' relation is possible on this path — the driver-profile
+    // branch returned above — so `viewerOwnsBookingVehicle` is irrelevant and false.
+    // A no-relation open-board browser sees the pending listing, matching the list path.
+    const sees =
+      relations.length === 0 ? true : seesCommercialsOnBooking(booking, snapshot, false)
+    const shaped = sees ? booking : stripCommercialFields(booking)
+    return withViewer(await attachConsignee(shaped, actor), relations, sees)
   }
   throw new BookingError('Forbidden', 'FORBIDDEN', 403)
 }

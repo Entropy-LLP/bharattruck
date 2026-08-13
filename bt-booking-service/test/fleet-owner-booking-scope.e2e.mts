@@ -152,6 +152,23 @@ async function main() {
   const admin = await listAs(ADMIN_USER, 'admin')
   check('admin still sees everything (unfiltered branch preserved)', admin.ids.length === 4, `(got ${admin.ids.length})`)
 
+  // The single-read (GET /bookings/:id) must be scoped exactly like the list: a marketplace
+  // capability is a licence to browse the OPEN BOARD, not to read any trip by id. Before the fix
+  // getBooking returned ANY booking to a carry/operate caller, so a fleet owner could fetch
+  // another shipper's awarded/live/paid trip by id and read its price, floor and contacts. (review F19)
+  console.log('\n── single-read by id is scoped like the list, not broader ──')
+  const getAs = async (id: string, user: string, role: string) =>
+    (await app.inject({ method: 'GET', url: `/bookings/${id}`, headers: { authorization: `Bearer ${tok(user, role)}` } })).statusCode
+
+  check('fleet_owner reads a PENDING board load by id (200)',
+    (await getAs(OPEN_A, FLEET_USER, 'fleet_owner')) === 200)
+  check("🔴 fleet_owner CANNOT read another shipper's in_transit trip by id (F19)",
+    (await getAs(PRIVATE_INTRANSIT, FLEET_USER, 'fleet_owner')) === 403)
+  check("🔴 fleet_owner CANNOT read another shipper's paid trip by id (F19)",
+    (await getAs(PRIVATE_PAID, FLEET_USER, 'fleet_owner')) === 403)
+  check('the shipper who posted it still reads their own load by id (200)',
+    (await getAs(OPEN_A, SHIPPER_1, 'shipper')) === 200)
+
   await app.close()
   console.log(`\n${failures.length ? 'RESULT: FAIL' : 'RESULT: PASS'} — ${passed} checks passed, ${failures.length} failed`)
   if (failures.length) { failures.forEach(f => console.log('  ✗ ' + f)); process.exit(1) }
