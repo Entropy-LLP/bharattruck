@@ -99,7 +99,9 @@ async function sendClaimEmail(email: string, link: string) {
 
 function issueTokens(userId: string, role: string): { access_token: string; refresh_token: string } {
   const payload: JwtPayload = { userId, role }
-  const access_token  = jwt.sign(payload, process.env.JWT_SECRET!, { expiresIn: ACCESS_TTL_S })
+  // `type:'access'` marks this as a general session (see issueTokens in routes/auth.ts): the
+  // claim token itself is single-purpose and must not double as a session once consumed.
+  const access_token  = jwt.sign({ ...payload, type: 'access' }, process.env.JWT_SECRET!, { expiresIn: ACCESS_TTL_S })
   const refresh_token = jwt.sign(payload, process.env.JWT_REFRESH_SECRET!, { expiresIn: REFRESH_TTL_S })
   return { access_token, refresh_token }
 }

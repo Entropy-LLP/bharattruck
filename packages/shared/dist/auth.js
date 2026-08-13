@@ -37,5 +37,13 @@ export function verifyJwt(token, secret) {
     if (typeof payload !== 'object' || payload === null || typeof payload.userId !== 'string') {
         throw new JwtError('Token missing userId claim');
     }
+    // Single-purpose tokens (password-reset, consignee-claim) are signed with this SAME
+    // JWT_SECRET and carry a `userId`, so without this guard they would authenticate as a
+    // full session on every service. Reject any token whose `type` is present and not
+    // 'access'. Access tokens minted before type-tagging carry no `type` and still pass.
+    const type = payload.type;
+    if (type !== undefined && type !== 'access') {
+        throw new JwtError('Token not valid for this operation');
+    }
     return { userId: payload.userId, role: payload.role };
 }

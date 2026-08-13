@@ -55,7 +55,9 @@ const SMTP_DAILY_BUDGET = envInt('SMTP_DAILY_BUDGET', 500)
 
 function issueTokens(userId: string, role: string): { access_token: string; refresh_token: string } {
   const payload: JwtPayload = { userId, role }
-  const access_token  = jwt.sign(payload, process.env.JWT_SECRET!, { expiresIn: ACCESS_TTL_S })
+  // `type:'access'` marks this as a general session token; authenticate()/verifyJwt reject any
+  // OTHER typed token (pwreset, consignee_claim) so a single-purpose link can't become a session.
+  const access_token  = jwt.sign({ ...payload, type: 'access' }, process.env.JWT_SECRET!, { expiresIn: ACCESS_TTL_S })
   const refresh_token = jwt.sign(payload, process.env.JWT_REFRESH_SECRET!, { expiresIn: REFRESH_TTL_S })
   return { access_token, refresh_token }
 }
@@ -970,7 +972,7 @@ export async function authRoutes(app: FastifyInstance) {
     }
 
     const access_token = jwt.sign(
-      { userId: payload.userId, role: payload.role } satisfies JwtPayload,
+      { userId: payload.userId, role: payload.role, type: 'access' } satisfies JwtPayload,
       process.env.JWT_SECRET!,
       { expiresIn: ACCESS_TTL_S },
     )
