@@ -46,9 +46,15 @@ function handleError(reply: FastifyReply, err: unknown) {
   return reply.status(500).send({ success: false, error: 'Internal server error' })
 }
 
-async function getLocation(driverId: string): Promise<LocationData | null> {
+async function getLocation(driverId: string, bookingId?: string): Promise<LocationData | null> {
   const raw = await redis.get(driverLocationKey(driverId))
-  return raw ? (JSON.parse(raw) as LocationData) : null
+  if (!raw) return null
+  const loc = JSON.parse(raw) as LocationData
+  // A booking-scoped read (GET /location/booking/:id) must reject a fix the driver pushed for a
+  // DIFFERENT concurrent trip — the key is per-driver (review F26). The by-driver read passes no
+  // bookingId and returns the latest fix as-is. A legacy fix with no booking_id is not filtered.
+  if (bookingId && loc.booking_id && loc.booking_id !== bookingId) return null
+  return loc
 }
 
 // -----------------------------------------------------------
@@ -357,7 +363,7 @@ export async function locationRoutes(app: FastifyInstance) {
       })
     }
 
-    const location = await getLocation(booking.driver_id)
+    const location = await getLocation(booking.driver_id, booking_id)
     return reply.send({
       success: true,
       data: location,

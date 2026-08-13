@@ -24,6 +24,7 @@ import {
 import { redis, routeKey, fenceStateKey, FENCE_STATE_TTL_SECONDS } from './redis.js'
 import * as repo from './repository.js'
 import type { ComputedRoute } from './google.js'
+import { positiveIntEnv } from './env.js'
 
 // ── Thresholds ───────────────────────────────────────────────────────────────
 // The first three are LOCKED by D-012 and must not be changed without a new decision.
@@ -39,7 +40,7 @@ export const MOVING_KMH = 5
  * MoRTH ceiling for goods carriages on expressways; state highways are often lower, so this
  * flags the clear cases and is expected to be re-tuned after the first corridor drive.
  */
-export const SPEEDING_KMH = Number(process.env.SPEEDING_LIMIT_KMH ?? 80)
+export const SPEEDING_KMH = positiveIntEnv('SPEEDING_LIMIT_KMH', 80)
 
 /**
  * Two consecutive fixes further apart than this are treated as a GAP, not travel: the app

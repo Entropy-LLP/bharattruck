@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { resolveFleetOwnerByUserId } from '@bharattruck/shared/fleet'
 import { supabase } from '../lib/supabase.js'
 import { redis, driverLocationKey } from '../lib/redis.js'
+import { fixMatchesBooking } from '../lib/live-fix.js'
 import { loadNorms, resolveMileageFrom, computeFuel } from '../lib/fuel.js'
 import * as repo from '../lib/repository.js'
 import { TrackingError, type AuthenticatedUser, type LiveLocation } from '../lib/types.js'
@@ -256,7 +257,11 @@ export async function fleetTrackingRoutes(app: FastifyInstance) {
       const booking = assignment ? bookings.get(assignment.booking_id) ?? null : null
       const tel = assignment ? telemetry.get(assignment.booking_id) ?? null : null
       const driver = assignment ? identities.get(assignment.driver_id) ?? null : null
-      const position = assignment ? positionByDriver.get(assignment.driver_id) ?? null : null
+      const rawPosition = assignment ? positionByDriver.get(assignment.driver_id) ?? null : null
+      // The per-driver fix may belong to the driver's OTHER concurrent trip; only surface it on
+      // the board against the booking it was actually pushed for (review F26).
+      const position = assignment && rawPosition && fixMatchesBooking(rawPosition, assignment.booking_id)
+        ? rawPosition : null
 
       const positionAgeSeconds = position ? Math.round((now - new Date(position.updated_at).getTime()) / 1000) : null
 
