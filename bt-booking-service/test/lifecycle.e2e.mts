@@ -191,9 +191,9 @@ async function main() {
   r = await patch(`/bookings/${B_ASSERTED}/cancel`, tok('ops-user', 'admin'))
   check('🔴 ops cancels a delivery_asserted booking 200 (F14)', r.statusCode === 200, `(got ${r.statusCode}) ${r.body.slice(0, 120)}`)
   check('the delivery_asserted booking is now cancelled', asserted(B_ASSERTED) === 'cancelled', `(got ${asserted(B_ASSERTED)})`)
-  // B1 is 'completed' by now — a terminal trip is uncancellable by anyone, ops included.
-  r = await patch(`/bookings/${B1}/cancel`, tok('ops-user', 'admin'))
-  check('ops cannot cancel a completed (terminal) booking 409', r.statusCode === 409, `(got ${r.statusCode})`)
+  // B_ASSERTED is now 'cancelled' (terminal) — re-cancelling is refused for everyone, ops included.
+  r = await patch(`/bookings/${B_ASSERTED}/cancel`, tok('ops-user', 'admin'))
+  check('ops cannot cancel an already-terminal (cancelled) booking 409', r.statusCode === 409, `(got ${r.statusCode})`)
 
   await app.close()
   await redis.del(breadcrumbGateKey(B1), driverLocationKey(D1))
