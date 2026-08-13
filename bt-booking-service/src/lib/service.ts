@@ -476,6 +476,15 @@ export async function acceptBooking(
     )
   }
 
+  // A direct booking earmarked for one driver is not open to anyone else — the same guard
+  // submitQuote applies (quote-service). Without it the instant-accept path let any solo driver
+  // grab a load the shipper had targeted at a specific driver (review F15).
+  if (booking.booking_type === 'direct' && booking.target_driver_id) {
+    if (booking.target_driver_id !== driverId) {
+      throw new BookingError('This booking is assigned to a different driver', 'FORBIDDEN', 403)
+    }
+  }
+
   const updated = await repo.acceptBooking(bookingId, driverId)
   if (!updated) {
     // Another driver accepted between our read and write
@@ -485,6 +494,16 @@ export async function acceptBooking(
       409,
     )
   }
+
+  // An instant-accept is an award, so it must CLOSE the market like the auction and direct-attach
+  // paths do: otherwise every other live bid stays 'submitted' forever, those carriers hold
+  // capacity for a taken load, and a later acceptQuote on a still-live quote throws a confusing
+  // ALREADY_AWARDED (review F16). Snapshot the losers BEFORE expiry (expireOpenQuotes is what makes
+  // them stop matching the live-status filter the lookup uses), expire, then notify — no winning
+  // quote to exclude here, so listLosingQuotes takes null.
+  const losingQuotes = await quoteRepo.listLosingQuotes(bookingId, null)
+  await quoteRepo.expireOpenQuotes(bookingId)
+  await notify.emitQuotesLost(updated, losingQuotes, log)
 
   await notify.emitBookingAccepted(updated, log)
   return updated

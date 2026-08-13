@@ -244,7 +244,12 @@ export async function emitQuoteWithdrawn(
  * and reject paths already use, so a bid that was rejected earlier and then swept
  * up by this is still only mailed about once.
  */
-export async function emitDirectAttached(
+/**
+ * Tell every losing bidder their quote is closed. Shared by every path that closes a market
+ * around live bids — the auction award, a distributor's direct-attach, and a solo driver's
+ * instant-accept — so a bid is never silently abandoned regardless of HOW the load was won.
+ */
+export async function emitQuotesLost(
   booking: DbBooking,
   losingQuotes: DbQuote[],
   log?: Logger,
@@ -262,6 +267,15 @@ export async function emitDirectAttached(
       }, log)
     }
   })
+}
+
+/** A distributor attached their own fleet to their load → tell the losing bidders. */
+export async function emitDirectAttached(
+  booking: DbBooking,
+  losingQuotes: DbQuote[],
+  log?: Logger,
+): Promise<void> {
+  await emitQuotesLost(booking, losingQuotes, log)
 }
 
 // -----------------------------------------------------------
