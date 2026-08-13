@@ -345,16 +345,19 @@ export type FuelComparison = {
 
 export type LivePosition = {
   driver_id: string
+  driver_name: string | null
   vehicle_id: string | null
   rc_number: string | null
-  driver_name: string | null
   booking_id: string | null
-  lat: number
-  lng: number
+  // GET /fleet/live sends is_online (a live fix exists) + updated_at; lat/lng go null once the 30s
+  // Redis TTL lapses (offline, not lost). Matches bt-fleet-service/src/routes/assignment.ts — the
+  // old recorded_at/stale/non-null lat-lng shape never matched the wire (review F4).
+  is_online: boolean
+  lat: number | null
+  lng: number | null
   heading: number | null
   speed_kmh: number | null
-  recorded_at: string
-  stale: boolean
+  updated_at: string | null
 }
 
 // ── Bookings / assignment ────────────────────────────────────

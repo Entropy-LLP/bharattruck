@@ -54,12 +54,12 @@ function positionsOf(res: unknown): LivePosition[] {
 }
 
 /**
- * A driver counts as "on the road" only with a real fix. The envelope shape
- * sends lat/lng as null once the 30s Redis TTL lapses (offline, not lost), and
- * the typed shape carries `stale` instead — honour whichever is present.
+ * A driver counts as "on the road" only with a real fix. GET /fleet/live sends is_online plus
+ * lat/lng that go null once the 30s Redis TTL lapses (offline, not lost) — a finite lat/lng is
+ * exactly an online fix.
  */
 function hasFix(p: LivePosition): boolean {
-  return Number.isFinite(p.lat) && Number.isFinite(p.lng) && p.stale !== true
+  return p.is_online && Number.isFinite(p.lat) && Number.isFinite(p.lng)
 }
 
 /**
