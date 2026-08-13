@@ -180,6 +180,9 @@ async function main() {
   const get = (id: string, token: string) => app.inject({
     method: 'GET', url: `/bookings/${id}`, headers: { authorization: `Bearer ${token}` },
   })
+  const accept = (id: string, token: string) => app.inject({
+    method: 'PATCH', url: `/bookings/${id}/accept`, headers: { authorization: `Bearer ${token}` },
+  })
 
   // ── THE UNBLOCK ─────────────────────────────────────────────────────────────
   console.log('\n── a truck-owning driver posts a load ("ship" is ungated)')
@@ -230,6 +233,38 @@ async function main() {
   // and still 403 (not 404) — the role-era shipper gate, de-roled but unchanged.
   res = await get(B_OTHER, tok(U_BARE, 'shipper'))
   check('a stranger is still refused a booking they hold no relation to 403', res.statusCode === 403, String(res.statusCode))
+
+  // ── review F15/F16: the instant-accept award path ──────────────────────────
+  console.log('\n── a solo driver instant-accepting an open load closes the market (F16)')
+  reset()
+  const B_TARGET_ME    = 'e4444444-4444-4444-8444-444444444444'
+  const B_TARGET_OTHER = 'e5555555-5555-4555-8555-555555555555'
+  const D_STRANGER     = 'a9999999-9999-4999-8999-999999999999'
+  // A live competing bid from the distributor's fleet on U_POSTER's open load.
+  store.quotes.push({ id: 'q-lose', booking_id: B_OPEN, driver_id: null, fleet_owner_id: FO1, amount: 44000, status: 'submitted' })
+  // Two direct bookings earmarked at specific drivers (one at U_OWNDRV, one at a stranger).
+  const targetRow = (id: string, target: string) => ({
+    id, shipper_id: U_POSTER, driver_id: null, fleet_owner_id: null, vehicle_id: null,
+    status: 'pending', booking_type: 'direct', target_driver_id: target, quoted_price: 30000,
+    final_price: null, min_acceptable: 20000, source_address: 'Pune', destination_address: 'Goa',
+  })
+  store.bookings.push(targetRow(B_TARGET_ME, D_OWN), targetRow(B_TARGET_OTHER, D_STRANGER))
+
+  res = await accept(B_OPEN, tok(U_OWNDRV, 'driver'))
+  check('solo owner-driver instant-accepts the open load 200', res.statusCode === 200, res.body.slice(0, 200))
+  check('the booking is bound to them', store.bookings.find((b) => b.id === B_OPEN)?.driver_id === D_OWN)
+  check('🔴 the competing live bid is EXPIRED, not orphaned (F16)',
+    store.quotes.find((q) => q.id === 'q-lose')?.status === 'expired',
+    String(store.quotes.find((q) => q.id === 'q-lose')?.status))
+  check('🔴 the losing bidder is told they lost (F16)',
+    store.notification_outbox.some((r) => r.event_type === 'quote_lost'),
+    JSON.stringify(store.notification_outbox.map((r) => r.event_type)))
+
+  console.log('\n── a targeted direct load is not open to another driver (F15)')
+  res = await accept(B_TARGET_OTHER, tok(U_OWNDRV, 'driver'))
+  check('🔴 a non-target driver cannot accept a targeted load 403 (F15)', res.statusCode === 403, String(res.statusCode))
+  res = await accept(B_TARGET_ME, tok(U_OWNDRV, 'driver'))
+  check('the targeted driver CAN accept their earmarked load 200', res.statusCode === 200, res.body.slice(0, 200))
 
   await app.close()
   console.log(`\n${failures.length ? 'RESULT: FAIL' : 'RESULT: PASS'} — ${passed} checks passed, ${failures.length} failed`)
