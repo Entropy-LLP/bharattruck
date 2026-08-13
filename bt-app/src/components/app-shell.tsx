@@ -6,7 +6,7 @@ import { usePathname, useRouter } from 'next/navigation'
 import { PanelLeftClose, PanelLeftOpen, LogOut, Building2, Menu, X } from 'lucide-react'
 import { useAuth } from '@/lib/auth'
 import { InfoDot } from '@/components/stat'
-import { visibleNav, isActive } from '@/lib/nav'
+import { visibleNav, isActive, canAccessPath } from '@/lib/nav'
 import { getMyFleet } from '@/lib/api'
 import type { FleetOwner } from '@/lib/types'
 
@@ -38,8 +38,17 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [fleet, setFleet] = useState<FleetOwner | null>(null)
 
   useEffect(() => {
-    if (isReady && !token) router.replace('/login')
-  }, [isReady, token, router])
+    if (!isReady) return
+    if (!token) { router.replace('/login'); return }
+    // Capability route guard (D-27/D-36): a human who deep-links a surface their capabilities do
+    // not unlock is sent to Home rather than dropped on a fleet page that fires owner-scoped calls
+    // and errors (review F3). Wait until capabilities RESOLVE (null = still loading) so a legitimate
+    // deep link is never bounced mid-load, and mirror the rail's hasFleetProfile bootstrap so a
+    // declared fleet owner with no trucks keeps the console that adds their first truck.
+    if (capabilities !== null && !canAccessPath(pathname, capabilities, { hasFleetProfile: !!personas?.fleet_owner_id })) {
+      router.replace('/home')
+    }
+  }, [isReady, token, capabilities, personas, pathname, router])
 
   useEffect(() => {
     setCollapsed(localStorage.getItem(RAIL_KEY) === '1')

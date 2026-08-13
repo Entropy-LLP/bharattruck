@@ -289,6 +289,12 @@ function TripActionSection({
   }
 
   if (booking.status === 'accepted') {
+    // A fleet-won booking is 'accepted' with the CARRIER locked in but driver_id still NULL — the
+    // owner pairs a truck+driver in Trips before anyone can start it. Offering "Start Trip" here
+    // dead-ends at a server 403 with a misleading toast; send the owner to pair crew instead (F1).
+    if (isAwaitingFleetDriver(booking)) {
+      return <AwaitingCrewSection booking={booking} />
+    }
     return <AcceptedTripSection booking={booking} onRefresh={onRefresh} />
   }
 
@@ -363,6 +369,47 @@ function NavigateButton({ booking }: { booking: Booking }) {
       <Navigation className="w-5 h-5" />
       {label}
     </a>
+  )
+}
+
+// ── Accepted (fleet-won, not yet crewed): pair a truck + driver ────────────────
+
+/**
+ * A fleet wins the auction as a COMPANY; the truck+driver are paired to the trip afterwards in the
+ * fleet console. Until then driver_id is NULL, so an 'accepted' fleet booking means "carrier locked
+ * in", NOT "driver assigned" — starting it is refused server-side. Mirrors isAwaitingFleetDriver in
+ * the shipper load-detail view.
+ */
+function isAwaitingFleetDriver(booking: Booking): boolean {
+  return !!booking.fleet_owner_id && !booking.driver_id
+}
+
+function AwaitingCrewSection({ booking }: { booking: Booking }) {
+  return (
+    <Card>
+      <div className="p-5">
+        <p className="text-sm font-semibold text-gray-900">Assign a truck &amp; driver</p>
+        <p className="text-xs text-gray-500 mt-0.5">
+          Your fleet won this load. Pair a truck and driver in Trips before it can start.
+        </p>
+        <div className="mt-4 rounded-xl bg-gray-50 border border-gray-100 p-3 space-y-2 text-sm">
+          <div className="flex justify-between gap-3">
+            <span className="text-gray-500">From</span>
+            <span className="font-medium text-gray-900 text-right truncate max-w-[70%]">{booking.source_address}</span>
+          </div>
+          <div className="flex justify-between gap-3">
+            <span className="text-gray-500">To</span>
+            <span className="font-medium text-gray-900 text-right truncate max-w-[70%]">{booking.destination_address}</span>
+          </div>
+        </div>
+        <Link
+          href="/trips"
+          className="mt-4 flex items-center justify-center w-full h-12 rounded-xl bg-gray-900 hover:bg-black text-white font-semibold text-base transition-colors"
+        >
+          Assign in Trips
+        </Link>
+      </div>
+    </Card>
   )
 }
 

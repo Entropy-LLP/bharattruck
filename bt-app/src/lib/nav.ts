@@ -97,3 +97,32 @@ export function visibleNav(
 export function isActive(pathname: string, href: string): boolean {
   return pathname === href || pathname.startsWith(`${href}/`)
 }
+
+/**
+ * The capability that gates a path — the longest matching nav href wins so /vehicles/<id> inherits
+ * /vehicles' gate. Any path not in the rail (e.g. /loads/<id>, which is 'ship' via /loads) resolves
+ * through its prefix; a path matching nothing falls back to 'always' (guarded by its own page).
+ */
+export function gateForPath(pathname: string): NavGate {
+  const match = NAV
+    .filter(item => isActive(pathname, item.href))
+    .sort((a, b) => b.href.length - a.href.length)[0]
+  return match?.gate ?? 'always'
+}
+
+/**
+ * May a viewer with these capabilities reach this path? Mirrors visibleNav's rule EXACTLY (incl. the
+ * hasFleetProfile bootstrap) so what the rail SHOWS and what the route guard ALLOWS never diverge
+ * (review F3). Callers must wait until capabilities have RESOLVED (non-null) before redirecting on a
+ * `false`, or a mid-load null would bounce a legitimate deep link.
+ */
+export function canAccessPath(
+  pathname: string,
+  capabilities: Capability[] | null,
+  opts?: { hasFleetProfile?: boolean },
+): boolean {
+  const gate = gateForPath(pathname)
+  if (gate === 'always') return true
+  if ((opts?.hasFleetProfile ?? false) && (gate === 'carry' || gate === 'operate')) return true
+  return capabilities?.includes(gate) ?? false
+}
