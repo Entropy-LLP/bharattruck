@@ -19,6 +19,14 @@ export type JwtPayload = {
    * makes that later change a non-event.
    */
   role?: string
+  /**
+   * Token purpose. Access tokens carry `type:'access'` (or, for sessions minted before
+   * tagging, no `type` at all). Single-purpose tokens — password-reset (`'pwreset'`) and
+   * consignee-claim (`'consignee_claim'`) — are signed with the SAME JWT_SECRET and carry a
+   * `userId`, so this hook must reject them: otherwise a leaked reset/claim link would act as
+   * a full bearer session on every authenticated endpoint. Their own handlers verify inline.
+   */
+  type?: string
 }
 
 declare module 'fastify' {
@@ -47,6 +55,14 @@ export async function authenticate(request: FastifyRequest, reply: FastifyReply)
   // `userId` is the ONLY claim that identifies anybody, so it is the only one required here.
   if (!payload.userId) {
     reply.code(401).send({ success: false, error: 'Token missing required claims' })
+    return
+  }
+
+  // A password-reset or consignee-claim token is signed with the same secret and carries a
+  // userId, so it would otherwise pass as a session. Reject any non-'access' typed token;
+  // legacy access tokens (no `type`) still pass so nobody is signed out on deploy.
+  if (payload.type !== undefined && payload.type !== 'access') {
+    reply.code(401).send({ success: false, error: 'Token not valid for this operation' })
     return
   }
 
