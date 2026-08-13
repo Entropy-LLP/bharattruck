@@ -128,7 +128,10 @@ export default function LoadDetailPage({ params }: { params: Promise<{ id: strin
   }
 
   const status = bookingStatusConfig[booking.status] ?? bookingStatusConfig.pending
-  const canCancel = !['cancelled', 'completed', 'in_transit', 'paid'].includes(booking.status)
+  // 'delivery_asserted' is a delivered-but-unconfirmed trip: only ops closure remains, so a shipper
+  // Cancel here is not a valid action (the server refuses it) — hide it like the other post-pickup
+  // states (review F2). Its predecessor in_transit is already excluded; this closes the gap.
+  const canCancel = !['cancelled', 'completed', 'in_transit', 'delivery_asserted', 'paid'].includes(booking.status)
   const isTracked = TRACKED_STATUSES.includes(booking.status)
 
   return (
