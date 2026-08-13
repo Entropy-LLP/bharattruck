@@ -1,7 +1,6 @@
 import 'dotenv/config'
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
-import { shipmentRoutes } from './routes/shipments.js'
 import { podRoutes } from './routes/pod.js'
 
 const app = Fastify({
@@ -13,7 +12,10 @@ const app = Fastify({
 
 async function bootstrap() {
   await app.register(cors, { origin: true })
-  await app.register(shipmentRoutes, { prefix: '/cargo/shipments' })
+  // /cargo/shipments removed (review F28): the multi-leg shipment + merkle/blockchain ledger is OUT
+  // of MVP, and its handlers were an UNAUTHENTICATED stub that fabricated success and executed
+  // out-of-scope chain code, reachable through the public gateway. The real POD path is /cargo/pod
+  // (receiver-OTP). Re-add behind auth when the ledger feature is actually built.
   await app.register(podRoutes, { prefix: '/cargo/pod' })
   app.get('/health', () => ({
     status: 'ok',

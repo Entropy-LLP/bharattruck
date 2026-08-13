@@ -15,6 +15,7 @@ ENV PRICING_SERVICE_URL=http://bt-pricing-service:3003
 ENV PAYMENT_SERVICE_URL=http://bt-payment-service:3004
 ENV CARGO_SERVICE_URL=http://bt-cargo-ledger:3005
 ENV FLEET_SERVICE_URL=http://bt-fleet-service:3007
+ENV TRACKING_SERVICE_URL=http://bt-tracking-service:3006
 ENV CORS_ALLOWED_ORIGINS=*
 
 EXPOSE 80
