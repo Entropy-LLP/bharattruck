@@ -143,6 +143,25 @@ export async function mayExecuteFor(
   return null
 }
 
+/**
+ * Decide what an assign must do to a booking that may ALREADY hold a live crew (review F25). An
+ * ASSIGNABLE booking can be re-crewed before departure; because vehicle_assignments has a
+ * one-live-per-booking index, the prior assignment must be released before the new one inserts.
+ * Pure so the rule is unit-testable without a database.
+ *   needsRelease  — the booking currently names a crew that differs from the requested one.
+ *   driverChanged — that difference includes the driver, so the NEW driver's freeness must be
+ *                   proven before the release (a truck-only swap keeps the same, already-held driver).
+ */
+export function reCrewPlan(
+  current: Pick<BookingRow, 'driver_id' | 'vehicle_id'>,
+  requested: { driverId: string; vehicleId: string },
+): { needsRelease: boolean; driverChanged: boolean } {
+  const needsRelease =
+    current.driver_id != null &&
+    (current.driver_id !== requested.driverId || current.vehicle_id !== requested.vehicleId)
+  return { needsRelease, driverChanged: needsRelease && requested.driverId !== current.driver_id }
+}
+
 export async function assignDriverAndVehicle(input: AssignInput): Promise<AssignResult> {
   const supabase = getSupabase()
 
@@ -175,6 +194,27 @@ export async function assignDriverAndVehicle(input: AssignInput): Promise<Assign
   // booking excludes itself: re-assigning a booking that already holds this truck
   // must not report the truck as taken by that same booking.
   await assertVehicleAvailable(input.vehicleId, { exceptBookingId: input.bookingId })
+
+  // (3.5) RE-CREW (review F25). An ASSIGNABLE booking may already hold a live crew — the owner is
+  // swapping the driver and/or truck before departure (Q13 rules out only MID-TRIP reassignment).
+  // vehicle_assignments_one_live_per_booking refuses the new row while the old is live, and
+  // releaseFinishedAssignments only sweeps TERMINAL bookings, so without this a re-crew of an
+  // 'accepted' booking dead-ends at a 409 with no way out. Release the booking's OWN prior
+  // assignment first. This cannot strand the booking: the new vehicle is already proven free
+  // above, and when the DRIVER is changing we prove the new driver is free too, so the release is
+  // only ever followed by an insert that succeeds. (Re-submitting the SAME crew skips this and
+  // falls through to the existing insert path unchanged.)
+  const recrew = reCrewPlan(booking, input)
+  if (recrew.needsRelease) {
+    if (recrew.driverChanged && await hasLiveAssignmentForDriver(input.fleetOwnerId, input.driverId)) {
+      throw new FleetError(
+        'That driver is already on another live trip — free them before assigning this one',
+        'INVALID_TRANSITION',
+        409,
+      )
+    }
+    await releaseAssignmentForBooking(input.bookingId)
+  }
 
   // (4) The insert IS the mutual-exclusion check.
   let created = await insertAssignment(input)
