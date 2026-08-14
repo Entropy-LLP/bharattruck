@@ -449,7 +449,7 @@ function MyBids({
                 <th className="py-3 px-4 text-right font-medium">Your bid</th>
                 <th className="py-3 px-4 text-left font-medium">Status</th>
                 <th className="py-3 px-4 text-left font-medium">Placed</th>
-                <th className="py-3 px-4 text-right font-medium">Action</th>
+                <th className="py-3 px-4 text-right font-medium sticky right-0 bg-white">Action</th>
               </tr>
             </thead>
             <tbody>
@@ -462,7 +462,7 @@ function MyBids({
                 return (
                   <tr
                     key={b.id}
-                    className={`border-b border-gray-50 transition-colors ${
+                    className={`group border-b border-gray-50 transition-colors ${
                       needsReply(b) ? 'bg-orange-50/60 hover:bg-orange-50' : 'hover:bg-gray-50'
                     }`}
                   >
@@ -512,7 +512,22 @@ function MyBids({
                       <div className="text-xs text-gray-400">{shortDate(b.submitted_at)}</div>
                     </td>
 
-                    <td className="py-3 px-4 text-sm text-right whitespace-nowrap">
+                    {/* Sticky for the same reason the Open loads table already is: at 1000px
+                        minimum width this table outruns its container and the actions were
+                        landing off-screen. This tab is the one that most needs them reachable —
+                        a countered bid is the only row here that expires while nobody is
+                        looking, which is why those rows are pulled to the top and tinted.
+
+                        A sticky cell must be OPAQUE (a transparent one shows the row sliding
+                        underneath it), so it carries its own background mirroring the row's,
+                        and tracks hover via `group` on the <tr>. The needs-reply tint is solid
+                        here where the row uses /60 — over a white page the two are within a
+                        hair of each other, and translucency is not an option for this cell. */}
+                    <td
+                      className={`py-3 px-4 text-sm text-right whitespace-nowrap sticky right-0 transition-colors border-l border-gray-100 ${
+                        needsReply(b) ? 'bg-orange-50' : 'bg-white group-hover:bg-gray-50'
+                      }`}
+                    >
                       <button
                         onClick={() => onHistory(b)}
                         className="rounded-xl border border-gray-200 bg-white text-gray-700 text-xs font-medium px-3 py-1.5 hover:bg-gray-50"
