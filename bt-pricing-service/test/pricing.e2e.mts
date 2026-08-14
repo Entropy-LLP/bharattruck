@@ -200,6 +200,14 @@ async function advisoryRoundTripFromShipper() {
   process.env.SUPABASE_URL = 'http://supabase.stub'
   process.env.SUPABASE_SERVICE_ROLE_KEY = 'stub-service-role-key'
 
+  // Seed the cost engine's norm caches so the route's resolveCostFloor reads them
+  // instead of the stubbed supabase — keeps this test offline AND proves the REAL
+  // CV-Parc floor now rides on the persisted row (not just the response).
+  const { __loadCostEngineFixtures, __resetCostEngineCaches } = await import('../src/lib/cost-engine.js')
+  const { CV_PARC_NORMS, CV_PARC_SERVICE_CURVE, FLEET_COST_SETTINGS_DEFAULT } = await import('./fixtures/cv-parc-norms.js')
+  __resetCostEngineCaches()
+  __loadCostEngineFixtures({ norms: CV_PARC_NORMS, serviceCurve: CV_PARC_SERVICE_CURVE, prices: FLEET_COST_SETTINGS_DEFAULT })
+
   // Capture what would have been INSERTed. The response is easy to get right and
   // the stored row is what a later reader — an auditor, a settlement job — actually
   // sees, so assert on the row.
@@ -263,6 +271,8 @@ async function advisoryRoundTripFromShipper() {
     // quoted_price is still written on an advisory quote — the row is the record of
     // what the shipper was shown and when. It is just not an amount owed.
     check('advisory row still records the benchmark it showed', typeof row?.quoted_price === 'number' && row.quoted_price > 0, `(got ${row?.quoted_price})`)
+    // The real cost floor is resolved in the route and stored alongside the quote.
+    check('shipper quote persists the REAL CV-Parc cost floor', typeof row?.breakdown_json?.cost_floor?.floor === 'number' && row.breakdown_json.cost_floor.floor > 0, `(got ${JSON.stringify(row?.breakdown_json?.cost_floor?.floor)})`)
 
     // The direct half, same route, so "advisory" is demonstrably driven by the input
     // rather than by the real route having quietly stopped classifying at all.
