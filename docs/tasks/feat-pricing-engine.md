@@ -29,12 +29,14 @@ Google key stays in tracking), Redis-cached, with haversine × 1.3 fallback. (P1
 
 ## Phases
 
-- **P0 (this branch)** — real cost engine + wire into `computeQuote` + golden test. ✅
-- P1 — real road distance via `bt-tracking-service`.
-- P2 — FR8 market layer (`freight_lane_rates` migration seeded from the workbook + calibrated multipliers).
-- P3 — quote selection + full breakdown response + UI (`bt-app` post/page.tsx).
-- P4 — Mode B auction justification wired into booking `submitQuote`.
-- P5 — calibration/validation harness on the 4,917-row workbook set.
+- **P0** — real cost engine + wire into `computeQuote` + golden test (95 checks). ✅ (#136)
+- **P1** — real road distance via `bt-tracking-service` `POST /internal/route/point`, haversine fallback. ✅ (#137)
+- **P2** — FR8 market layer: `lib/market-engine.ts` + migration 0029 (4 classes / 27 cities / 63 directional lanes). ✅ (#138, migration applied to prod 2026-08-14 as ledger `0029_freight_market_rates`)
+- **P3** — quote↔floor↔market reconciliation (`lib/reconcile.ts`, additive, never mutates the locked headline) + three-layer panel in `bt-app` post/page.tsx (21 checks). ✅ (#141)
+- **P4** — Mode B justify-a-price: `lib/justify.ts` + `POST /pricing/justify` + live "Where this bid goes" panel in `bt-app` auctions BidDialog (16 checks). Truck-agnostic, never nudges, sums to the bid to the rupee. ✅ (#142)
+- **P5** — calibration/validation harness on the full **4,917-row FR8 dataset**. ⏳ BLOCKED on data: the xlsx (`BharatTruck_Test_Dataset_v3_FR8.xlsx`) is not committed to the repo — it was chat-attached. The COST layer is already calibrated to the workbook (the P0 golden test, fuel/crew to the rupee, total-direct ±3%). The remaining piece — the demand-premium model (dataset Market_Price varies 0.92×–1.45× raw FR8) + season/urgency multipliers — needs that dataset re-supplied to derive honestly rather than guess. P2 deliberately ships honest FR8 live-corridor rates and defers the premium here.
+
+**Status: the standalone engine (both modes) is built end-to-end, wired through services + bt-app, and merged. Full suite 194 checks green.** Delete this file only after P5 (or an explicit decision to close the engine without the premium calibration).
 
 ---
 
