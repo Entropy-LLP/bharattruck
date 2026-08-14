@@ -31,6 +31,11 @@ export type ErrorCode =
   // can route to Settings rather than confuse it with an expired quote-lock (both were
   // VALIDATION_ERROR, which is only distinguishable by message text otherwise).
   | 'GST_REQUIRED'
+  // The poster of a load may not bid on it. Distinct from FORBIDDEN because it is the
+  // one refusal with a legitimate alternative to offer: this caller is not barred from
+  // the load, only from reaching it through the auction, and a client should send them
+  // to direct-attach (D-10) rather than showing "you are not allowed".
+  | 'SELF_BID_FORBIDDEN'
 
 /** The single error envelope every service returns on failure. snake_case-friendly + stable. */
 export interface ErrorEnvelope {

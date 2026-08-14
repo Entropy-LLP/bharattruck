@@ -105,6 +105,10 @@ export function negotiationCapReached(negotiationRows: number): boolean {
 // employed driver owns no truck, so they hold neither capability and are refused,
 // while an owner-driver attached to a fleet keeps the marketplace their truck
 // earns them (founder Q14, the attached-vehicle model).
+//
+// Holding a carrier capability is NOT sufficient on its own: the caller must also not
+// be this booking's shipper. See the self-bid refusal below — the one guard here that
+// asks about the caller's RELATION to the load rather than about what they own.
 // -----------------------------------------------------------
 
 export async function submitQuote(
@@ -122,6 +126,31 @@ export async function submitQuote(
   const booking = await repo.getBookingById(bookingId)
   if (!booking) {
     throw new BookingError(`Booking ${bookingId} not found`, 'NOT_FOUND', 404)
+  }
+
+  // NOBODY BIDS ON THEIR OWN LOAD. A distributor holds both halves — they posted it
+  // ('shipper' relation) and they can carry it ('carry'/'operate') — so every other
+  // guard in this function passes for them, and without this one the platform lets a
+  // human run an auction against themselves and then award it to themselves. That is
+  // not a hypothetical: it reached production (booking 337e203a), where the resulting
+  // trip was recorded as award_path='auction' and silently entered the price history
+  // every future quote is anchored on.
+  //
+  // Refused on the RELATION to this booking, never a role string (D-27) — the same
+  // relation acceptQuote awards on, so the two cannot disagree about who the shipper
+  // is. It is deliberately the FIRST refusal after the booking is read: a self-bid is
+  // permanently wrong, so reporting it as 'auction closed' or 'deadline passed'
+  // depending on when it was tried would send the caller to fix the wrong thing.
+  //
+  // This does NOT close the distributor's route to their own load — it names it.
+  // Direct-attach (D-10, PATCH /bookings/:id/direct-attach) exists for exactly this
+  // and reaches the same 'accepted' state, minus the fictional auction.
+  if (relationsToBooking(booking, snapshot).includes('shipper')) {
+    throw new BookingError(
+      'You posted this load — use direct-attach to move it with your own truck instead of bidding on it',
+      'SELF_BID_FORBIDDEN',
+      403,
+    )
   }
 
   if (booking.status !== 'pending' && booking.status !== 'negotiating') {

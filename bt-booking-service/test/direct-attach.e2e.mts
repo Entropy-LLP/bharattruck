@@ -331,6 +331,62 @@ async function main() {
   check('the withdrawn bidder is NOT mailed again',
     !lost.some(n => n.recipient_email === 'stranger@example.com'), JSON.stringify(lost))
 
+  // ── Self-bidding: the flip side of direct-attach ──────────────────────────
+  // Direct-attach exists BECAUSE a distributor must never bid on their own load, so
+  // the refusal belongs next to the feature that replaces it. U_DIST is the exact
+  // shape that made this reachable: they posted B_BIDS *and* run fleet FO1, so every
+  // other guard in submitQuote passes for them. This is the production incident
+  // (booking 337e203a) reduced to a fixture.
+  console.log('\n── a distributor cannot bid on the load they posted')
+  reset()
+  const bid = (id: string, token: string, amount: number) => app.inject({
+    method: 'POST', url: `/bookings/${id}/quotes`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { amount },
+  })
+
+  res = await bid(B_BIDS, tok(U_DIST, 'shipper'), 39000)
+  check('self-bid on own load is 403', res.statusCode === 403, res.body.slice(0, 200))
+  check('refused as SELF_BID_FORBIDDEN, not a generic 403',
+    res.json().code === 'SELF_BID_FORBIDDEN', res.json().code)
+  check('the error points at direct-attach', /direct-attach/i.test(res.json().error ?? ''), res.body.slice(0, 200))
+  check('no quote row was created', !store.quotes.some(q => q.fleet_owner_id === FO1), JSON.stringify(store.quotes))
+
+  // The role string must not be a way around it, exactly as it is not a way INTO
+  // direct-attach above. Same human, carrier-shaped token, same refusal.
+  res = await bid(B_BIDS, tok(U_DIST, 'fleet_owner'), 39000)
+  check('a fleet_owner-role token does not evade the rule', res.statusCode === 403, String(res.statusCode))
+
+  // Ordering matters: a self-bid is permanently wrong, so it must not be reported as
+  // a state problem the caller could "fix" by waiting or retrying.
+  reset()
+  store.bookings.find(b => b.id === B_BIDS)!.auction_deadline = '2020-01-01T00:00:00Z'
+  res = await bid(B_BIDS, tok(U_DIST, 'shipper'), 39000)
+  check('a self-bid on an EXPIRED auction still reports the self-bid, not AUCTION_CLOSED',
+    res.json().code === 'SELF_BID_FORBIDDEN', res.json().code)
+
+  // ── ...and the marketplace still works for everybody else ─────────────────
+  // The guard is scoped to the poster. If this breaks, the fix has taken bidding
+  // down with it — which would be a far worse bug than the one it repairs.
+  //
+  // U_STRANGE is the correct control and U_DRIVER2 is not: D2 owns no vehicle in
+  // these fixtures, so they are refused by the CAPABILITY gate that predates this
+  // change, and a green check on them would prove nothing about the new one.
+  // U_STRANGE owns truck v4 and posted nothing — they fail neither half.
+  console.log('\n── an unrelated carrier can still bid on that same shipper\'s load')
+  reset()
+  res = await bid(B_AUCTION, tok(U_STRANGE, 'driver'), 39000)
+  check('a stranger who owns a truck bids normally (201)', res.statusCode === 201, res.body.slice(0, 200))
+  check('their quote row exists', store.quotes.some(q => q.driver_id === D_STR && q.amount === 39000),
+    JSON.stringify(store.quotes.map(q => [q.driver_id, q.amount])))
+
+  // And the poster's legitimate route to their own load is untouched.
+  res = await attach(B_BIDS, tok(U_DIST, 'shipper'))
+  check('the poster can still direct-attach the load they may not bid on', res.statusCode === 200,
+    res.body.slice(0, 160))
+  check('recorded as direct_attach, never auction', row(B_BIDS).award_path === 'direct_attach',
+    row(B_BIDS).award_path)
+
   await app.close()
   console.log(`\n${failures.length ? 'RESULT: FAIL' : 'RESULT: PASS'} — ${passed} checks passed, ${failures.length} failed`)
   if (failures.length) { failures.forEach(f => console.log('  ✗ ' + f)); process.exit(1) }

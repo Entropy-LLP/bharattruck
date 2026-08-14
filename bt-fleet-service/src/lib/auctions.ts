@@ -76,6 +76,19 @@ export type FleetBid = QuoteRow & {
  * (`target_driver_id`): `submitQuote` rejects those for a fleet with a 403, so
  * showing them would be a board of buttons that cannot work.
  *
+ * By the SAME rule it excludes loads the caller POSTED (`excludeShipperUserId`).
+ * submitQuote now refuses a self-bid, so leaving them on the board would again be
+ * buttons that cannot work — but the exclusion is not merely cosmetic tidying. A
+ * distributor's own load appearing under "Open loads" is an invitation to bid on it,
+ * and until that refusal existed the invitation was accepted: one such bid was placed,
+ * won, and recorded as a genuine auction in production. bt-booking-service's own feed
+ * board has always applied this filter (feed/repository.ts listOpenWork); this query
+ * was simply never taught it. The two boards now answer the same question the same way.
+ *
+ * NOTE the id types differ and are not interchangeable: the tenant is a
+ * `fleet_owners.id`, while `bookings.shipper_id` is a `users.id`. Both are needed —
+ * one scopes `my_bid`, the other the exclusion.
+ *
  * `bid_count` is the ONLY thing exposed about rival bids — never their amounts or
  * identities. A dispatcher learning that a load has eight bids is normal auction
  * information; learning what the other eight fleets offered is not, and would turn
@@ -83,7 +96,7 @@ export type FleetBid = QuoteRow & {
  */
 export async function listOpenAuctions(
   fleetOwnerId: string,
-  opts: { limit: number; offset: number; includeExpired: boolean },
+  opts: { limit: number; offset: number; includeExpired: boolean; excludeShipperUserId: string },
 ): Promise<OpenAuction[]> {
   const supabase = getSupabase()
 
@@ -92,6 +105,7 @@ export async function listOpenAuctions(
     .select(AUCTION_BOOKING_COLUMNS)
     .in('status', BIDDABLE_STATUSES)
     .is('target_driver_id', null)
+    .neq('shipper_id', opts.excludeShipperUserId)
 
   if (!opts.includeExpired) {
     // A null deadline never expires; a set one must still be in the future. PostgREST
