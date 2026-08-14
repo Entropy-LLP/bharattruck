@@ -39,7 +39,7 @@ import {
 } from '@/lib/api'
 import { useAuth } from '@/lib/auth'
 import FleetPairPicker, { type FleetPair } from '@/components/fleet-pair-picker'
-import { inr } from '@/lib/format'
+import { inr, todayInIndia } from '@/lib/format'
 import type {
   BookingType,
   ConsigneeInput,
@@ -125,9 +125,34 @@ export default function PostLoadPage() {
   const [auctionDeadline, setAuctionDeadline] = useState('')
 
   const [quote, setQuote] = useState<PriceQuote | null>(null)
+  // A quote was discarded because a price-bearing field changed — see invalidateQuote.
+  const [quoteStale, setQuoteStale] = useState(false)
 
+  // Derived, not stored: a date already keyed in stops being valid when midnight passes,
+  // and state set on change would keep reporting the answer from when it was typed.
+  const pickupDateError = pickupDate && pickupDate < todayInIndia()
+    ? 'Pickup cannot be in the past.'
+    : null
+
+  /**
+   * Drop a quote that no longer describes this load — and SAY SO.
+   *
+   * The dropping was always correct: these are the price-bearing fields, and
+   * submitting a price quoted for a different trip would be worse than asking for a
+   * new one. What was missing is that it happened in silence. The quote card simply
+   * vanished and the button went back to "Get quote", so a shipper correcting a typo
+   * in the weight had no way to tell whether they had invalidated their pricing or
+   * mis-clicked something — and the draft looks identical either way.
+   *
+   * `quoteStale` is set only when a real quote was discarded, so it never fires on the
+   * first pass through an empty form (nothing was lost, so there is nothing to report).
+   */
   function invalidateQuote() {
-    setQuote((q) => (q ? null : q))
+    setQuote((q) => {
+      if (!q) return q
+      setQuoteStale(true)
+      return null
+    })
   }
 
   function changeBookingType(next: BookingType) {
@@ -166,6 +191,7 @@ export default function PostLoadPage() {
         booking_type: bookingType,
       })
       setQuote(q)
+      setQuoteStale(false)
       toast.success(quoteKindOf(q, bookingType) === 'advisory' ? 'Estimate ready' : 'Price locked')
     } catch (err: unknown) {
       setQuoteError(err instanceof ApiError ? err.message : 'Could not get a price quote — please try again.')
@@ -193,6 +219,13 @@ export default function PostLoadPage() {
     }
     if (!pickupDate) {
       setFormError('Choose a pickup date.')
+      return
+    }
+    // Belt and braces with the field-level message: `min` and the inline error are both
+    // client-side hints, and the shipper may have had this form open across midnight.
+    // The server refuses it either way — this just keeps the refusal legible.
+    if (pickupDateError) {
+      setFormError(pickupDateError)
       return
     }
     const name = consigneeName.trim()
@@ -460,6 +493,20 @@ export default function PostLoadPage() {
 
               {quoteError && <div className="mt-3"><ErrorNote message={quoteError} /></div>}
 
+              {/* The quote is gone because the load changed — not because anything failed.
+                  Sits where the quote card was, so the space does not just go blank, and
+                  names the rest of the draft as safe: the fear this answers is "have I
+                  lost what I typed?", which is why it says what was NOT lost. */}
+              {quoteStale && !quote && !quoteError && (
+                <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3">
+                  <p className="text-sm font-medium text-amber-900">This change needs a new quote</p>
+                  <p className="mt-0.5 text-xs text-amber-800">
+                    You changed something the price depends on, so the previous quote no longer
+                    applies. The rest of your draft is untouched — get a new quote to post.
+                  </p>
+                </div>
+              )}
+
               {quote && (
                 <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 p-4">
                   <div className="flex items-baseline justify-between gap-3">
@@ -543,10 +590,25 @@ export default function PostLoadPage() {
                 <input
                   id="pickup_date"
                   type="date"
+                  // The server refuses a past pickup date, but only at POST — so without
+                  // this the picker cheerfully offered last month and the refusal arrived
+                  // at the end of a long form, attached to nothing the shipper could see.
+                  min={todayInIndia()}
                   value={pickupDate}
                   onChange={(e) => setPickupDate(e.target.value)}
                   className={INPUT}
+                  aria-describedby={pickupDateError ? 'pickup_date_error' : undefined}
+                  aria-invalid={pickupDateError ? true : undefined}
                 />
+                {/* `min` is a hint, not a guarantee — it greys out earlier days in the
+                    picker but a typed or pasted date still lands. This is the field-level
+                    error the review asked for: shown on entry, next to the field, rather
+                    than as a form-wide message after submit. */}
+                {pickupDateError && (
+                  <p id="pickup_date_error" className="mt-1 text-xs font-medium text-red-600">
+                    {pickupDateError}
+                  </p>
+                )}
               </Field>
               <Field id="pickup_time_slot" label="Time slot (optional)">
                 <input

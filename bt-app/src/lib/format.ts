@@ -81,3 +81,21 @@ export function periodDays(days: number): { from: string; to: string } {
   const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000)
   return { from: from.toISOString(), to: to.toISOString() }
 }
+
+/**
+ * Today's calendar date in India, as YYYY-MM-DD.
+ *
+ * Deliberately NOT the browser's local date. A pickup date is validated against IST by
+ * bt-booking-service (it is an Indian shipper keying an Indian calendar date), so a
+ * client computing "today" from its own timezone would disagree with the server for
+ * anyone testing from outside India — offering a date the form accepts and the POST
+ * then rejects.
+ *
+ * IST is UTC+05:30 with no DST, so shifting the epoch and reading the UTC date back is
+ * exact: no Intl formatting, no locale surprises, and directly comparable to the
+ * YYYY-MM-DD strings the date input produces.
+ */
+export function todayInIndia(): string {
+  const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000
+  return new Date(Date.now() + IST_OFFSET_MS).toISOString().slice(0, 10)
+}
