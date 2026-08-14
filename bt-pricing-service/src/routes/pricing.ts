@@ -4,6 +4,7 @@ import { QuoteBody, computeQuote } from '../lib/pricing.js'
 import { insertPriceQuote } from '../lib/price-quote-store.js'
 import { roadDistanceKm } from '../lib/geo.js'
 import { resolveCostFloor, type CostFloorBreakdown } from '../lib/cost-engine.js'
+import { defaultRouteDistanceClient } from '../lib/tracking-client.js'
 
 // -----------------------------------------------------------
 // pricingRoutes — public, JWT-gated. Mounted under `/pricing` so the gateway
@@ -67,11 +68,26 @@ export async function pricingRoutes(app: FastifyInstance) {
       return reply.status(400).send({ success: false, error: body.error.errors[0].message, code: 'VALIDATION_ERROR' })
     }
     try {
-      // Derive road distance from the coords (self-contained; no maps key).
-      const distance_km = roadDistanceKm(
+      // Real road distance from bt-tracking-service (cached there; the Google Maps key never enters
+      // pricing — the frozen maps CONTRACT). Any failure/timeout/missing-secret falls back to the
+      // self-contained haversine estimate, so a quote never hard-fails on tracking being down (P1).
+      const routeClient = defaultRouteDistanceClient()
+      let routedKm: number | null = null
+      if (routeClient) {
+        try {
+          routedKm = await routeClient.routeDistanceKm({
+            source_lat: body.data.source_lat, source_lng: body.data.source_lng,
+            dest_lat:   body.data.dest_lat,   dest_lng:   body.data.dest_lng,
+          })
+        } catch (err) {
+          req.log.warn({ err }, 'tracking route lookup failed; falling back to haversine estimate')
+        }
+      }
+      const distance_km = routedKm ?? roadDistanceKm(
         body.data.source_lat, body.data.source_lng,
         body.data.dest_lat,   body.data.dest_lng,
       )
+      const distance_basis: 'routed' | 'estimated' = routedKm != null ? 'routed' : 'estimated'
       // Guard identical/degenerate coords so we never trip the DB check
       // (distance_km > 0 / quoted_price > 0) and leak a 500 — return a clean 4xx.
       if (!(distance_km > 0)) {
@@ -125,7 +141,7 @@ export async function pricingRoutes(app: FastifyInstance) {
         vehicle_class:  result.cost_breakdown.vehicle_class,
         load_type:      body.data.load_type,
         weight_kg:      body.data.weight_kg,
-        breakdown_json: result,
+        breakdown_json: { ...result, distance_basis },
         quoted_price:   result.shipper_pays,
         currency:       'INR',
         expires_at:     expiresAt,
@@ -135,6 +151,7 @@ export async function pricingRoutes(app: FastifyInstance) {
         success: true,
         data: {
           ...result,
+          distance_basis,
           quote_id:     row.id,
           quoted_price: row.quoted_price,
           breakdown:    result.cost_breakdown,
