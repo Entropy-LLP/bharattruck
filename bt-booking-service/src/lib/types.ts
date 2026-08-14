@@ -259,6 +259,18 @@ const longitude = z.number().min(-180).max(180)
 // mechanism, and an index can only dedup values spelled the same way.
 // -----------------------------------------------------------
 
+/**
+ * Today's calendar date in India, as YYYY-MM-DD.
+ *
+ * IST is UTC+05:30 with no DST, so shifting the epoch and reading the UTC date back is
+ * exact — and gives a string directly comparable to the YYYY-MM-DD a client sends.
+ * Exported so the rule can be asserted on without waiting for 00:30 IST.
+ */
+export function istToday(): string {
+  const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000
+  return new Date(Date.now() + IST_OFFSET_MS).toISOString().slice(0, 10)
+}
+
 export const ConsigneeInputSchema = z.object({
   name:  z.string().trim().min(1, 'consignee.name is required'),
   phone: z.string()
@@ -300,10 +312,17 @@ export const CreateBookingBodySchema = z.object({
   vehicle_type:         z.enum(['mini_truck', 'lcv', 'hcv', 'trailer']),
   pickup_date:          z.string()
                           .regex(/^\d{4}-\d{2}-\d{2}$/, 'pickup_date must be YYYY-MM-DD')
-                          .refine(d => {
-                            const today = new Date(); today.setUTCHours(0, 0, 0, 0)
-                            return new Date(d + 'T00:00:00Z') >= today
-                          }, 'pickup_date cannot be in the past'),
+                          // Compared against today IN INDIA, not in UTC. pickup_date is a
+                          // plain calendar date keyed in by an Indian shipper, so anchoring
+                          // it at UTC midnight accepted YESTERDAY's Indian date every night
+                          // between 00:00 and 05:30 IST — the window in which UTC is still
+                          // on the previous day. Same reasoning (and same +05:30) as
+                          // bt-fleet-service's IST_START_OF_DAY in vehicle-schedule.ts.
+                          //
+                          // Both sides are YYYY-MM-DD, so a string compare IS the date
+                          // compare — no Date parsing, no timezone re-entering by the back
+                          // door. Kept in step with bt-app's todayInIndia().
+                          .refine(d => d >= istToday(), 'pickup_date cannot be in the past'),
   pickup_time_slot:     z.string().optional(),
   special_instructions: z.string().optional(),
   // The receiving party (D-22). Optional ONLY for back-compat with clients that
