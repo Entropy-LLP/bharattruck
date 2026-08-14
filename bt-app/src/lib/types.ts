@@ -817,6 +817,28 @@ export type PriceQuote = {
   reconciliation?: PriceQuoteReconciliation | null
 }
 
+/**
+ * "Justify-a-price" breakdown (bt-pricing-service Mode B, P4). A carrier names their own bid and the
+ * engine reverse-generates a cost breakdown that sums to it, from the load + route ALONE (no truck
+ * details). `components` + `margin` === `amount`, to the rupee. Never nudges.
+ */
+export type JustifyBreakdown = {
+  amount: number
+  cost_subtotal: number
+  margin: number
+  position: 'margin' | 'below_typical_cost'
+  components: {
+    fuel: number
+    tolls: number
+    driver: number
+    maintenance: number
+    handling: number
+  }
+  note: string
+  distance_km: number
+  distance_basis: 'routed' | 'estimated' | 'given'
+}
+
 // ── Live tracking (bt-tracking-service read-through aggregate, LOCKED D-8) ──────
 
 export type RouteBounds = {
