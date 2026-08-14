@@ -24,6 +24,7 @@ import type {
 } from './types.js'
 import { BookingError } from './types.js'
 import { assertValidQuoteTransition } from './state.js'
+import { assertDriverAvailable } from './driver-schedule.js'
 import * as repo from './repository.js'
 import * as quoteRepo from './quote-repository.js'
 import * as notify from './notifications/emit.js'
@@ -344,7 +345,22 @@ export async function acceptQuote(
   // the shipper can retry. Swallowing it would silently reinstate the bug.
   const losingQuotes = await quoteRepo.listLosingQuotes(bookingId, quoteId)
 
-  const awarded = await quoteRepo.awardBooking(bookingId, quoteId, bidderOfQuote(quote), quote.amount)
+  // A winning SOLO driver is bound straight onto bookings.driver_id with no
+  // vehicle_assignments row, so nothing else in the system would stop this shipper
+  // awarding a driver who is already out on someone else's load (driver-schedule.ts).
+  // A FLEET winner is skipped deliberately: awardBooking leaves driver_id NULL and
+  // bt-fleet-service's assign step runs the stronger index-backed guard when the owner
+  // picks the crew.
+  //
+  // Placed with the other pre-award refusals, BEFORE awardBooking's conditional UPDATE,
+  // so a refused award leaves the booking and every live quote exactly as they were —
+  // the shipper keeps their whole field of bidders and can accept a different one.
+  const winner = bidderOfQuote(quote)
+  if (winner.kind === 'driver') {
+    await assertDriverAvailable(winner.driverId, { exceptBookingId: bookingId })
+  }
+
+  const awarded = await quoteRepo.awardBooking(bookingId, quoteId, winner, quote.amount)
   if (!awarded) {
     throw new BookingError('Booking was already awarded — race condition', 'ALREADY_AWARDED', 409)
   }

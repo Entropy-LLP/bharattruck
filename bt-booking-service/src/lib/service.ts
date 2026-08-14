@@ -9,6 +9,7 @@ import {
 import type { AuthenticatedUser, BookingStatus, BookingWithProfiles, CreateBookingBody, DbBooking } from './types.js'
 import { BookingError } from './types.js'
 import { assertFleetAssignmentReady, assertValidTransition, CANCELLABLE_BOOKING_STATUSES } from './state.js'
+import { assertDriverAvailable } from './driver-schedule.js'
 import * as repo from './repository.js'
 import * as quoteRepo from './quote-repository.js'
 import { supabase } from './supabase.js'
@@ -485,6 +486,11 @@ export async function acceptBooking(
     }
   }
 
+  // D-19 for solo drivers: taking a load off the board binds bookings.driver_id with
+  // no vehicle_assignments row behind it, so the fleet indexes that would refuse a
+  // second live trip never see this path. See driver-schedule.ts.
+  await assertDriverAvailable(driverId, { exceptBookingId: bookingId })
+
   const updated = await repo.acceptBooking(bookingId, driverId)
   if (!updated) {
     // Another driver accepted between our read and write
@@ -659,6 +665,19 @@ export async function directAttachBooking(
   const existing = classifyExistingAward(booking, carrier)
   if (existing === 'replay') return booking
   if (existing === 'conflict') throw alreadyAwarded()
+
+  // A SOLO owner-driver attaching their own load binds bookings.driver_id directly, so
+  // it needs the same one-live-trip rule the marketplace paths get (driver-schedule.ts).
+  // A FLEET carrier is deliberately NOT checked here: the fleet branch leaves driver_id
+  // NULL for bt-fleet-service to pair later, and THAT step already runs the full guard
+  // (assertVehicleAvailable + the 0016 indexes). Checking a driver here that no column
+  // will name would refuse attaches for no reason.
+  //
+  // Runs AFTER the replay/conflict classification so a retried request is never blocked
+  // by the effect of its own first run.
+  if (carrier.kind === 'driver') {
+    await assertDriverAvailable(carrier.driverId, { exceptBookingId: bookingId })
+  }
 
   // Through the EXISTING state machine, never around it. Direct-attach is an
   // award, so it lands on the same pending|negotiating → accepted edge the

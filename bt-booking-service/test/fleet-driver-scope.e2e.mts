@@ -237,6 +237,12 @@ async function main() {
   }
 
   console.log('\n── owner-driver may self-select work ──')
+  // The read-scope checks above need this driver to HAVE a trip (B_OWNER, in_transit),
+  // but a driver may only hold one live trip at a time (driver-schedule.ts). End it
+  // first: the rule under test here is that an owner-driver attached to a fleet keeps
+  // marketplace access at all — a 409 for being busy would mask whether that holds.
+  store.bookings.find((b: any) => b.id === B_OWNER)!.status = 'completed'
+
   r = await app.inject({ method: 'PATCH', url: `/bookings/${B_OPEN2}/accept`, headers: OWNER })
   check('owner-driver /accept succeeds (not 403)', r.statusCode === 200, `(got ${r.statusCode}) ${JSON.stringify(r.json()?.error)}`)
 
