@@ -7,7 +7,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "tsx test/economics.test.mts && tsx test/vehicle-schedule.test.mts && tsx test/assignment-seam.test.mts && tsx test/assignment-sweep.test.mts && tsx test/driver-lookup.unit.mts && tsx test/recrew-plan.unit.mts"
+    "test": "tsx test/economics.test.mts && tsx test/vehicle-schedule.test.mts && tsx test/assignment-seam.test.mts && tsx test/assignment-sweep.test.mts && tsx test/driver-lookup.unit.mts && tsx test/recrew-plan.unit.mts && tsx test/owner-identifiers.unit.mts"
   },
   "dependencies": {
     "@fastify/cors": "^9.0.1",

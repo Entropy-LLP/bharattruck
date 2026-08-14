@@ -11,10 +11,42 @@ import { FleetError, parseOrThrow } from '../lib/types.js'
 // account another fleet's entire estate.
 // -----------------------------------------------------------
 
-const OwnerProfileBody = z.object({
+// -----------------------------------------------------------
+// GSTIN / PAN — FORMAT, not just length.
+//
+// These were length-only (`.length(15)` / `.length(10)`), which is not validation: it
+// accepts fifteen letters as a GSTIN. The live data shows the gap being used — one
+// fleet carries pan 'ABCDE123FG', exactly ten characters and not a PAN (the 6th-9th
+// characters must be digits).
+//
+// The GSTIN pattern is COPIED DELIBERATELY from the two places that already agree on
+// it for the shipper side — bt-auth-service/src/routes/identity.ts and the
+// users_gstin_format CHECK on the users table — so that the same number is not valid
+// for a shipper and invalid for a fleet. PAN has no existing precedent in the codebase;
+// this is the standard Income Tax format: five letters, four digits, one letter.
+//
+// Uppercased BEFORE the regex rather than rejecting lowercase. Both identifiers are
+// canonically uppercase (the users CHECK will not store anything else, and the settings
+// UI already uppercases on the way in), so normalising here means a fleet owner typing
+// their own GSTIN in lower case gets it stored correctly instead of getting an error
+// that reads as though the number itself were wrong.
+//
+// NOTE for anyone extending this: there is no DB CHECK behind fleet_owners the way
+// users_gstin_format sits behind users.gstin, so this schema is currently the only
+// thing enforcing the format. Adding that constraint needs a migration number.
+// -----------------------------------------------------------
+
+const GSTIN_PATTERN = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{2}[0-9A-Z]$/
+const PAN_PATTERN = /^[A-Z]{5}[0-9]{4}[A-Z]$/
+
+export const OwnerProfileBody = z.object({
   company_name: z.string().trim().min(2, 'company_name must be at least 2 characters').max(120),
-  gstin: z.string().trim().length(15, 'gstin must be 15 characters').optional(),
-  pan: z.string().trim().length(10, 'pan must be 10 characters').optional(),
+  gstin: z.string().trim().toUpperCase()
+    .regex(GSTIN_PATTERN, 'gstin must be a valid 15-character GSTIN, e.g. 27ABCDE1234F1Z5')
+    .optional(),
+  pan: z.string().trim().toUpperCase()
+    .regex(PAN_PATTERN, 'pan must be a valid 10-character PAN, e.g. ABCDE1234F')
+    .optional(),
   contact_phone: z.string().trim().min(8).max(20).optional(),
   billing_address: z.string().trim().max(500).optional(),
   city: z.string().trim().max(100).optional(),
