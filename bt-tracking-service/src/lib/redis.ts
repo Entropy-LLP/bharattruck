@@ -16,6 +16,10 @@ export const bookingDriverKey = (bookingId: string) => `loc:booking-driver:${boo
 
 // ── WRITE keys — bt-tracking-service namespace (trk:*) ──────────────────────
 export const routeKey = (bookingId: string) => `trk:route:${bookingId}`
+// Point-to-point (pre-booking) route cache, keyed by coords rounded to ~110m so repeat price
+// quotes on the same lane collapse to one cache hit (D-14 / pricing-engine P1).
+export const pointRouteKey = (sLat: number, sLng: number, dLat: number, dLng: number) =>
+  `trk:route-pt:${sLat.toFixed(3)},${sLng.toFixed(3)}:${dLat.toFixed(3)},${dLng.toFixed(3)}`
 export const etaKey = (bookingId: string) => `trk:eta:${bookingId}`
 export const pumpsKey = (bookingId: string) => `trk:pumps:${bookingId}`
 export const lockKey = (key: string) => `trk:lock:${key}`

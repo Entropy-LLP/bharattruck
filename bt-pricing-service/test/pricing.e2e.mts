@@ -282,6 +282,23 @@ async function advisoryRoundTripFromShipper() {
       directRes.json().data?.quoted_price === res.json().data?.quoted_price,
       `(${res.json().data?.quoted_price} vs ${directRes.json().data?.quoted_price})`)
 
+    // P1 — the road distance comes from bt-tracking-service when it answers, and falls back to the
+    // self-contained haversine estimate when it does not. (Everything above ran with no route
+    // client injected, i.e. the fallback path, unchanged from before P1.)
+    const { __setRouteDistanceClientForTests } = await import('../src/lib/tracking-client.js')
+
+    __setRouteDistanceClientForTests({ routeDistanceKm: async () => 500 })
+    const routed = await shipperQuote('direct')
+    check('quote uses the ROUTED distance when tracking answers', routed.json().data?.distance_basis === 'routed', `(got ${routed.json().data?.distance_basis})`)
+    check('the routed distance is exactly what tracking returned (not haversine)', inserted.at(-1)?.distance_km === 500, `(got ${inserted.at(-1)?.distance_km})`)
+
+    __setRouteDistanceClientForTests({ routeDistanceKm: async () => { throw new Error('tracking unreachable') } })
+    const fell = await shipperQuote('direct')
+    check('quote FALLS BACK to the haversine estimate when tracking throws (never 500)', fell.statusCode === 200 && fell.json().data?.distance_basis === 'estimated', `(got ${fell.statusCode}/${fell.json().data?.distance_basis})`)
+    check('the fallback distance is the haversine value, not the routed one', inserted.at(-1)?.distance_km !== 500 && (inserted.at(-1)?.distance_km ?? 0) > 0, `(got ${inserted.at(-1)?.distance_km})`)
+
+    __setRouteDistanceClientForTests(null)
+
     await app.close()
   } finally {
     globalThis.fetch = realFetch

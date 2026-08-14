@@ -1,6 +1,9 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { evaluateFix } from '../lib/evaluator.js'
+import { computeRoute } from '../lib/google.js'
+import { getOrCompute } from '../lib/cache.js'
+import { pointRouteKey, ROUTE_TTL_SECONDS } from '../lib/redis.js'
 import { TrackingError } from '../lib/types.js'
 
 // -----------------------------------------------------------
@@ -16,6 +19,13 @@ const FixBody = z.object({
   speed_kmh: z.number().min(0).nullable().optional(),
   heading: z.number().min(0).max(360).nullable().optional(),
   recorded_at: z.string().datetime({ offset: true }),
+})
+
+const PointRouteBody = z.object({
+  source_lat: z.number().min(-90).max(90),
+  source_lng: z.number().min(-180).max(180),
+  dest_lat: z.number().min(-90).max(90),
+  dest_lng: z.number().min(-180).max(180),
 })
 
 export async function internalRoutes(app: FastifyInstance) {
@@ -57,5 +67,33 @@ export async function internalRoutes(app: FastifyInstance) {
         data: { evaluated: false, error: (err as Error).message },
       })
     }
+  })
+
+  /**
+   * POST /internal/route/point — road distance for two ad-hoc coords, for a PRE-BOOKING price
+   * quote (D-14). bt-pricing-service calls this so the Google Maps key stays HERE and never enters
+   * pricing (the frozen maps CONTRACT). Cached by rounded coords, so repeat quotes on one lane are
+   * a single cache hit. A Google/quota failure surfaces as 5xx — pricing degrades to its own
+   * haversine estimate, so a quote never hard-fails on this.
+   */
+  app.post('/route/point', async (req, reply) => {
+    const parsed = PointRouteBody.safeParse(req.body)
+    if (!parsed.success) {
+      throw new TrackingError(parsed.error.errors[0].message, 'VALIDATION_ERROR', 400)
+    }
+    const b = parsed.data
+    const key = pointRouteKey(b.source_lat, b.source_lng, b.dest_lat, b.dest_lng)
+    const { value, cached } = await getOrCompute(key, ROUTE_TTL_SECONDS, () =>
+      computeRoute({ lat: b.source_lat, lng: b.source_lng }, { lat: b.dest_lat, lng: b.dest_lng }),
+    )
+    return reply.send({
+      success: true,
+      data: {
+        distance_m: value.distance_m,
+        distance_km: Math.round((value.distance_m / 1000) * 100) / 100,
+        duration_s: value.static_duration_s,
+        cached,
+      },
+    })
   })
 }
