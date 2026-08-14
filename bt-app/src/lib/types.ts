@@ -766,6 +766,30 @@ export type PriceQuoteBreakdown = {
   operating_cost_total: number
 }
 
+/** FR8-calibrated market reference for the lane (bt-pricing-service P2). */
+export type PriceQuoteMarket = {
+  market_price: number
+  inr_per_km: number
+  /** `lane_fr8` = a live per-corridor rate (directional); `national` = the ₹/km-by-class fallback. */
+  market_basis: 'lane_fr8' | 'national'
+  source_city: string | null
+  dest_city: string | null
+  /** Demand/supply ratio for the corridor (>1 head-haul, <1 back-haul); null off a seeded lane. */
+  ds_ratio: number | null
+}
+
+/** Where the headline quote sits between the operating-cost floor and the market (P3). */
+export type PriceQuoteReconciliation = {
+  cost_floor: number | null
+  market_ref: number | null
+  quoted: number
+  position: 'below_floor' | 'floor_to_market' | 'above_market' | 'market_below_floor' | 'unknown'
+  margin_over_floor_pct: number | null
+  vs_market_pct: number | null
+  /** One shipper-facing sentence, ready to render verbatim. */
+  note: string
+}
+
 export type PriceQuote = {
   quote_id: string
   quoted_price: number
@@ -785,6 +809,12 @@ export type PriceQuote = {
   quote_kind?: 'advisory' | 'binding'
   /** Server-authored sentence explaining where the number came from. */
   basis?: string
+  /** Whether distance_km came from the routing service (`routed`) or the haversine estimate. */
+  distance_basis?: 'routed' | 'estimated'
+  /** FR8 market reference for the lane; null when no lane/class rate resolved (P2). */
+  market?: PriceQuoteMarket | null
+  /** Floor ↔ quote ↔ market placement + a UI-ready note (P3). */
+  reconciliation?: PriceQuoteReconciliation | null
 }
 
 // ── Live tracking (bt-tracking-service read-through aggregate, LOCKED D-8) ──────

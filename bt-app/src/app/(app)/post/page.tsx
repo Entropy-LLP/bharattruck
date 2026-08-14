@@ -474,7 +474,10 @@ export default function PostLoadPage() {
                     </span>
                   )}
                   <dl className="mt-3 space-y-1 text-xs text-gray-600">
-                    <Line label="Distance (est.)" value={`${quote.breakdown.distance_km} km`} />
+                    <Line
+                      label={quote.distance_basis === 'routed' ? 'Distance (routed)' : 'Distance (est.)'}
+                      value={`${quote.breakdown.distance_km} km`}
+                    />
                     <Line label="Fuel" value={inr(quote.breakdown.fuel_cost)} />
                     <Line label="Driver wage" value={inr(quote.breakdown.driver_wage)} />
                     <Line label="Per-km operating" value={inr(quote.breakdown.per_km_operating_cost)} />
@@ -482,6 +485,44 @@ export default function PostLoadPage() {
                     <Line label="Platform fee" value={inr(quote.platform_fee)} />
                     <Line label="Vehicle class" value={quote.breakdown.vehicle_class} />
                   </dl>
+
+                  {/* Three-layer picture: operating-cost floor · this quote · market reference (P3).
+                      The quote is unchanged — this places it, and the note explains directional lanes
+                      (a back-haul whose market rate sits below cost). */}
+                  {quote.reconciliation && quote.reconciliation.position !== 'unknown' && (
+                    <div className="mt-3 rounded-lg border border-emerald-200 bg-white/70 p-3">
+                      <div className="grid grid-cols-3 gap-2 text-center">
+                        <div>
+                          <div className="text-[10px] uppercase tracking-wide text-gray-400">Cost floor</div>
+                          <div className="text-xs font-semibold text-gray-700 tabular-nums">
+                            {quote.reconciliation.cost_floor != null ? inr(quote.reconciliation.cost_floor) : '—'}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[10px] uppercase tracking-wide text-emerald-500">This quote</div>
+                          <div className="text-xs font-bold text-emerald-700 tabular-nums">
+                            {inr(quote.reconciliation.quoted)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[10px] uppercase tracking-wide text-gray-400">
+                            {quote.market?.market_basis === 'lane_fr8' ? 'Market (lane)' : 'Market'}
+                          </div>
+                          <div className="text-xs font-semibold text-gray-700 tabular-nums">
+                            {quote.reconciliation.market_ref != null ? inr(quote.reconciliation.market_ref) : '—'}
+                          </div>
+                        </div>
+                      </div>
+                      {quote.market?.source_city && quote.market?.dest_city && (
+                        <p className="mt-2 text-center text-[10px] text-gray-400">
+                          {quote.market.source_city} → {quote.market.dest_city}
+                          {quote.market.ds_ratio != null && ` · DS ${quote.market.ds_ratio}`}
+                        </p>
+                      )}
+                      <p className="mt-2 text-[11px] leading-snug text-gray-500">{quote.reconciliation.note}</p>
+                    </div>
+                  )}
+
                   <p className="mt-3 text-[11px] text-gray-500">
                     {priceQuoteBasis(quote, bookingType)}{' '}
                     {kind === 'advisory' ? 'Estimate' : 'Price'} valid until{' '}
