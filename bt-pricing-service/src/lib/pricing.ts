@@ -7,6 +7,7 @@ import {
   variableCostPerKm,
   type CostBreakdown,
 } from './cto-cost.js'
+import type { CostFloorBreakdown } from './cost-engine.js'
 
 // -----------------------------------------------------------
 // Commercial split (what the shipper is charged) PLUS the CTO deterministic
@@ -151,6 +152,13 @@ export const QuoteBody = z.object({
   weight_kg:    z.number().positive(),
   // Optional so existing callers are byte-identical (see quoteKind above).
   booking_type: z.enum(BOOKING_TYPES).optional(),
+  // Richer, OPTIONAL cost-engine inputs. Absent → the vehicle_type-derived
+  // defaults are used, so the existing request shape is unchanged; present →
+  // they refine the real CV-Parc cost floor (see lib/cost-engine.ts).
+  model_category: z.string().optional(),
+  emission_norm:  z.enum(['bs6', 'bs4']).optional(),
+  truck_age:      z.number().int().positive().optional(),
+  diesel_price_inr: z.number().positive().optional(),
 })
 export type QuoteInput = z.infer<typeof QuoteBody>
 
@@ -168,6 +176,17 @@ export type QuoteResult = {
   currency: 'INR'
   version: string
   cost_breakdown: CostBreakdown
+  /**
+   * The REAL operating-cost floor from the CV-Parc norms (lib/cost-engine.ts),
+   * when it could be resolved. This is the additive, data-backed successor to the
+   * flat `cost_breakdown` above: every line item + running + total_direct + floor.
+   *
+   * null when the norm tables could not be read — the commercial split above does
+   * not depend on it, so a norms outage degrades to a quote without the floor
+   * rather than a failed quote. In production the tables are seeded, so it is
+   * populated. Carried in breakdown_json; adds no top-level contract break.
+   */
+  cost_floor: CostFloorBreakdown | null
   /** Whether this number is the charge or a benchmark. See quoteKind. */
   quote_kind: QuoteKind
   /**
@@ -195,7 +214,14 @@ function quoteBasis(kind: QuoteKind, vehicleClass: VehicleClass, rate: number, d
     : `${derivation}. This is the price charged for this booking.`
 }
 
-export function computeQuote(input: QuoteInput): QuoteResult {
+/**
+ * @param costFloor Pre-resolved REAL cost floor from lib/cost-engine.ts, or null.
+ *   The engine's loaders are async (they read the seeded norm tables), so the
+ *   route resolves the floor and passes it in here; computeQuote itself stays
+ *   synchronous and pure. Omitting the argument yields `cost_floor: null`, which
+ *   is byte-compatible with every caller that predates this field.
+ */
+export function computeQuote(input: QuoteInput, costFloor?: CostFloorBreakdown | null): QuoteResult {
   const { distance_km, vehicle_type, load_type, weight_kg } = input
 
   const vehicleClass: VehicleClass = VEHICLE_TYPE_TO_CLASS[vehicle_type] ?? 'MCV'
@@ -231,6 +257,7 @@ export function computeQuote(input: QuoteInput): QuoteResult {
     currency: 'INR',
     version: 'v2-cost-derived',
     cost_breakdown: costBreakdown(vehicleClass, distance_km),
+    cost_floor: costFloor ?? null,
     quote_kind: kind,
     basis: quoteBasis(kind, vehicleClass, rate, distance_km),
   }

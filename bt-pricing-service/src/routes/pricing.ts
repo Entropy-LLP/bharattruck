@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { QuoteBody, computeQuote } from '../lib/pricing.js'
 import { insertPriceQuote } from '../lib/price-quote-store.js'
 import { roadDistanceKm } from '../lib/geo.js'
+import { resolveCostFloor, type CostFloorBreakdown } from '../lib/cost-engine.js'
 
 // -----------------------------------------------------------
 // pricingRoutes — public, JWT-gated. Mounted under `/pricing` so the gateway
@@ -81,6 +82,26 @@ export async function pricingRoutes(app: FastifyInstance) {
         })
       }
 
+      // Resolve the REAL CV-Parc cost floor. Defensive: a norms-table outage must
+      // not take down quoting — the commercial split below does not depend on the
+      // floor — so a failure logs and degrades to `cost_floor: null`. In
+      // production the tables are seeded, so this populates.
+      let costFloor: CostFloorBreakdown | null = null
+      try {
+        costFloor = await resolveCostFloor({
+          distance_km,
+          weight_kg:        body.data.weight_kg,
+          load_type:        body.data.load_type,
+          vehicle_type:     body.data.vehicle_type,
+          model_category:   body.data.model_category,
+          emission_norm:    body.data.emission_norm,
+          truck_age:        body.data.truck_age,
+          diesel_price_inr: body.data.diesel_price_inr,
+        })
+      } catch (err) {
+        req.log.warn({ err }, 'CV-Parc cost floor unavailable; quoting with the commercial split only')
+      }
+
       // booking_type is optional and only classifies the result (advisory vs
       // binding) — it does not touch the maths. Omitted → binding, so every
       // caller that predates it is byte-identical. See lib/pricing.ts.
@@ -90,7 +111,7 @@ export async function pricingRoutes(app: FastifyInstance) {
         load_type:    body.data.load_type,
         weight_kg:    body.data.weight_kg,
         booking_type: body.data.booking_type,
-      })
+      }, costFloor)
       const expiresAt = new Date(Date.now() + QUOTE_TTL_MS).toISOString()
 
       const row = await insertPriceQuote({
