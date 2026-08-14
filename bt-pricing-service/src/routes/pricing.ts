@@ -6,6 +6,7 @@ import { roadDistanceKm } from '../lib/geo.js'
 import { resolveCostFloor, type CostFloorBreakdown } from '../lib/cost-engine.js'
 import { defaultRouteDistanceClient } from '../lib/tracking-client.js'
 import { resolveMarketPrice, type MarketResult, type MarketVehicleClass } from '../lib/market-engine.js'
+import { reconcile } from '../lib/reconcile.js'
 
 // -----------------------------------------------------------
 // pricingRoutes — public, JWT-gated. Mounted under `/pricing` so the gateway
@@ -146,6 +147,16 @@ export async function pricingRoutes(app: FastifyInstance) {
         req.log.warn({ err }, 'market reference unavailable; quoting without it')
       }
 
+      // Three-layer reconciliation (P3): place the headline quote against the operating-cost floor
+      // and the market reference. Pure + additive — it DESCRIBES shipper_pays, never moves it (the
+      // headline is the locked price the shipper is charged), so it cannot break the price-lock and
+      // needs no defensive try/catch. Gives the UI the full floor/quote/market picture in one field.
+      const reconciliation = reconcile(
+        result.shipper_pays,
+        costFloor?.floor ?? null,
+        market?.market_price ?? null,
+      )
+
       const expiresAt = new Date(Date.now() + QUOTE_TTL_MS).toISOString()
 
       const row = await insertPriceQuote({
@@ -159,7 +170,7 @@ export async function pricingRoutes(app: FastifyInstance) {
         vehicle_class:  result.cost_breakdown.vehicle_class,
         load_type:      body.data.load_type,
         weight_kg:      body.data.weight_kg,
-        breakdown_json: { ...result, distance_basis, market },
+        breakdown_json: { ...result, distance_basis, market, reconciliation },
         quoted_price:   result.shipper_pays,
         currency:       'INR',
         expires_at:     expiresAt,
@@ -171,6 +182,7 @@ export async function pricingRoutes(app: FastifyInstance) {
           ...result,
           distance_basis,
           market,
+          reconciliation,
           quote_id:     row.id,
           quoted_price: row.quoted_price,
           breakdown:    result.cost_breakdown,
