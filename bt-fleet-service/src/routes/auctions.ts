@@ -44,10 +44,15 @@ export async function auctionRoutes(app: FastifyInstance) {
     const owner = await requireFleetOwner(req.user)
     const q = parseOrThrow(OpenAuctionsQuery, req.query)
 
+    // Two DIFFERENT ids off the same owner row, and swapping them silently breaks the
+    // board: `owner.id` (fleet_owners.id) scopes which bid is "mine", while
+    // `owner.user_id` (users.id) is what bookings.shipper_id holds and is therefore the
+    // only thing that can identify the caller's own loads for exclusion.
     const auctions = await listOpenAuctions(owner.id, {
       limit: q.limit,
       offset: q.offset,
       includeExpired: q.include_expired,
+      excludeShipperUserId: owner.user_id,
     })
 
     return reply.send({
