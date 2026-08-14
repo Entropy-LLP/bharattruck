@@ -263,6 +263,13 @@ async function main() {
   console.log('\n── a targeted direct load is not open to another driver (F15)')
   res = await accept(B_TARGET_OTHER, tok(U_OWNDRV, 'driver'))
   check('🔴 a non-target driver cannot accept a targeted load 403 (F15)', res.statusCode === 403, String(res.statusCode))
+  // U_OWNDRV is still bound to B_OPEN from the instant-accept above, and a driver may
+  // only hold ONE live trip (driver-schedule.ts). That is a different rule from the one
+  // under test here, so finish the first trip rather than assert the targeting rule
+  // through a driver who is not free — otherwise this check would pass or fail for a
+  // reason that has nothing to do with F15.
+  store.bookings.find((b) => b.id === B_OPEN)!.status = 'completed'
+
   res = await accept(B_TARGET_ME, tok(U_OWNDRV, 'driver'))
   check('the targeted driver CAN accept their earmarked load 200', res.statusCode === 200, res.body.slice(0, 200))
 
