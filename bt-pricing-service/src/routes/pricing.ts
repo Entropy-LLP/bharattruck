@@ -5,6 +5,7 @@ import { insertPriceQuote } from '../lib/price-quote-store.js'
 import { roadDistanceKm } from '../lib/geo.js'
 import { resolveCostFloor, type CostFloorBreakdown } from '../lib/cost-engine.js'
 import { defaultRouteDistanceClient } from '../lib/tracking-client.js'
+import { resolveMarketPrice, type MarketResult, type MarketVehicleClass } from '../lib/market-engine.js'
 
 // -----------------------------------------------------------
 // pricingRoutes — public, JWT-gated. Mounted under `/pricing` so the gateway
@@ -128,6 +129,23 @@ export async function pricingRoutes(app: FastifyInstance) {
         weight_kg:    body.data.weight_kg,
         booking_type: body.data.booking_type,
       }, costFloor)
+
+      // Market reference (P2): the FR8-calibrated corridor rate for this lane (directional), with a
+      // national ₹/km-by-class fallback. Defensive like the cost floor — a market-table outage must
+      // not fail a quote. This is a REFERENCE returned alongside the quote; the quote-vs-market
+      // reconciliation is P3.
+      let market: MarketResult | null = null
+      try {
+        market = await resolveMarketPrice({
+          source_lat: body.data.source_lat, source_lng: body.data.source_lng,
+          dest_lat:   body.data.dest_lat,   dest_lng:   body.data.dest_lng,
+          distance_km,
+          vehicle_class: result.cost_breakdown.vehicle_class as MarketVehicleClass,
+        })
+      } catch (err) {
+        req.log.warn({ err }, 'market reference unavailable; quoting without it')
+      }
+
       const expiresAt = new Date(Date.now() + QUOTE_TTL_MS).toISOString()
 
       const row = await insertPriceQuote({
@@ -141,7 +159,7 @@ export async function pricingRoutes(app: FastifyInstance) {
         vehicle_class:  result.cost_breakdown.vehicle_class,
         load_type:      body.data.load_type,
         weight_kg:      body.data.weight_kg,
-        breakdown_json: { ...result, distance_basis },
+        breakdown_json: { ...result, distance_basis, market },
         quoted_price:   result.shipper_pays,
         currency:       'INR',
         expires_at:     expiresAt,
@@ -152,6 +170,7 @@ export async function pricingRoutes(app: FastifyInstance) {
         data: {
           ...result,
           distance_basis,
+          market,
           quote_id:     row.id,
           quoted_price: row.quoted_price,
           breakdown:    result.cost_breakdown,
