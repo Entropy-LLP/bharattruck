@@ -17,7 +17,7 @@ import type {
   FleetOverview, Geofence,
   OpenAuction, FleetBid, Quote, NegotiationEntry, QuoteStatus,
   Booking, BookingType, ConsigneeInput,
-  PriceQuote, PriceQuoteInput, PriceQuoteVehicleType,
+  PriceQuote, PriceQuoteInput, PriceQuoteVehicleType, JustifyBreakdown,
   TrackData, DriverLocation,
   LocationUpdate, PodContext, RequestOtpResult, VerifyOtpResult, RouteData, PumpsData, FuelData, AlertsData,
   EvidenceCaptureInput, CaptureResult, AssertReason, AssertResult, DiscrepancyInput, DiscrepancyResult, PodRecord,
@@ -716,6 +716,23 @@ export function rejectQuote(bookingId: string, quoteId: string) {
 
 export function getPriceQuote(payload: PriceQuoteInput) {
   return request<PriceQuote>('/pricing/quote', { method: 'POST', body: JSON.stringify(payload) })
+}
+
+/**
+ * Mode B — justify a self-named bid. Sends the load + route ONLY (no truck details); the engine
+ * returns a breakdown that sums to `amount`. Coords let the service derive the routed distance and
+ * reuse the tracking cache; pass a booking's source/dest.
+ */
+export function justifyBid(payload: {
+  amount: number
+  load_type: string
+  weight_kg: number
+  source_lat: number
+  source_lng: number
+  dest_lat: number
+  dest_lng: number
+}) {
+  return request<JustifyBreakdown>('/pricing/justify', { method: 'POST', body: JSON.stringify(payload) })
 }
 
 export function quoteKindOf(quote: PriceQuote, requestedFor?: BookingType): 'advisory' | 'binding' {

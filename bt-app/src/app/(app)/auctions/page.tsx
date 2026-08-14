@@ -33,12 +33,12 @@ import {
 import { Button } from '@/components/ui/button'
 import {
   ApiError, listOpenAuctions, listMyBids, listFleetBookings,
-  placeBid, counterBid, withdrawBid, getBidHistory,
+  placeBid, counterBid, withdrawBid, getBidHistory, justifyBid,
 } from '@/lib/api'
 import { quoteStatusConfig, bookingStatusConfig } from '@/lib/status'
 import { inr, inrCompact, inrSigned, shortDate, tons, timeAgo, dateTime } from '@/lib/format'
 import type {
-  AuctionBooking, FleetBid, FleetBooking, NegotiationEntry, OpenAuction,
+  AuctionBooking, FleetBid, FleetBooking, JustifyBreakdown, NegotiationEntry, OpenAuction,
 } from '@/lib/types'
 
 type Tab = 'open' | 'bids' | 'won'
@@ -718,6 +718,51 @@ function LoadSummary({ booking }: { booking: AuctionBooking }) {
   )
 }
 
+/**
+ * Mode B (P4): shows the fleet where their self-named bid lands — a cost breakdown that sums to the
+ * amount they typed, from the load + route only. Never nudges; a below-cost bid is stated, not raised.
+ */
+function JustifyPanel({ breakdown }: { breakdown: JustifyBreakdown }) {
+  const c = breakdown.components
+  const rows: [string, number][] = [
+    ['Fuel', c.fuel],
+    ['Tolls', c.tolls],
+    ['Driver', c.driver],
+    ['Maintenance', c.maintenance],
+    ['Handling', c.handling],
+  ]
+  const belowCost = breakdown.position === 'below_typical_cost'
+  return (
+    <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+      <div className="mb-2 flex items-baseline justify-between">
+        <span className="text-xs font-semibold text-gray-700">Where this bid goes</span>
+        <span className="text-[10px] text-gray-400">{breakdown.distance_km} km · load &amp; route only</span>
+      </div>
+      <dl className="space-y-1 text-xs text-gray-600">
+        {rows.map(([label, value]) => (
+          <div key={label} className="flex justify-between">
+            <dt>{label}</dt>
+            <dd className="tabular-nums">{inr(value)}</dd>
+          </div>
+        ))}
+        <div className="mt-1 flex justify-between border-t border-gray-200 pt-1 font-medium text-gray-800">
+          <dt>{belowCost ? 'Bid (scaled to cost)' : 'Operating cost'}</dt>
+          <dd className="tabular-nums">{inr(breakdown.cost_subtotal)}</dd>
+        </div>
+        {!belowCost && (
+          <div className="flex justify-between font-semibold text-emerald-700">
+            <dt>Your margin</dt>
+            <dd className="tabular-nums">{inr(breakdown.margin)}</dd>
+          </div>
+        )}
+      </dl>
+      <p className={`mt-2 text-[11px] leading-snug ${belowCost ? 'text-amber-700' : 'text-gray-500'}`}>
+        {breakdown.note}
+      </p>
+    </div>
+  )
+}
+
 function BidDialog({
   auction, onClose, onDone,
 }: {
@@ -729,13 +774,36 @@ function BidDialog({
   const [message, setMessage] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  // Mode B (P4): the engine justifies THIS bid — a breakdown that sums to the number the fleet types,
+  // from the load + route only. It never nudges; it just shows where the price would go.
+  const [justify, setJustify] = useState<JustifyBreakdown | null>(null)
 
   // Reset per target, so one load's numbers never leak into the next dialog.
   useEffect(() => {
     setAmount(auction?.my_bid ? String(auction.my_bid.amount) : '')
     setMessage('')
     setError(null)
+    setJustify(null)
   }, [auction])
+
+  // Debounced justify preview. Recomputes as the fleet edits the amount; sends load + route only.
+  useEffect(() => {
+    const n = Number(amount)
+    if (!auction || !Number.isFinite(n) || n <= 0) { setJustify(null); return }
+    let cancelled = false
+    const t = setTimeout(() => {
+      justifyBid({
+        amount: n,
+        load_type: auction.load_type,
+        weight_kg: auction.weight_kg,
+        source_lat: auction.source_lat, source_lng: auction.source_lng,
+        dest_lat: auction.dest_lat, dest_lng: auction.dest_lng,
+      })
+        .then((b) => { if (!cancelled) setJustify(b) })
+        .catch(() => { if (!cancelled) setJustify(null) }) // preview only — never blocks bidding
+    }, 400)
+    return () => { cancelled = true; clearTimeout(t) }
+  }, [amount, auction])
 
   async function submit() {
     if (!auction) return
@@ -799,6 +867,7 @@ function BidDialog({
               setMessage={setMessage}
               error={error}
             />
+            {justify && <JustifyPanel breakdown={justify} />}
           </div>
         )}
 
