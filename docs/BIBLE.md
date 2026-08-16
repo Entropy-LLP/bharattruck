@@ -2028,70 +2028,52 @@ To refresh the URL table (services get added/removed): `gcloud run services list
 
 ### 6.4 Demo credentials
 
+> **⚠️ THIS SECTION NO LONGER LISTS PASSWORDS, AND MUST NOT AGAIN.**
+>
+> It used to, and on **2026-08-16** every account in it turned out not to exist. The table named
+> `demo-shipper@bharattruck.dev`, `demo-driver@…`, `demo-ops@…`, `balaji@bharattruck.in` and eight
+> `@bharattruck.in` fleet drivers, with a `<firstname>-2026` password pattern. A live query returned
+> **zero** rows for any of them, and the oldest user in the project dates to 2026-05-14 — so they had
+> not been deleted, they were never in this project. Somebody burned a session on "the login is
+> broken" before checking the database.
+>
+> The cause was duplication: credentials lived in a seed script AND were transcribed here, and only
+> one copy got updated. Pointing at the script instead is the fix, because the script cannot drift
+> from itself.
+
+**The live demo accounts are defined in [`scripts/seed/seed-demo-personas.mjs`](../scripts/seed/seed-demo-personas.mjs)**
+— read the `ACTORS` map at the top of that file for the current emails and passwords. It seeds five
+personas (a shipper, two drivers, two fleet owners) and the loads they trade, and it is the only
+source of truth for who can log in.
+
+The three names visible as shippers on the live auction board — Rajesh Kumar, Deepak Sharma, Anita
+Desai — are these accounts, which is a quick way to confirm the script matches the deployment.
+
+**Before quoting any credential from anywhere, confirm the account exists:**
+
+```sql
+SELECT email, (password_hash IS NOT NULL) AS can_password_login, role
+FROM users WHERE email = '<the-address>';
+```
+
 Login screens default to **Phone** — switch to **Email** (phone OTP is a dead end, see 6.3).
-**Password pattern for every seeded account: `<firstname>-2026`** (the three `demo-*` accounts use
-`demo-<role>-2026`). All verified present in the live DB with a password hash set, 2026-07-28.
 
-**Core demo accounts**
+⚠️ **A "Login failed" toast does NOT by itself mean the password is wrong.** Three different causes
+produce it, and they need different fixes:
+- the account does not exist (the 2026-08-16 case above) — check with the query;
+- the CORS wall when running from a *local* dev server (§6.3) — zero network entries is the tell;
+- a genuine wrong password.
 
-| App | Email | Password | Notes |
-|---|---|---|---|
-| Shipper | `demo-shipper@bharattruck.dev` | `demo-shipper-2026` | Seeded booking `55555555-5555-5555-5555-555555555555`, Mumbai→Nagpur, `in_transit` |
-| Driver | `demo-driver@bharattruck.dev` | `demo-driver-2026` | No assigned trips / no truck on profile — see §5.4 |
-| Ops | `demo-ops@bharattruck.dev` | `demo-ops-2026` | role in DB is **`admin`** — there is no `ops` role value |
+There is also a real **lockout** now (added in #134): `LOGIN_FAIL_LIMIT` wrong passwords per account,
+default 10, inside `LOGIN_FAIL_WINDOW_S` (default 15 min). Retrying a wrong password in a loop will
+eventually lock the account out for the rest of the window, so a session that starts with bad
+credentials can end up unable to use the good ones.
 
-**Fleet owner** — `bt-fleet-console`
+**Post-MVP:** the founder's call (2026-08-16) is that seeded credentials in the repo are acceptable
+until launch, and that everything gets stripped afterwards. Note for that sweep: the seeded accounts
+share this database with a handful of real signups and with consignee names and phone numbers on
+live bookings.
 
-| Email | Password | Company |
-|---|---|---|
-| `balaji@bharattruck.in` | `balaji-2026` | Shree Balaji Roadlines Pvt Ltd — 12 trucks, 8 drivers, 620 seeded assignments |
-
-**Fleet drivers** (all affiliated with Shree Balaji Roadlines; log in via the **driver** app). The
-last two are the interesting ones — they exercise the affiliation edges.
-
-| Driver | Email | Password | Affiliation |
-|---|---|---|---|
-| Vikram Rathod | `vikram@bharattruck.in` | `vikram-2026` | active |
-| Sanjay Kamble | `sanjay@bharattruck.in` | `sanjay-2026` | active |
-| Imran Sheikh | `imran@bharattruck.in` | `imran-2026` | active |
-| Gurpreet Singh | `gurpreet@bharattruck.in` | `gurpreet-2026` | active |
-| Mahesh Pawar | `mahesh@bharattruck.in` | `mahesh-2026` | active |
-| Dinesh Chauhan | `dinesh@bharattruck.in` | `dinesh-2026` | active |
-| Arjun Nair | `arjun@bharattruck.in` | `arjun-2026` | **pending invite** — tests the driver-consent accept flow |
-| Kailash Meena | `kailash@bharattruck.in` | `kailash-2026` | **left fleet** — tests access revocation |
-
-> **Re-confirmed 2026-07-31 (curl, live gateway):** `dinesh-2026` and `vikram-2026` both return
-> `success: true`. The `<firstname>-2026` pattern holds for the fleet drivers.
->
-> ⚠️ **A "Login failed" toast in the browser does NOT mean the password is wrong.** From a
-> *local* dev server these creds fail in-browser with a bare "Login failed" and **zero** network
-> entries — that is the CORS wall described in §6.3, not bad credentials. Verify with `curl` before
-> concluding a password is broken (this bit once on 2026-07-31 and nearly got a good password
-> recorded here as dead).
->
-> **Password caveat (verified 2026-07-28):** the fleet-driver logins DO work with `<firstname>-2026`
-> (vikram-2026 confirmed via real login). The two `@bharattruck.in` shipper logins
-> `anand.textiles`/`deccan.steels` returned 401 for `anand-2026`/`deccan-2026` — their real passwords
-> differ from the doc. For a guaranteed shipper+driver login use the demo accounts
-> (`demo-shipper@bharattruck.dev` / `demo-shipper-2026`, `demo-driver@bharattruck.dev` /
-> `demo-driver-2026`) — both confirmed working in the e2e run. `demo-driver` is INDEPENDENT (not
-> fleet-affiliated), so it can bid directly; a fleet driver is correctly 403'd from direct bidding.
-
-**Shippers that post loads to this fleet**
-
-| Email | Password |
-|---|---|
-| `anand.textiles@bharattruck.in` | `anand-2026` |
-| `deccan.steels@bharattruck.in` | `deccan-2026` |
-
-> Of 48 users in the live DB, **21 have no password hash at all** (mostly `@example.com` rows from
-> early fixtures). They cannot log in — ignore them when testing.
-
-> **QA shortcut — minting a token instead of logging in.** For scripted checks you can mint an HS256
-> JWT with the project's own `JWT_SECRET` (read it from `bt-booking-service`'s Cloud Run env) and
-> inject it into `localStorage` under the app's token key (`bt_fleet_token`, `bt_driver_token`,
-> `bt_token`). Payload: `{ userId, role, email, iat, exp }` where `userId` is `users.id`. This avoids
-> typing passwords into forms and is how the fleet console was verified on 2026-07-28.
 
 ### 6.5 Local dev reference
 
