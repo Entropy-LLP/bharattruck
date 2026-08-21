@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import {
-  AlertTriangle, ArrowRight, RefreshCw, Truck, UserRound, Users, X,
+  AlertTriangle, ArrowRight, Layers, RefreshCw, Truck, UserRound, Users, X,
 } from 'lucide-react'
 import { PageHeader } from '@/components/app-shell'
 import { Card, CardHead, Empty, ErrorNote, Loading, Stat } from '@/components/stat'
@@ -11,6 +11,7 @@ import {
 } from '@/lib/api'
 import { inr, inrCompact, shortDate, timeAgo, tons } from '@/lib/format'
 import { bookingStatusConfig } from '@/lib/status'
+import { consolidationSuggestions, type ConsolidationSuggestion } from '@/lib/consolidation'
 import type { BookingStatus, FleetBooking, FleetDriver, Vehicle } from '@/lib/types'
 
 /**
@@ -192,11 +193,27 @@ export default function TripsPage() {
 
   const vehicleById = new Map(vehicles.map(v => [v.id, v]))
   const driverById = new Map(drivers.map(d => [d.driver_id, d]))
+  const bookingById = new Map((lists?.accepted ?? []).map(b => [b.id, b]))
 
   const accepted = lists?.accepted ?? []
   const needs = accepted.filter(needsCrew)
   const crewed = accepted.filter(b => !needsCrew(b))
   const inTransit = lists?.in_transit ?? []
+
+  // Read-only consolidation hint (v1): which not-yet-crewed loads share a lane and would
+  // fit ONE free truck. Purely a planning insight computed from data this page already has —
+  // it changes nothing about dispatch (loads still run as separate trips until consolidated
+  // trips ship). See lib/consolidation.ts.
+  const consolidation = consolidationSuggestions(
+    needs.map(b => ({
+      id: b.id,
+      source_lat: b.source_lat, source_lng: b.source_lng,
+      dest_lat: b.dest_lat, dest_lng: b.dest_lng,
+      destination_address: b.destination_address,
+      weight_kg: b.weight_kg,
+    })),
+    vehicles.map(v => ({ id: v.id, rc_number: v.rc_number, capacity_tons: v.capacity_tons, free: !v.current_assignment })),
+  )
 
   const counts: Record<TabKey, number> = {
     needs: needs.length,
@@ -321,6 +338,8 @@ export default function TripsPage() {
 
           {tab === 'needs' ? (
             <>
+              {consolidation.length > 0 && <ConsolidationHints suggestions={consolidation} bookingById={bookingById} />}
+
               <Card>
                 <CardHead title="Awaiting crew" />
                 {needs.length === 0 ? (
@@ -394,6 +413,63 @@ export default function TripsPage() {
         />
       )}
     </div>
+  )
+}
+
+// ── Consolidation hints ───────────────────────────────────────
+
+/**
+ * Read-only consolidation slice (v1). Surfaces which not-yet-crewed loads share a lane and
+ * would fit one free truck — a planning insight, NOT an action. Consolidated dispatch (one
+ * truck carrying several loads) is not built yet: the one-live-booking-per-truck rule still
+ * holds, so these loads dispatch as separate trips for now. The copy says so plainly.
+ */
+function ConsolidationHints({
+  suggestions, bookingById,
+}: {
+  suggestions: ConsolidationSuggestion[]
+  bookingById: Map<string, FleetBooking>
+}) {
+  return (
+    <Card>
+      <CardHead
+        title={
+          <span className="inline-flex items-center gap-2">
+            <Layers className="w-4 h-4 text-blue-600" />
+            Loads that could share a truck
+          </span>
+        }
+        sub="Same-lane loads awaiting a truck. Consolidated trips are coming — for now, assign each as its own trip."
+      />
+      <ul className="divide-y divide-gray-100">
+        {suggestions.map(s => (
+          <li key={s.lane} className="py-3 flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-gray-900">
+                {s.loadIds.length} loads → <span className="truncate">{s.destination_address}</span>
+              </div>
+              <div className="mt-0.5 text-xs text-gray-500">
+                {s.loadIds
+                  .map(id => bookingById.get(id))
+                  .filter((b): b is FleetBooking => Boolean(b))
+                  .map(b => `${(b.load_type || 'load').replace(/_/g, ' ')} ${tons(b.weight_kg)}`)
+                  .join(' · ')}
+              </div>
+            </div>
+            <div className="shrink-0 text-right">
+              <div className="text-sm font-semibold text-gray-900 tabular-nums">{tons(s.totalWeightKg)} total</div>
+              {s.fittingTruck ? (
+                <div className="mt-0.5 text-xs font-medium text-emerald-700">
+                  fits {s.fittingTruck.rc_number} ({s.fittingTruck.capacity_tons}t)
+                </div>
+              ) : (
+                <div className="mt-0.5 text-xs text-gray-400">no single free truck fits</div>
+              )}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </Card>
   )
 }
 
@@ -624,6 +700,11 @@ function AssignDialog({
         setErr('That driver is no longer an active member of this fleet.')
       } else if (e2 instanceof ApiError && e2.code === 'NOT_FOUND') {
         setErr('That booking or truck is no longer available to this fleet — refresh the queue.')
+      } else if (e2 instanceof ApiError && e2.code === 'CAPACITY_EXCEEDED') {
+        // The truck cannot carry this load. The picker already disables under-capacity
+        // trucks, but a truck whose capacity was blank client-side can still be refused
+        // here — show the server's message, which names the load and the truck's rating.
+        setErr(e2.message)
       } else {
         setErr(errText(e2, 'Could not assign this trip'))
       }
@@ -690,13 +771,18 @@ function AssignDialog({
             <option value="">Choose a truck…</option>
             {trucks.map(v => {
               const on = v.current_assignment
+              // A truck rated below the load's weight cannot carry it — disable it so the
+              // dispatcher never picks it, mirroring the server's CAPACITY_EXCEEDED refusal.
+              // Only a KNOWN capacity can disqualify a truck; a blank spec stays selectable.
+              const tooSmall = v.capacity_tons != null && booking.weight_kg > v.capacity_tons * 1000
               const spec = [v.maker_model, v.capacity_tons !== null ? `${v.capacity_tons}t` : null]
                 .filter(Boolean).join(' · ')
               return (
-                <option key={v.id} value={v.id} disabled={Boolean(on)}>
+                <option key={v.id} value={v.id} disabled={Boolean(on) || tooSmall}>
                   {v.rc_number}{spec ? ` — ${spec}` : ''}
                   {v.is_active ? '' : ' · inactive'}
                   {on ? ` — on a trip${on.driver_name ? ` with ${on.driver_name}` : ''}` : ''}
+                  {!on && tooSmall ? ` — too small for this ${tons(booking.weight_kg)} load` : ''}
                 </option>
               )
             })}

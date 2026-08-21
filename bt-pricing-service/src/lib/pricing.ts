@@ -64,7 +64,17 @@ export function ratePerKm(vehicleType: string): number {
 }
 
 export const LOAD_MULT: Record<string, number>   = { general: 1.0, fragile: 1.2, perishable: 1.15, hazardous: 1.5, heavy_machinery: 1.3 }
-export const PLATFORM_RATE = 0.10
+
+// Platform fee — DISABLED for the pilot, and NEVER shown inside a customer quote.
+// Founder rule (2026-08): no platform fee until at least 5 transporters are onboarded,
+// and a fee must never appear in a quotation (it kills first-trip conversion). The
+// eventual model is a FLAT ₹151 per load charged ONLY on loads booked through OUR
+// auctions — never a percentage, never on direct/instant bookings. Kept as one flag +
+// one constant so switching it on is a one-line change, scoped to the auction path,
+// not a re-derivation. bt-payment-service already settles the WHOLE amount to the
+// payees (no fee taken), so a zero fee is what keeps the quote honest about the money.
+export const PLATFORM_FEE_ENABLED = false
+export const PLATFORM_FEE_PER_LOAD_INR = 151
 
 // -----------------------------------------------------------
 // ADVISORY vs BINDING — what the number MEANS (D-11).
@@ -237,7 +247,10 @@ export function computeQuote(input: QuoteInput, costFloor?: CostFloorBreakdown |
   const handling     = HANDLING_BASE[vehicleClass]
 
   const total        = base + wt_surcharge + handling
-  const platform_fee = Math.ceil(total * PLATFORM_RATE)
+  // No platform fee during the pilot (see PLATFORM_FEE_ENABLED). The field stays on the
+  // quote for wire stability, pinned to 0: settlement pays the payees the whole amount,
+  // so the quote must not imply — or show — a cut that is never taken.
+  const platform_fee = PLATFORM_FEE_ENABLED ? PLATFORM_FEE_PER_LOAD_INR : 0
 
   // Classification only — it changes no arithmetic above. An advisory quote is
   // the SAME number as a binding one; what differs is whether the platform is

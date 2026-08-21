@@ -120,7 +120,7 @@ export function Card({ children, className = '' }: { children: ReactNode; classN
   )
 }
 
-export function CardHead({ title, sub, actions, info }: { title: string; sub?: string; actions?: ReactNode; info?: string }) {
+export function CardHead({ title, sub, actions, info }: { title: ReactNode; sub?: string; actions?: ReactNode; info?: string }) {
   return (
     <div className="flex items-start justify-between gap-3 px-4 py-3 border-b border-gray-100">
       <div className="min-w-0">

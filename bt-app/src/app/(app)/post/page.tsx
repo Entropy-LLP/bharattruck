@@ -529,7 +529,6 @@ export default function PostLoadPage() {
                     <Line label="Driver wage" value={inr(quote.breakdown.driver_wage)} />
                     <Line label="Per-km operating" value={inr(quote.breakdown.per_km_operating_cost)} />
                     <Line label="Handling" value={inr(quote.breakdown.handling)} />
-                    <Line label="Platform fee" value={inr(quote.platform_fee)} />
                     <Line label="Vehicle class" value={quote.breakdown.vehicle_class} />
                   </dl>
 
@@ -656,7 +655,7 @@ export default function PostLoadPage() {
               isDistributor ? (
                 <div>
                   <label className="block text-xs text-gray-400 uppercase tracking-wide mb-2">Carry it with your fleet</label>
-                  <FleetPairPicker value={fleetPair} onChange={setFleetPair} />
+                  <FleetPairPicker value={fleetPair} onChange={setFleetPair} loadWeightKg={parseFloat(weightKg) || null} />
                 </div>
               ) : (
                 <Field id="target_driver_id" label="Target driver ID">

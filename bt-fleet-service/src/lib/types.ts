@@ -16,6 +16,10 @@ export type ErrorCode =
   | 'NOT_FOUND'
   | 'CONFLICT'
   | 'INVALID_TRANSITION'
+  // A truck cannot be dispatched under a load heavier than it can carry. Its own code
+  // (not CONFLICT) so the app can point the dispatcher at a bigger truck or splitting the
+  // load, rather than showing a generic clash they would reasonably retry unchanged.
+  | 'CAPACITY_EXCEEDED'
   | 'NOT_IMPLEMENTED'
   | 'MISCONFIGURED'
   | 'INTERNAL_ERROR'

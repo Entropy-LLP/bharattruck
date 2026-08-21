@@ -20,7 +20,7 @@ import { Check, ChevronDown, Search, Truck, UserRound } from 'lucide-react'
 import { ApiError, listFleetDrivers, listVehicles } from '@/lib/api'
 import type { FleetDriver, Vehicle } from '@/lib/types'
 
-type TruckOpt = { id: string; rc: string; brand: string | null; driverId: string | null }
+type TruckOpt = { id: string; rc: string; brand: string | null; driverId: string | null; capacityTons: number | null }
 type DriverOpt = { driverId: string; name: string; vehicleId: string | null }
 type FleetDriverRow = FleetDriver & { driver?: { driver_id: string; full_name: string | null } | null }
 
@@ -29,9 +29,13 @@ export type FleetPair = { vehicleId: string | null; driverId: string | null }
 export default function FleetPairPicker({
   value,
   onChange,
+  loadWeightKg,
 }: {
   value: FleetPair
   onChange: (next: FleetPair) => void
+  /** The load's weight (kg). Trucks rated below it are shown but not selectable — the
+   *  same rule bt-fleet-service enforces (CAPACITY_EXCEEDED) at assign time. */
+  loadWeightKg?: number | null
 }) {
   const [trucks, setTrucks] = useState<TruckOpt[]>([])
   const [drivers, setDrivers] = useState<DriverOpt[]>([])
@@ -45,7 +49,7 @@ export default function FleetPairPicker({
         if (cancelled) return
         const truckOpts: TruckOpt[] = (vs as (Vehicle & { is_active?: boolean })[])
           .filter(v => v.is_active !== false)
-          .map(v => ({ id: v.id, rc: v.rc_number, brand: v.maker_model ?? null, driverId: v.driver_id ?? null }))
+          .map(v => ({ id: v.id, rc: v.rc_number, brand: v.maker_model ?? null, driverId: v.driver_id ?? null, capacityTons: v.capacity_tons ?? null }))
 
         // driver_id → the truck dedicated to them, so picking a driver can bring their truck.
         const vehicleByDriver = new Map<string, string>()
@@ -86,8 +90,14 @@ export default function FleetPairPicker({
   }, [drivers, value.vehicleId, onChange])
 
   const truckItems = useMemo(
-    () => trucks.map(t => ({ key: t.id, primary: t.brand ?? t.rc, secondary: t.brand ? t.rc : null })),
-    [trucks],
+    () => trucks.map(t => {
+      const cap = t.capacityTons != null ? `${t.capacityTons}t` : null
+      const secondary = [t.brand ? t.rc : null, cap].filter(Boolean).join(' · ') || null
+      // A truck with a KNOWN capacity below the load is disqualified; a blank spec stays free.
+      const tooSmall = loadWeightKg != null && t.capacityTons != null && loadWeightKg > t.capacityTons * 1000
+      return { key: t.id, primary: t.brand ?? t.rc, secondary, disabled: tooSmall, note: tooSmall ? 'too small for this load' : null }
+    }),
+    [trucks, loadWeightKg],
   )
   const driverItems = useMemo(
     () => drivers.map(d => ({ key: d.driverId, primary: d.name, secondary: null })),
@@ -124,7 +134,7 @@ export default function FleetPairPicker({
   )
 }
 
-type Item = { key: string; primary: string; secondary: string | null }
+type Item = { key: string; primary: string; secondary: string | null; disabled?: boolean; note?: string | null }
 
 function Combobox({
   label, icon, placeholder, empty, items, value, disabled, onSelect,
@@ -198,12 +208,14 @@ function Combobox({
                 <li key={i.key}>
                   <button
                     type="button"
-                    onClick={() => { onSelect(i.key); setOpen(false); setQuery('') }}
-                    className="w-full flex items-center gap-2 px-3 py-2.5 text-sm text-left hover:bg-gray-50"
+                    disabled={i.disabled}
+                    onClick={() => { if (i.disabled) return; onSelect(i.key); setOpen(false); setQuery('') }}
+                    className={`w-full flex items-center gap-2 px-3 py-2.5 text-sm text-left ${i.disabled ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50'}`}
                   >
                     <span className="flex-1 min-w-0 truncate">
                       <span className="font-medium text-gray-900">{i.primary}</span>
                       {i.secondary && <span className="text-gray-400"> · {i.secondary}</span>}
+                      {i.note && <span className="text-red-500"> — {i.note}</span>}
                     </span>
                     {i.key === value && <Check className="w-4 h-4 text-blue-600 shrink-0" />}
                   </button>

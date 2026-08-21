@@ -162,6 +162,33 @@ export function reCrewPlan(
   return { needsRelease, driverChanged: needsRelease && requested.driverId !== current.driver_id }
 }
 
+/**
+ * assertVehicleWithinCapacity — a truck may not be dispatched under a load heavier than
+ * it can carry (founder: "2t truck taking a 5t load"). weight_kg is the shipper's declared
+ * load; capacity_tons is the fleet's own spec for the truck (1 t = 1000 kg). Pure so the
+ * rule is unit-testable without a database.
+ *
+ * Enforced ONLY when capacity is KNOWN: a null capacity_tons cannot prove an overload, and
+ * refusing on a blank spec would block dispatch on a data-entry gap the fleet may not have
+ * filled yet. The fix for that is prompting fleets to record capacity, not failing closed here.
+ */
+export function assertVehicleWithinCapacity(
+  booking: Pick<BookingRow, 'weight_kg'>,
+  vehicle: { capacity_tons?: number | null; rc_number?: string | null },
+): void {
+  if (vehicle.capacity_tons == null) return
+  const capacityKg = vehicle.capacity_tons * 1000
+  if (booking.weight_kg > capacityKg) {
+    const truck = vehicle.rc_number ? `${vehicle.rc_number} ` : 'This truck '
+    throw new FleetError(
+      `${truck}carries ${vehicle.capacity_tons} t but this load is ` +
+      `${(booking.weight_kg / 1000).toFixed(2)} t — assign a bigger truck or split the load`,
+      'CAPACITY_EXCEEDED',
+      409,
+    )
+  }
+}
+
 export async function assignDriverAndVehicle(input: AssignInput): Promise<AssignResult> {
   const supabase = getSupabase()
 
@@ -186,6 +213,14 @@ export async function assignDriverAndVehicle(input: AssignInput): Promise<Assign
     { vehicleId: input.vehicleId, driverId: input.driverId },
   )
   if (refusal) throw refusal
+
+  // (2.5) CAPACITY — the truck must be able to carry the load. mayExecuteFor just proved
+  // the truck is this fleet's; re-read it for its capacity (one indexed, tenancy-scoped
+  // lookup) and refuse an overload BEFORE we commit a crew. A load exceeding the truck's
+  // rated capacity is a booking that cannot lawfully or safely move, so it is refused at
+  // the binding point regardless of how the booking arrived (auction award or direct-attach).
+  const vehicleForCapacity = await getFleetVehicle(input.fleetOwnerId, input.vehicleId)
+  if (vehicleForCapacity) assertVehicleWithinCapacity(booking, vehicleForCapacity)
 
   // (3) D-19 — the truck is committed to one trip at a time. The insert below is
   // still the authority; this runs first so the dispatcher is told WHICH trip the
